@@ -1,0 +1,15 @@
+[submodule "reference/MineContext"]
+	path = reference/MineContext
+	url = https://github.com/volcengine/MineContext.git
+[submodule "reference/TrafficMonitor"]
+	path = reference/TrafficMonitor
+	url = https://github.com/zhongyang219/TrafficMonitor.git
+[submodule "reference/clipboard"]
+	path = reference/clipboard
+	url = https://github.com/golang-design/clipboard.git
+[submodule "reference/screenshot"]
+	path = reference/screenshot
+	url = https://github.com/kbinani/screenshot.git
+[submodule "reference/dtools"]
+	path = reference/dtools
+	url = https://github.com/wangrongding/dtools.git
