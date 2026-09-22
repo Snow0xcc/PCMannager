@@ -3,90 +3,282 @@
 package preferences
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 
-	"github.com/snow0xcc/pcmannager/internal/config"
+	"github.com/snow0xcc/pcmannager/internal/core"
 )
 
-// Show opens the unified preferences panel for PCMannager. Every feature can
-// be toggled independently and assigned its own global hotkey.
+// Show opens the unified preferences panel for PCMannager. Every module can be
+// toggled independently, assigned its own global hotkey and tuned through the
+// options each module declares -- no per-module hardcoded fields.
 func Show(mgr *Manager) {
-	cfg := mgr.app.Config
-
-	var mw *walk.MainWindow
-	var statusEnabled, clipEnabled, shotEnabled, ctxEnabled, repairEnabled *walk.CheckBox
-	var clipHotkey, shotHotkey, ctxHotkey, repairHotkey *walk.LineEdit
-	var clipHotOn, shotHotOn, ctxHotOn, repairHotOn *walk.CheckBox
-	var cpuChk, ramChk, netChk, diskChk *walk.CheckBox
-	var updateMs *walk.NumberEdit
-
-	pageStatus := TabPage{
-		Title:  "任务栏状态",
-		Layout: VBox{},
-		Children: []Widget{
-			CheckBox{AssignTo: &statusEnabled, Text: "启用任务栏状态统计", Checked: cfg.Statusbar.Enabled,
-				OnCheckedChanged: func() { cfg.Statusbar.Enabled = statusEnabled.Checked() }},
-			CheckBox{AssignTo: &cpuChk, Text: "显示 CPU 占用", Checked: cfg.Statusbar.ShowCPU,
-				OnCheckedChanged: func() { cfg.Statusbar.ShowCPU = cpuChk.Checked() }},
-			CheckBox{AssignTo: &ramChk, Text: "显示内存占用", Checked: cfg.Statusbar.ShowRAM,
-				OnCheckedChanged: func() { cfg.Statusbar.ShowRAM = ramChk.Checked() }},
-			CheckBox{AssignTo: &netChk, Text: "显示网络速率", Checked: cfg.Statusbar.ShowNet,
-				OnCheckedChanged: func() { cfg.Statusbar.ShowNet = netChk.Checked() }},
-			CheckBox{AssignTo: &diskChk, Text: "显示磁盘占用", Checked: cfg.Statusbar.ShowDisk,
-				OnCheckedChanged: func() { cfg.Statusbar.ShowDisk = diskChk.Checked() }},
-			Composite{Layout: HBox{}, Children: []Widget{
-				Label{Text: "刷新间隔(ms):"},
-				NumberEdit{AssignTo: &updateMs, Value: float64(cfg.Statusbar.UpdateMs), MinValue: 250, MaxValue: 10000, Suffix: " ms",
-					OnValueChanged: func() { cfg.Statusbar.UpdateMs = int(updateMs.Value()) }},
-			}},
-		},
+	a := mgr.App()
+	if a == nil || a.Config() == nil {
+		return
 	}
 
-	pageClip := featurePage("剪贴板管理器", &clipEnabled, &clipHotOn, &clipHotkey, &cfg.Clipboard)
-	pageShot := featurePage("截图工具", &shotEnabled, &shotHotOn, &shotHotkey, &cfg.Screenshot)
-	pageCtx := featurePage("上下文记录", &ctxEnabled, &ctxHotOn, &ctxHotkey, &cfg.SelfContext)
-	pageRepair := featurePage("电脑修复与工具", &repairEnabled, &repairHotOn, &repairHotkey, &cfg.PCRepair)
+	var mw *walk.MainWindow
 
-	MainWindow{
+	pages := make([]TabPage, 0, 8)
+	for _, mod := range a.Modules() {
+		pages = append(pages, modulePage(mgr, mod))
+	}
+	if len(pages) == 0 {
+		pages = append(pages, TabPage{
+			Title:    "模块",
+			Layout:   VBox{},
+			Children: []Widget{Label{Text: "当前没有注册任何模块。"}},
+		})
+	}
+
+	if err := (MainWindow{
 		AssignTo: &mw,
 		Title:    "PCMannager - 首选项",
 		MinSize:  Size{Width: 480, Height: 420},
 		Layout:   VBox{},
 		Children: []Widget{
-			TabWidget{
-				Pages: []TabPage{pageStatus, pageClip, pageShot, pageCtx, pageRepair},
-			},
+			TabWidget{Pages: pages},
 			Composite{Layout: HBox{}, Children: []Widget{
 				PushButton{Text: "保存", OnClicked: func() {
-					if err := mgr.app.Save(); err != nil {
-						mgr.app.Log.Errorf("save config: %v", err)
+					// Hotkeys are rebound so edited hotkeys take effect
+					// immediately, without restarting the application.
+					a.RebindHotkeys()
+					if mw != nil {
+						mw.Close()
 					}
-					mgr.ReloadHotkeys()
-					mw.Close()
 				}},
-				PushButton{Text: "取消", OnClicked: func() { mw.Close() }},
+				PushButton{Text: "取消", OnClicked: func() {
+					if mw != nil {
+						mw.Close()
+					}
+				}},
 			}},
 		},
-	}.Run()
+	}).Create(); err != nil {
+		if log := mgr.Log(); log != nil {
+			log.Error("创建首选项窗口失败", "err", err)
+		}
+		return
+	}
+
+	mw.Run()
 }
 
-// featurePage builds a generic enable + hotkey tab for a feature.
-func featurePage(title string, enabled, hotOn **walk.CheckBox, hotkey **walk.LineEdit, fc *config.FeatureConfig) TabPage {
-	return TabPage{
-		Title:  title,
-		Layout: VBox{},
-		Children: []Widget{
-			CheckBox{AssignTo: enabled, Text: "启用该功能", Checked: fc.Enabled,
-				OnCheckedChanged: func() { fc.Enabled = (*enabled).Checked() }},
-			Composite{Layout: HBox{}, Children: []Widget{
-				CheckBox{AssignTo: hotOn, Text: "启用快捷键", Checked: fc.HotkeyOn,
-					OnCheckedChanged: func() { fc.HotkeyOn = (*hotOn).Checked() }},
-				Label{Text: "快捷键:"},
-				LineEdit{AssignTo: hotkey, Text: fc.Hotkey,
-					OnTextChanged: func() { fc.Hotkey = (*hotkey).Text() }},
-			}},
-			Label{Text: "格式示例: ctrl+alt+v / f1 / ctrl+shift+c"},
+// modulePage builds one tab: enable switch, hotkey entry and every declared
+// option rendered as its matching widget.
+func modulePage(mgr *Manager, mod core.Module) TabPage {
+	a := mgr.App()
+	id := mod.ID()
+	view := a.Config().Module(id)
+
+	children := []Widget{
+		enableToggle(mgr, id, view.Enabled()),
+		hotkeyRow(mgr, id, view.Hotkey()),
+		Label{Text: "格式示例: ctrl+alt+v / f1 / ctrl+shift+c"},
+	}
+
+	for _, opt := range mod.Options() {
+		if w, ok := optionWidget(mgr, id, opt); ok {
+			children = append(children, w)
+		}
+	}
+
+	title := mod.Name()
+	if title == "" {
+		title = id
+	}
+	return TabPage{Title: title, Layout: VBox{}, Children: children}
+}
+
+// enableToggle renders the module on/off switch. Toggling goes through
+// App.EnableModule so the module is really started/stopped, not just flagged.
+func enableToggle(mgr *Manager, id string, enabled bool) CheckBox {
+	var cb *walk.CheckBox
+	return CheckBox{
+		AssignTo: &cb,
+		Text:     "启用该模块",
+		Checked:  enabled,
+		OnCheckedChanged: func() {
+			if cb == nil {
+				return
+			}
+			if err := mgr.App().EnableModule(id, cb.Checked()); err != nil {
+				logErr(mgr, "切换模块启用状态失败", id, err)
+			}
 		},
+	}
+}
+
+// hotkeyRow renders the hotkey entry plus validation feedback.
+func hotkeyRow(mgr *Manager, id, current string) Composite {
+	var le *walk.LineEdit
+	return Composite{
+		Layout: HBox{},
+		Children: []Widget{
+			Label{Text: "快捷键:"},
+			LineEdit{
+				AssignTo: &le,
+				Text:     current,
+				OnEditingFinished: func() {
+					if le == nil {
+						return
+					}
+					hk := le.Text()
+					if hk != "" && !core.ValidHotkey(hk) {
+						logErr(mgr, "热键格式无效", id, fmt.Errorf("无效热键: %s", hk))
+						return
+					}
+					a := mgr.App()
+					if err := a.Config().Module(id).SetHotkey(hk); err != nil {
+						logErr(mgr, "保存热键失败", id, err)
+						return
+					}
+					// Rebinding picks the new value straight from config.
+					a.RebindHotkeys()
+				},
+			},
+		},
+	}
+}
+
+// optionWidget renders one declarative option as its matching widget, reading
+// and writing through config.Manager/ModuleView.
+func optionWidget(mgr *Manager, id string, opt core.Option) (Widget, bool) {
+	a := mgr.App()
+	view := a.Config().Module(id)
+
+	label := opt.Label
+	if label == "" {
+		label = opt.Key
+	}
+
+	switch opt.Kind {
+	case core.KindBool:
+		var cb *walk.CheckBox
+		def, _ := opt.Default.(bool)
+		checked, _ := view.Get(opt.Key, def).(bool)
+		return CheckBox{
+			AssignTo: &cb,
+			Text:     label,
+			Checked:  checked,
+			OnCheckedChanged: func() {
+				if cb == nil {
+					return
+				}
+				on := cb.Checked()
+				if err := view.Set(opt.Key, on); err != nil {
+					logErr(mgr, "保存配置项失败", id, err)
+					return
+				}
+				if err := a.ApplyOption(id, opt.Key, on); err != nil {
+					logErr(mgr, "应用配置项失败", id, err)
+				}
+			},
+		}, true
+
+	case core.KindSelect:
+		var cb *walk.ComboBox
+		labels := make([]string, 0, len(opt.Choices))
+		values := make([]string, 0, len(opt.Choices))
+		for _, c := range opt.Choices {
+			labels = append(labels, c.Label)
+			values = append(values, c.Value)
+		}
+		cur := fmt.Sprint(view.Get(opt.Key, opt.Default))
+		current := -1
+		for i, v := range values {
+			if v == cur {
+				current = i
+				break
+			}
+		}
+		return Composite{
+			Layout: HBox{},
+			Children: []Widget{
+				Label{Text: label + ":"},
+				ComboBox{
+					AssignTo:     &cb,
+					Model:        labels,
+					CurrentIndex: current,
+					OnCurrentIndexChanged: func() {
+						if cb == nil {
+							return
+						}
+						if i := cb.CurrentIndex(); i >= 0 && i < len(values) {
+							if err := view.Set(opt.Key, values[i]); err != nil {
+								logErr(mgr, "保存配置项失败", id, err)
+								return
+							}
+							if err := a.ApplyOption(id, opt.Key, values[i]); err != nil {
+								logErr(mgr, "应用配置项失败", id, err)
+							}
+						}
+					},
+				},
+			},
+		}, true
+
+	default:
+		// String/int/color fall back to a text field; the web panel renders
+		// richer widgets from the same descriptors.
+		var le *walk.LineEdit
+		return Composite{
+			Layout: HBox{},
+			Children: []Widget{
+				Label{Text: label + ":"},
+				LineEdit{
+					AssignTo: &le,
+					Text:     formatValue(view.Get(opt.Key, opt.Default)),
+					OnEditingFinished: func() {
+						if le == nil {
+							return
+						}
+						raw := le.Text()
+						v, err := parseValue(opt, raw)
+						if err != nil {
+							logErr(mgr, "配置项格式无效", id, err)
+							return
+						}
+						if err := view.Set(opt.Key, v); err != nil {
+							logErr(mgr, "保存配置项失败", id, err)
+							return
+						}
+						if err := a.ApplyOption(id, opt.Key, v); err != nil {
+							logErr(mgr, "应用配置项失败", id, err)
+						}
+					},
+				},
+			},
+		}, true
+	}
+}
+
+// parseValue converts raw text back into the option's declared type.
+func parseValue(opt core.Option, raw string) (any, error) {
+	switch opt.Kind {
+	case core.KindInt:
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s 需要整数: %w", opt.Key, err)
+		}
+		if opt.Min != 0 || opt.Max != 0 {
+			if n < opt.Min || n > opt.Max {
+				return nil, fmt.Errorf("%s 超出范围 [%d, %d]", opt.Key, opt.Min, opt.Max)
+			}
+		}
+		return n, nil
+	default:
+		return raw, nil
+	}
+}
+
+// logErr reports a panel failure through the application logger and bus.
+func logErr(mgr *Manager, msg, id string, err error) {
+	if log := mgr.Log(); log != nil {
+		log.Error(msg, "module", id, "err", err)
 	}
 }

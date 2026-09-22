@@ -55,10 +55,10 @@ type VisibleIf struct {
 type ActionKind string
 
 const (
-	ActionNormal ActionKind = "normal"
-	ActionDanger ActionKind = "danger"
+	ActionNormal  ActionKind = "normal"
+	ActionDanger  ActionKind = "danger"
 	ActionInstall ActionKind = "install"
-	ActionOpen   ActionKind = "open"
+	ActionOpen    ActionKind = "open"
 )
 
 // Action is a declarative, user-triggerable operation. Install/cleanup style
@@ -122,11 +122,11 @@ type Module interface {
 // Embed it to stay forward compatible when the interface grows.
 type Base struct{}
 
-func (Base) Options() []Option            { return nil }
-func (Base) Actions() []Action            { return nil }
-func (Base) State() State                 { return State{} }
-func (Base) OnHotkey() error              { return nil }
-func (Base) OpenUI() error                { return nil }
+func (Base) Options() []Option             { return nil }
+func (Base) Actions() []Action             { return nil }
+func (Base) State() State                  { return State{} }
+func (Base) OnHotkey() error               { return nil }
+func (Base) OpenUI() error                 { return nil }
 func (Base) ApplyOption(string, any) error { return nil }
 
 // Context is the shared runtime handed to every module.

@@ -25,19 +25,46 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
+    env:
+      # 产物名在 with: 之前就必须是确定的：steps.*.with 在步骤启动前求值，
+      # 无法读取 build 步骤写入 $GITHUB_ENV 的值，因此这里直接用 matrix 计算。
+      ARTIFACT: pcmannager-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
     steps:
+      # 仓库通过 submodule 引入 reference/ 下的第三方参考仓库，必须递归拉取。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
       - name: set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          go-version: '1.27.1'
           check-latest: true
 
-      - name: go mod tidy (verify)
+      - name: go mod tidy
+        run: go mod tidy
+
+      - name: gofmt check
         run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
+          set -euo pipefail
+          # 排除 submodule 参考代码 reference/；只检查工作区中真实存在的 .go 文件
+          mapfile -t files < <(git ls-files '*.go' | grep -v '^reference/' || true)
+          existing=()
+          for f in "${files[@]:-}"; do
+            [ -n "${f}" ] && [ -f "${f}" ] && existing+=("${f}")
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "no go files to check"
+            exit 0
+          fi
+          unformatted=$(gofmt -l "${existing[@]}")
+          if [ -n "${unformatted}" ]; then
+            echo "::error::以下文件未通过 gofmt，请运行 gofmt -w 后重新提交："
+            echo "${unformatted}"
+            exit 1
+          fi
+          echo "gofmt check passed (${#existing[@]} files)"
 
       - name: build
         env:
@@ -45,16 +72,14 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          OUT="pcmannager-${{ matrix.goos }}-${{ matrix.goarch }}"
-          if [ "${{ matrix.goos }}" = "windows" ]; then OUT="$OUT.exe"; fi
-          go build -trimpath -ldflags="-s -w" -o "$OUT" .
-          echo "artifact=$OUT" >> "$GITHUB_ENV"
+          go build -trimpath -ldflags="-s -w" -o "${ARTIFACT}" .
+          ls -l "${ARTIFACT}"
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.artifact }}
-          path: ${{ env.artifact }}
+          name: ${{ env.ARTIFACT }}
+          path: ${{ env.ARTIFACT }}
           if-no-files-found: error
 
   release:
@@ -66,6 +91,16 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: list artifacts
+        run: |
+          ls -l artifacts
+          count=$(find artifacts -maxdepth 1 -type f | wc -l)
+          echo "artifact count: ${count}"
+          if [ "${count}" -ne 4 ]; then
+            echo "::error::预期 4 个产物，实际 ${count} 个"
+            exit 1
+          fi
 
       - name: publish to GitHub Release
         uses: softprops/action-gh-release@v2

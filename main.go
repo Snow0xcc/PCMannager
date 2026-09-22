@@ -1,68 +1,82 @@
+// Command pcmannager boots the GoBox desktop assistant.
+//
+// Assembly lives in internal/app: it owns the data directory, the
+// configuration, the logger, the event bus and the hotkey router. This file
+// only registers the feature modules and blocks until shutdown.
 package main
 
 import (
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
-	"github.com/snow0xcc/pcmannager/internal/config"
-	"github.com/snow0xcc/pcmannager/internal/core"
+	"github.com/snow0xcc/pcmannager/internal/app"
 	"github.com/snow0xcc/pcmannager/modules/clipboard"
 	"github.com/snow0xcc/pcmannager/modules/repair"
-	"github.com/snow0xcc/pcmannager/modules/preferences"
 	"github.com/snow0xcc/pcmannager/modules/screenshot"
 	"github.com/snow0xcc/pcmannager/modules/selfcontext"
 	"github.com/snow0xcc/pcmannager/modules/taskbar"
 )
 
 func main() {
-	// Resolve config path (env override for dev/testing).
-	cfgPath := os.Getenv("PCMANNAGER_CONFIG")
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		cfg = config.Default()
+	// internal/app resolves the data directory, loads config.yaml, opens the
+	// log file and starts the hotkey router.
+	if dir := configDirEnv(); dir != "" {
+		if err := os.Chdir(dir); err != nil {
+			os.Stderr.WriteString("PCMANNAGER_CONFIG 目录不可用: " + err.Error() + "\n")
+		}
 	}
 
-	logPath := filepath.Join(filepath.Dir(cfg.Path), "pcmannager.log")
-	logger := core.NewLogger(logPath)
-
-	mgr := core.NewManager(cfg, logger)
+	a, err := app.New()
+	if err != nil {
+		// The logger is not up yet, so stderr is the only sink available.
+		os.Stderr.WriteString("启动失败: " + err.Error() + "\n")
+		os.Exit(1)
+	}
 
 	// Register every feature. Each is independently toggleable + hotkeyable.
-	mgr.Register(statusbar.NewFeature())
-	mgr.Register(clipboard.NewFeature())
-	mgr.Register(screenshot.NewFeature())
-	mgr.Register(selfcontext.NewFeature())
-	mgr.Register(pcrepair.NewFeature())
+	// preferences is not registered: it is a view over this registry, opened
+	// on demand through preferences.Show(preferences.NewManager(a)).
+	a.MustRegister(taskbar.NewFeature())
+	a.MustRegister(clipboard.NewFeature())
+	a.MustRegister(screenshot.NewFeature())
+	a.MustRegister(selfcontext.NewFeature())
+	a.MustRegister(repair.NewFeature())
 
-	if err := mgr.Init(); err != nil {
-		logger.Errorf("init: %v", err)
+	a.InitModules()
+	a.StartModules()
+
+	log := a.Log()
+	log.Info("GoBox 已启动", "config", a.Config().Path(), "data_dir", a.DataDir())
+
+	// Termination signals must release the hotkeys, the log file and the
+	// config file even when no UI is around to request a quit.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Info("收到退出信号")
+		a.Shutdown()
+	}()
+
+	// Block until Shutdown cancels the application context.
+	a.Wait()
+	// Shutdown is idempotent, so a signal-driven shutdown is not repeated.
+	a.Shutdown()
+}
+
+// configDirEnv keeps the historical PCMANNAGER_CONFIG override working:
+// internal/app probes config.yaml relative to the working directory, so a
+// directory (or a config file, whose parent directory is used) selected here
+// wins over the OS data directory while debugging.
+func configDirEnv() string {
+	dir := os.Getenv("PCMANNAGER_CONFIG")
+	if dir == "" {
+		return ""
 	}
-	if err := mgr.Start(); err != nil {
-		logger.Errorf("start: %v", err)
+	if fi, err := os.Stat(dir); err == nil && !fi.IsDir() {
+		dir = filepath.Dir(dir)
 	}
-
-	// Build the tray menu. The tray message loop (Run) blocks until Quit.
-	app := mgr.App()
-	app.Tray.Run(func() {
-		app.Tray.SetTooltip("PCMannager")
-		prefs := app.Tray.AddMenuItem("首选项", "打开设置面板")
-		prefs.SetOnClick(func() { preferences.Show(preferences.NewManager(mgr)) })
-
-		app.Tray.AddSeparator()
-		openClip := app.Tray.AddMenuItem("剪贴板历史", "打开剪贴板管理器")
-		openClip.SetOnClick(func() { _ = mgr.OpenUI("clipboard") })
-		openShot := app.Tray.AddMenuItem("截图", "开始截图 (F1)")
-		openShot.SetOnClick(func() { _ = mgr.RunHotkey("screenshot") })
-		openCtx := app.Tray.AddMenuItem("上下文记录", "查看工作上下文")
-		openCtx.SetOnClick(func() { _ = mgr.OpenUI("selfcontext") })
-		openRepair := app.Tray.AddMenuItem("电脑修复与工具", "打开修复/安装面板")
-		openRepair.SetOnClick(func() { _ = mgr.OpenUI("pcrepair") })
-
-		app.Tray.AddSeparator()
-		quit := app.Tray.AddMenuItem("退出", "退出 PCMannager")
-		quit.SetOnClick(func() { app.Tray.Quit() })
-	}, func() {
-		mgr.Stop()
-		os.Exit(0)
-	})
+	return dir
 }
