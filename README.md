@@ -15,6 +15,10 @@
 | 电脑修复与工具 (pcrepair) | 一键修复动作与工具安装面板（Windows） | `ctrl+alt+r` |
 | 首选项 (preferences) | 统一设置面板 | — |
 
+## 快速开发
+
+克隆后如何初始化子模块、搭建工具链、构建与运行，详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+
 ## 架构
 
 - `main.go`：程序入口，组装并注册模块，构建托盘菜单，阻塞于托盘消息循环。
