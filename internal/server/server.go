@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/snow0xcc/pcmannager/internal/panel"
 )
 
 // Options configures the HTTP server.
@@ -146,7 +148,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 
 // handleIndex serves the embedded single-page panel.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data, err := frontend.ReadFile("web/index.html")
+	data, err := frontend.ReadFile(panel.IndexPath)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("面板资源缺失: %w", err))
 		return

@@ -4,7 +4,8 @@
 
 ## 构建、测试、检查、格式化
 - 跨平台可构建：Windows 下用 `lxn/walk`/`gonutz/w32` 渲染真实窗口，非 Windows 下对应 UI 文件由 `//go:build !windows` 的同名 no-op 版本替换（UI 降级为空转，核心逻辑照常编译运行）。
-- 构建/检查命令：`go build ./...`、`GOOS=windows go build -o pcmannager.exe .`、`go vet ./...`、`gofmt -l .`（格式化用 `gofmt -w .`）。首次改动依赖后先跑 `go mod tidy`。
+- 构建/检查命令：`go build ./...`、`go vet ./...`、`gofmt -l .`（格式化用 `gofmt -w .`）。首次改动依赖后先跑 `go mod tidy`。
+- **发布构建统一走 `bash scripts/build.sh <goos> <goarch> <输出>`**（CI 与本地同源，避免参数漂移）。该脚本固定 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`，并**对 Windows 追加 `-H windowsgui`**——漏掉它就是启动弹出黑色控制台窗口的根因。注意 GUI 子系统下 stdout/stderr 不可见，排障请看日志文件或面板事件日志页。
 - 测试：`go test ./...`（建议 `go test -race -count=1 ./internal/... ./modules/...`）。现有单测覆盖 `internal/core`（Bus/Registry/热键解析）、`internal/config`（默认值合并、原子保存）、`internal/server`（httptest 冒烟）、`modules/repair`（工具箱目录）、`modules/screenshot`、`modules/clipboard`（History 并发）、`modules/taskbar`（采集与格式化）。新增功能时应随之补测试。
 - **前端禁用 emoji 检查**：`bash scripts/check-emoji.sh`（扫描 html/css/js/md/go，正则覆盖 emoji 与符号区段）。提交前应跑；接入 CI 见 TODO #16。
 - `PCMANNAGER_CONFIG` 环境变量可覆盖配置文件路径，便于本地调试。
@@ -17,7 +18,9 @@
 - `internal/config/`：配置管理——`Manager`/`ModuleView`/`App`，原子写入、缺省合并，含 `Autostart` 等应用级字段。
 - `internal/winui/`：自研**无 cgo** 的 Win32 封装（窗口、任务栏嵌入、DPI、托盘 `Shell_NotifyIconW`、注册表绑定），`_windows.go`/`_other.go` 成对，非 Windows 整体降级为 `errUnsupported`。
 - `internal/app/`：应用装配层——持有配置/日志/事件总线/热键路由/**托盘**/**面板服务**；`provider.go` 实现 `server.Provider`（依赖方向 `app -> server`，反向会成环），`app_windows.go`/`app_other.go` 提供 `Run()`（Windows 跑 Win32 消息泵，其它平台等待 ctx）。
-- `internal/server/`：首选项面板的 HTTP 层——JSON REST（`/api/state`、`/api/modules[/id]`、`/api/app`、`/api/events` SSE）+ `web/index.html` 通过 `embed` 内置，仅监听 `127.0.0.1`；平台无关、无 cgo，前端禁用 emoji。
+- `internal/panel/`：首选项面板**唯一的前端资源**（`index.html`，`embed` 内置）。HTTP 面板与原生窗口都渲染同一个文件，避免两份前端漂移（`//go:embed` 不能跨目录，故资源集中在此）。
+- `internal/wailsapp/`：原生窗口层（Windows 用 Wails/WebView2），`_windows.go`/`_other.go` 成对，非 Windows 返回 `ErrUnsupported` 由调用方回退到 HTTP 面板。**Wails 与 `internal/server` 并存**：二者共用 `server.Provider` 数据契约（经 `App.PanelProvider()`），面板前端通过 `transport` 抽象自动选择 `fetch+EventSource` 或 `window.go.wailsapp.API`。经实测 `wails/v2@v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。
+- `internal/server/`：首选项面板的 HTTP 层——JSON REST（`/api/state`、`/api/modules[/id]`、`/api/app`、`/api/events` SSE）+ `internal/panel/index.html` 通过 `embed` 内置，仅监听 `127.0.0.1`；平台无关、无 cgo，前端禁用 emoji。
 - `internal/tray/`、`internal/sysutil/`、`internal/logx/`、`internal/paths/`：支撑包——托盘抽象（`_windows`/`_other` 成对，菜单支持勾选/禁用/分隔符）、系统工具（提权/自启/单实例/通知/命令执行）、日志、统一数据目录解析（`AppName` 仍为历史代号 GoBox）。
 - `modules/<name>/`：各功能独立成包（clipboard、screenshot、selfcontext、repair、preferences、taskbar），每个实现 `internal/core.Module`（`NewFeature()` 构造，包名保留旧名如 `statusbar`/`pcrepair`，注意与目录名不同）。
 - `modules/repair`：**电脑修复 / 一键安装工具箱**，所有条目集中在 `catalog.go` 的 `Entry` 切片（声明式、平台无关，单一数据源）；`feature.go` 的 `Actions()` 全量从 `Catalog()` 生成，`RunAction` 经 `Lookup`+`Entry.ResolveCommand` 分派；walk 面板（`panel_windows.go`）与 Web 面板均从此目录渲染，新增工具只改 `catalog.go`。包管理器偏好 `prefer_source`（`auto`/`winget`/`choco`）决定解析出的安装命令。

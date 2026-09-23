@@ -40,6 +40,11 @@ type AppConfig struct {
 	ServerPort    int    `json:"server_port"`
 	OpenInWebview bool   `json:"open_in_webview"`
 	Language      string `json:"language"`
+	// EffectiveDataDir is the path the app actually resolved and is using,
+	// after merging the user override with the OS default. It is read-only:
+	// the user override flows through DataDir, and this field is for display
+	// so the panel never shows an empty box while data lives elsewhere.
+	EffectiveDataDir string `json:"effective_data_dir"`
 }
 
 // AppConfigPatch is a partial update of the application settings.

@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCMannager 首选项</title>
+<style>
+  :root {
+    --bg: #12141a; --panel: #1b1e26; --panel-2: #232733; --line: #2f3442;
+    --text: #e6e8ee; --muted: #9aa3b2; --accent: #4f8cff; --danger: #e5484d;
+    --ok: #30a46c; --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header .spacer { flex: 1; }
+  header .version { color: var(--muted); font-size: 12px; }
+  #caps { padding: 8px 18px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+  main { display: flex; min-height: calc(100vh - 96px); }
+  nav {
+    width: 210px; flex: none; background: var(--panel);
+    border-right: 1px solid var(--line); padding: 10px 0;
+  }
+  nav button {
+    display: block; width: 100%; text-align: left; padding: 9px 16px;
+    background: none; border: 0; border-left: 3px solid transparent;
+    color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  nav button:hover { background: var(--panel-2); }
+  nav button.active { border-left-color: var(--accent); background: var(--panel-2); font-weight: 600; }
+  section { flex: 1; padding: 18px 22px; overflow: auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 15px; }
+  .card h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+  .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .card.sub { background: var(--panel-2); }
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .row label { width: 130px; flex: none; color: var(--muted); font-size: 13px; }
+  .row .grow { flex: 1; }
+  input[type=text], input[type=number], select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 9px; font: inherit; width: 100%;
+  }
+  input[type=color] { background: none; border: 1px solid var(--line); border-radius: 6px; height: 32px; width: 60px; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  button.btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  button.btn:hover { border-color: var(--accent); }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.btn.danger { border-color: var(--danger); color: var(--danger); }
+  button.btn.install { border-color: var(--ok); color: var(--ok); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .badge {
+    display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  }
+  .badge.on { color: var(--ok); border-color: var(--ok); }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .badge.err {
+    color: var(--danger); border-color: var(--danger);
+    display: inline-flex; align-items: center; gap: 3px;
+  }
+  .badge.err svg.i { width: 10px; height: 10px; }
+  /* ---- 模块最近错误告警条（红色，非 emoji，图标为内联 SVG） ---- */
+  .alert {
+    display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px;
+    padding: 10px 12px; border: 1px solid var(--danger); border-left-width: 3px;
+    border-radius: var(--radius); background: rgba(229, 72, 77, .08); color: var(--danger);
+  }
+  .alert > svg.i { margin-top: 2px; }
+  .alert-body { flex: 1; min-width: 0; }
+  .alert-body strong { font-weight: 600; word-break: break-word; }
+  .alert-hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  nav button .badge.err { margin-left: auto; }
+  /* ---- 结构化运行状态 ---- */
+  .state-v { word-break: break-word; }
+  .state-obj, .raw { margin-top: 4px; }
+  .state-obj > summary, .raw > summary {
+    cursor: pointer; color: var(--muted); font-size: 12px; outline: none;
+    list-style: none; display: inline-flex; align-items: center; gap: 4px;
+  }
+  .state-obj > summary::-webkit-details-marker, .raw > summary::-webkit-details-marker { display: none; }
+  .state-obj > summary:hover, .raw > summary:hover { color: var(--text); }
+  .state-obj[open] > summary, .raw[open] > summary { color: var(--text); }
+  .state-obj > pre, .raw > pre {
+    margin: 6px 0 0; padding: 8px; background: #0d0f14; border: 1px solid var(--line);
+    border-radius: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; color: var(--muted); overflow: auto;
+  }
+  #toast {
+    position: fixed; right: 18px; bottom: 18px; padding: 10px 14px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line); opacity: 0;
+    transition: opacity .2s; pointer-events: none; max-width: 420px;
+  }
+  #toast.show { opacity: 1; }
+  #toast.err { border-color: var(--danger); color: var(--danger); }
+  #log {
+    background: #0d0f14; border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px; height: 190px; overflow: auto; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px; white-space: pre-wrap;
+  }
+  #log div { border-bottom: 1px solid #191c24; padding: 2px 0; }
+  .lev-warn { color: #f5a524; } .lev-error { color: var(--danger); }
+  .lev-info { color: var(--muted); }
+
+  /* ---- 内联 SVG 图标（项目禁用 emoji，界面图标一律为几何 SVG） ---- */
+  svg.i {
+    width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  /* 带图标的输入框：图标绝对定位在左侧，输入框留出左内边距。 */
+  .field { position: relative; display: block; }
+  .field > svg.i {
+    position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); pointer-events: none;
+  }
+  .field > input { padding-left: 28px; }
+  button.btn { display: inline-flex; align-items: center; gap: 6px; }
+  button.btn svg.i { width: 13px; height: 13px; }
+  button.btn[disabled] { opacity: .45; cursor: default; }
+  button.btn[disabled]:hover { border-color: var(--line); }
+  /* 危险操作的面板内二次确认：按钮变为“确认执行？”的高亮态。 */
+  button.btn.armed { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+  button.btn.armed:hover { border-color: var(--danger); }
+
+  /* ---- 左侧导航搜索 ---- */
+  nav .nav-search { padding: 0 12px 10px; }
+  nav .nav-search .field > input { font-size: 12px; }
+  nav .nav-empty { padding: 4px 16px 8px; color: var(--muted); font-size: 12px; }
+  /* 搜索框内的小图标按钮：绝对定位在右侧，不参与输入框布局。 */
+  .field > button.icon-only {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    padding: 2px 4px; border: 0; background: none; color: var(--muted);
+  }
+  .field > button.icon-only:hover { color: var(--text); border-color: transparent; }
+  nav button { display: flex; align-items: center; gap: 8px; }
+
+  /* ---- 热键编辑 ---- */
+  .hk-err { color: var(--danger); font-size: 12px; }
+  .hk-err:empty { display: none; }
+  .badge.warn { color: #f5a524; border-color: #f5a524; }
+
+  /* ---- selfcontext 隐私常驻告知块（非弹窗，仅该模块显示） ---- */
+  .privacy { border-left: 3px solid #f5a524; }
+  .privacy-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .privacy-head svg.i { width: 13px; height: 13px; color: #f5a524; }
+  .privacy-body { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .privacy-body strong { color: var(--text); font-weight: 600; }
+
+  /* ---- repair 等分组操作的折叠分组头 ---- */
+  .card.sub.group { margin-top: 12px; border-left: 3px solid var(--line); }
+  .group-head {
+    display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
+    cursor: pointer; user-select: none; outline: none;
+  }
+  .group-head svg.i { transition: transform .15s; color: var(--muted); }
+  .group-head.collapsed svg.i { transform: rotate(-90deg); }
+  .group-head:focus-visible { border-radius: 4px; box-shadow: 0 0 0 2px var(--accent); }
+  .group-name { font-size: 13px; font-weight: 600; flex: 1; }
+  .group-count { flex: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PCMannager 首选项</h1>
+  <span class="spacer"></span>
+  <span class="version" id="version"></span>
+</header>
+<div id="caps"></div>
+<main>
+  <nav id="nav"><div class="nav-search"></div><div id="nav-list"></div></nav>
+  <section id="content"></section>
+</main>
+<div id="toast"></div>
+<script>
+const state = {
+  app: null, modules: [], caps: null, version: "", page: "app",
+  navQuery: "",      // 左侧导航搜索词（纯前端过滤）
+  actionQuery: "",   // 模块页 Actions 过滤词（repair 有 ~60 个工具）
+};
+
+// ---------------------------------------------------------------------------
+// 图标：项目禁止 emoji，界面图标一律为内联 SVG（几何图形，无外部依赖）。
+// 通过 icon(name, cls) 生成 <svg> 片段，插到导航项与按钮里。
+// ---------------------------------------------------------------------------
+const ICONS = {
+  // 齿轮：应用设置
+  app: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  // 九宫格：模块
+  module: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  // 三行文本：事件日志
+  log: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/>',
+  // 放大镜：搜索
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+  // 对钩：保存/确认
+  check: '<path d="M4 12.5l5 5L20 6.5"/>',
+  // 圆圈斜杠：清除/解绑
+  clear: '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>',
+  // 右向折角：分组折叠/展开（折叠时整体旋转 -90° 指向右）
+  chevron: '<path d="M6 9l6 6 6-6"/>',
+  // 三角警示：危险操作
+  warn: '<path d="M12 3.5L2.5 20h19z"/><path d="M12 9.5v5"/><path d="M12 17.5h.01"/>',
+  // 键盘：热键
+  keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01"/><path d="M10 10h.01"/><path d="M14 10h.01"/><path d="M18 10h.01"/><path d="M8 14h8"/>',
+  // 向下箭头：安装类操作
+  install: '<path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 21h16"/>',
+  // 闪电：普通操作
+  bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+  // 外开窗：打开模块界面
+  open: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/>',
+  // 磁盘：保存
+  save: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3"/><path d="M8 14h8"/>',
+};
+
+// icon returns an inline <svg> markup string; unknown names fall back to a dot.
+function icon(name, cls) {
+  const body = ICONS[name] || '<circle cx="12" cy="12" r="2"/>';
+  return '<svg class="i' + (cls ? " " + cls : "") + '" viewBox="0 0 24 24" aria-hidden="true">' + body + '</svg>';
+}
+
+// iconEl returns the same icon as a detached element (for insertion into nodes).
+function iconEl(name, cls) { return el(icon(name, cls)); }
+
+// iconForAction picks a button glyph from the action's presentation kind.
+function iconForAction(a) {
+  if (a.kind === "danger") return "warn";
+  if (a.kind === "install") return "install";
+  if (a.kind === "open") return "open";
+  return "bolt";
+}
+
+function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstElementChild; }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ""; }, 2600);
+}
+
+// Transport layer: the same panel runs in two modes.
+//
+//   - "http":  served by internal/server, opened in a browser. Uses fetch +
+//     EventSource against the local REST API.
+//   - "wails": served inside the native window (Windows/WebView2) by
+//     internal/wailsapp. Calls Go methods through window.go.wailsapp.API.*
+//     and receives bus events through runtime.EventsOn.
+//
+// Both paths expose the SAME function surface (call/subscribe), so every
+// renderer below is transport-agnostic and there is only one panel to maintain.
+const transport = (function () {
+  // Wails injects window.go.<package>.<Struct> once bindings are set up.
+  function wailsAPI() {
+    try { return window.go && window.go.wailsapp && window.go.wailsapp.API; }
+    catch (e) { return null; }
+  }
+
+  const isWails = !!wailsAPI();
+  let subscribed = false;
+
+  // call maps a logical API request onto whichever backend is present.
+  async function call(op, arg1, arg2, arg3) {
+    if (!isWails) {
+      switch (op) {
+        case "state":   return await api("/api/state", "GET");
+        case "app":     return await api("/api/app", "PATCH", arg1);
+        case "modules": return await api("/api/modules", "GET");
+        case "module":  return await api("/api/modules/" + encodeURIComponent(arg1), "GET");
+        case "patch":   return await api("/api/modules/" + encodeURIComponent(arg1), "PATCH", arg2);
+        case "action":  return await api("/api/modules/" + encodeURIComponent(arg1) + "/actions/" + encodeURIComponent(arg2), "POST", arg3 || {});
+        case "hotkey":  return await api("/api/modules/" + encodeURIComponent(arg1) + "/hotkey", "POST", {});
+        case "ui":      return await api("/api/modules/" + encodeURIComponent(arg1) + "/ui", "POST", {});
+        case "validate": {
+          const v = await api("/api/hotkey/validate", "POST", { hotkey: arg1 });
+          // Normalize the HTTP shape ({ok, error}) to the binding's string form.
+          return v && v.ok ? "" : ((v && v.error) || "热键无效");
+        }
+      }
+      throw new Error("未知的面板操作: " + op);
+    }
+
+    const A = wailsAPI();
+    switch (op) {
+      case "state":   return await A.State();
+      case "app":     return await A.PatchAppConfig(arg1);
+      case "modules": return await A.Modules();
+      case "module":  return await A.Module(arg1);
+      case "patch":   return await A.PatchModule(arg1, arg2);
+      case "action":  return await A.RunAction(arg1, arg2, arg3 || {});
+      case "hotkey":  return await A.RunHotkey(arg1);
+      case "ui":      return await A.OpenUI(arg1);
+      case "validate": return await A.ValidateHotkey(arg1);
+    }
+    throw new Error("未知的面板操作: " + op);
+  }
+
+  // subscribe delivers live module events to onEvent.
+  function subscribe(onEvent) {
+    if (!isWails) {
+      const es = new EventSource("/api/events");
+      es.onmessage = (e) => { try { onEvent(JSON.parse(e.data)); } catch (err) { /* 忽略坏帧 */ } };
+      es.onerror = () => { /* EventSource 自行重连 */ };
+      return;
+    }
+    if (subscribed) return;
+    subscribed = true;
+    // EventBusName is "pcm:event" (see internal/wailsapp/binding.go).
+    window.runtime.EventsOn("pcm:event", (ev) => { onEvent(ev); });
+  }
+
+  return { isWails: isWails, call: call, subscribe: subscribe };
+})();
+
+async function api(path, method, body) {
+  const res = await fetch(path, {
+    method: method || "GET",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  if (!res.ok) throw new Error((data && data.error) || ("请求失败 " + res.status));
+  return data;
+}
+
+async function load() {
+  const s = await transport.call("state");
+  state.app = s.app; state.modules = s.modules || []; state.caps = s.capabilities;
+  state.version = s.version || "";
+  document.getElementById("version").textContent = "v" + state.version;
+  renderCaps(); renderNav(); renderPage();
+}
+
+function renderCaps() {
+  const c = state.caps || {};
+  const names = { native: "原生窗口", taskbar_embedding: "任务栏嵌入", tray_icon: "系统托盘", toasts: "通知", elevation: "提权", hotkeys: "全局热键" };
+  const parts = Object.keys(names).map(k => names[k] + ": " + (c[k] ? "支持" : "不支持"));
+  document.getElementById("caps").textContent = "当前平台能力 — " + parts.join(" · ");
+}
+
+// navItems builds the full navigation list (app + modules + log) with an icon
+// and a searchable text blob (name + id + description).
+function navItems() {
+  const items = [{ id: "app", name: "应用设置", icon: "app", text: "应用设置 app" }];
+  state.modules.forEach(m => {
+    items.push({
+      id: m.id, name: m.name || m.id, icon: "module",
+      text: (m.name || "") + " " + m.id + " " + (m.description || ""),
+      // 模块最近出错：不进详情页也能在导航上发现异常。
+      error: String(m.last_error || ""),
+    });
+  });
+  items.push({ id: "log", name: "事件日志", icon: "log", text: "事件日志 log" });
+  return items;
+}
+
+// matchesQuery is the shared case-insensitive substring filter used by the
+// navigation search and the action filter (both are pure front-end filters).
+function matchesQuery(haystack, q) {
+  return String(haystack || "").toLowerCase().indexOf(q) !== -1;
+}
+
+function renderNav() {
+  renderNavSearch();
+  renderNavList();
+}
+
+// renderNavSearch builds the search field once and keeps it mounted, so typing
+// only re-renders the list below and never steals input focus.
+function renderNavSearch() {
+  const box = document.querySelector("#nav .nav-search");
+  if (box.firstChild) { box.querySelector("#nav-q").value = state.navQuery; return; }
+  box.appendChild(el('<label class="field">' + icon("search") +
+    '<input type="text" id="nav-q" placeholder="搜索模块…" autocomplete="off"></label>'));
+  const q = box.querySelector("#nav-q");
+  q.value = state.navQuery;
+  q.oninput = () => { state.navQuery = q.value; renderNavList(); };
+  // 清空按钮嵌在输入框内（右侧），仅在有搜索词时出现。
+  const clear = el('<button class="btn icon-only" id="nav-q-clear" title="清空搜索">' + icon("clear") + '</button>');
+  clear.onclick = () => { state.navQuery = ""; q.value = ""; q.focus(); renderNavList(); };
+  box.querySelector(".field").appendChild(clear);
+}
+
+// renderNavList draws the filtered navigation entries (pure front-end filter:
+// matches name, module id and description).
+function renderNavList() {
+  const list = document.getElementById("nav-list");
+  list.innerHTML = "";
+
+  const needle = state.navQuery.trim().toLowerCase();
+  const items = navItems().filter(it => !needle || matchesQuery(it.text, needle));
+
+  items.forEach(it => {
+    const b = el('<button></button>');
+    b.appendChild(iconEl(it.icon));
+    b.appendChild(document.createTextNode(it.name));
+    // “错误”标记：红色徽标 + 警示图标，鼠标悬停给出完整原因摘要。
+    if (it.error) {
+      const tag = el('<span class="badge err">' + icon("warn") + '错误</span>');
+      tag.title = it.error;
+      b.appendChild(tag);
+    }
+    if (state.page === it.id) b.className = "active";
+    b.onclick = () => {
+      // 切换模块时重置该模块的操作筛选词，避免上一个模块的词残留。
+      state.actionQuery = "";
+      state.page = it.id; renderNav(); renderPage();
+    };
+    list.appendChild(b);
+  });
+
+  if (!items.length) list.appendChild(el('<div class="nav-empty">没有匹配的模块</div>'));
+
+  const clr = document.getElementById("nav-q-clear");
+  if (clr) clr.style.visibility = state.navQuery ? "visible" : "hidden";
+}
+
+function mod(id) { return state.modules.find(m => m.id === id); }
+
+function renderPage() {
+  const c = document.getElementById("content");
+  c.innerHTML = "";
+  if (state.page === "app") return renderAppPage(c);
+  if (state.page === "log") return renderLogPage(c);
+  const m = mod(state.page);
+  if (m) return renderModulePage(c, m);
+  c.appendChild(el('<div class="card"><h2>未找到模块</h2></div>'));
+}
+
+function renderAppPage(root) {
+  const a = state.app || {};
+  const card = el('<div class="card"><h2>应用设置</h2><div class="desc">全局行为与面板选项。</div></div>');
+
+  card.appendChild(el('<div class="row"><label>开机自启</label><input type="checkbox" id="f-autostart"></div>'));
+  card.appendChild(el('<div class="row"><label>面板用内置窗口打开</label><input type="checkbox" id="f-webview"></div>'));
+  card.appendChild(el('<div class="row"><label>主题</label><div class="grow"><select id="f-theme"><option value="auto">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></div></div>'));
+  card.appendChild(el('<div class="row"><label>日志级别</label><div class="grow"><select id="f-level"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></div></div>'));
+  card.appendChild(el('<div class="row"><label>面板端口</label><div class="grow"><input type="number" id="f-port"></div></div>'));
+  card.appendChild(el('<div class="row"><label>数据目录</label><div class="grow"><input type="text" id="f-dir"></div></div>'));
+  if (a.effective_data_dir) {
+    card.appendChild(el('<div class="row"><label></label><span class="hint">实际生效目录：' + a.effective_data_dir + '</span></div>'));
+  }
+  card.appendChild(el('<div class="row"><label></label><button class="btn primary" id="f-save">' + icon("save") + '保存</button></div>'));
+
+  card.querySelector("#f-autostart").checked = !!a.autostart;
+  card.querySelector("#f-webview").checked = !!a.open_in_webview;
+  card.querySelector("#f-theme").value = a.theme || "auto";
+  card.querySelector("#f-level").value = a.log_level || "info";
+  card.querySelector("#f-port").value = a.server_port || 0;
+  card.querySelector("#f-dir").value = a.data_dir || "";
+
+  card.querySelector("#f-save").onclick = async () => {
+    const port = parseInt(card.querySelector("#f-port").value, 10) || 0;
+    try {
+      const patch = {
+        autostart: card.querySelector("#f-autostart").checked,
+        open_in_webview: card.querySelector("#f-webview").checked,
+        theme: card.querySelector("#f-theme").value,
+        log_level: card.querySelector("#f-level").value,
+        server_port: port,
+        data_dir: card.querySelector("#f-dir").value,
+      };
+      state.app = await transport.call("app", patch);
+      toast("应用设置已保存");
+      renderPage();
+    } catch (e) { toast(e.message, true); }
+  };
+  root.appendChild(card);
+}
+
+function renderModulePage(root, m) {
+  const card = el('<div class="card"></div>');
+  card.appendChild(el('<h2>' + esc(m.name || m.id) + '</h2>'));
+  card.appendChild(el('<div class="desc">' + esc(m.description || "") + '</div>'));
+
+  // 最近错误常驻在模块页顶部：模块没跑起来时，用户不必翻事件日志就能看到原因。
+  const lastError = String(m.last_error || "");
+  if (lastError) {
+    const box = el(
+      '<div class="alert">' + icon("warn") +
+        '<div class="alert-body">' +
+          '<strong>最近错误：' + esc(lastError) + '</strong>' +
+          '<div class="alert-hint">该模块未能按预期启动或运行，详情见左侧“事件日志”。</div>' +
+        '</div>' +
+      '</div>');
+    card.appendChild(box);
+  }
+
+  const status = el('<div class="row"><label>状态</label><span class="grow"></span></div>');
+  status.querySelector(".grow").innerHTML =
+    '<span class="badge' + (m.running ? " on" : "") + '">' + (m.running ? "运行中" : "已停止") + '</span> ' +
+    (lastError ? '<span class="badge err">' + icon("warn") + '错误</span>' : "") +
+    '<span class="badge">' + (m.enabled ? "已启用" : "已禁用") + '</span>' +
+    (m.hotkey ? ' <span class="badge">' + esc(m.hotkey) + '</span>' : "");
+  card.appendChild(status);
+
+  // selfcontext 默认禁用（隐私设计）。在其“启用模块”开关上方常驻一块说明，
+  // 告知启用后会采集哪些数据、如何停止；不做成一次性 toast/弹窗。
+  if (m.id === "selfcontext") {
+    const pb = el(
+      '<div class="card privacy">' +
+        '<div class="privacy-head">' + icon("warn") + '<strong>隐私说明</strong></div>' +
+        '<div class="privacy-body">' +
+          '启用本模块后，将<strong>周期性记录您当前活动窗口的标题与进程名</strong>，' +
+          '用于上下文回顾。该采集仅在模块运行时进行；<strong>关闭后采集立即停止，' +
+          '且不会保留关闭之后产生的任何记录</strong>。' +
+        '</div>' +
+      '</div>');
+    card.appendChild(pb);
+  }
+
+  const sw = el('<div class="row"><label>启用模块</label><input type="checkbox" id="m-enabled"></div>');
+  sw.querySelector("#m-enabled").checked = !!m.enabled;
+  sw.querySelector("#m-enabled").onchange = async (e) => {
+    try { await patchModule(m.id, { enabled: e.target.checked }); toast("已保存"); await reload(); }
+    catch (err) { toast(err.message, true); renderPage(); }
+  };
+  card.appendChild(sw);
+
+  // ---- 热键编辑 ----
+  // 状态徽标（已绑定/未绑定）+ 输入框 + 保存/解绑按钮 + 行内错误提示。
+  // 校验仍统一走 transport.call("validate", value)：返回 "" 表示合法，非空为原因。
+  const hk = el('<div class="row"><label>全局热键</label><div class="grow">' +
+    '<label class="field">' + icon("keyboard") +
+    '<input type="text" id="m-hotkey" placeholder="例如 ctrl+alt+f1" autocomplete="off">' +
+    '</label></div>' +
+    '<span id="m-hkstate"></span>' +
+    '<button class="btn" id="m-hksave">' + icon("check") + '保存</button>' +
+    '<button class="btn" id="m-hkclear" title="清除热键绑定（保存为空）">' + icon("clear") + '解绑</button></div>');
+  const hkInput = hk.querySelector("#m-hotkey");
+  hkInput.value = m.hotkey || "";
+  // 错误提示放在输入框下方（同一列），保存失败时原地显示原因。
+  hk.querySelector(".grow").appendChild(el('<div class="hk-err" id="m-hkerr"></div>'));
+  const hkErr = hk.querySelector("#m-hkerr");
+
+  // 绑定状态徽标：反映模块当前生效的热键，而不是输入框里的草稿。
+  function paintBadge() {
+    const bound = !!(m.hotkey && String(m.hotkey).trim());
+    hk.querySelector("#m-hkstate").innerHTML = bound
+      ? '<span class="badge on">' + esc(m.hotkey) + '</span>'
+      : '<span class="badge warn">未绑定</span>';
+    hk.querySelector("#m-hkclear").disabled = !bound && !hkInput.value.trim();
+  }
+  function paintErr(text) {
+    hkErr.textContent = text || "";
+    hkInput.style.borderColor = text ? "var(--danger)" : "";
+  }
+  paintBadge(); paintErr("");
+
+  // saveHotkey 校验并持久化；value 为 "" 即解绑（空热键本身合法）。
+  async function saveHotkey(value, okMsg) {
+    try {
+      const v = await transport.call("validate", value);
+      if (v) { paintErr(v || "热键无效"); return; }
+      await patchModule(m.id, { hotkey: value });
+      m.hotkey = value;
+      paintErr("");
+      toast(okMsg);
+      await reload();
+    } catch (err) {
+      // 后端原因（如热键已被占用）同时显示在输入框旁与 toast。
+      paintErr(err.message);
+      toast(err.message, true);
+    }
+  }
+
+  hkInput.oninput = () => { paintErr(""); paintBadge(); };
+  hk.querySelector("#m-hksave").onclick = () => saveHotkey(hkInput.value.trim(), "热键已保存");
+  hk.querySelector("#m-hkclear").onclick = () => {
+    if (!m.hotkey && !hkInput.value.trim()) return;
+    hkInput.value = "";
+    saveHotkey("", "已解除热键绑定");
+  };
+  card.appendChild(hk);
+  card.appendChild(el('<div class="hint">语法：mod+mod+key，例如 ctrl+alt+f1；留空表示不绑定。</div>'));
+
+  (m.options || []).forEach(o => card.appendChild(renderOption(m, o)));
+
+  if ((m.actions || []).length) {
+    // Group actions by their declared Group so toolboxes (e.g. repair with
+    // ~60 entries) render as categorized sections instead of one flat wall.
+    const groups = {};
+    const order = [];
+    m.actions.forEach(a => {
+      const g = a.group || "其它";
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(a);
+    });
+
+    // Total count is shown up front so the user knows the filter is hiding
+    // entries rather than the toolbox being empty.
+    const total = m.actions.length;
+    const head = el('<div class="row"><label>操作</label><div class="grow">' +
+      '<label class="field">' + icon("search") +
+      '<input type="text" id="a-q" placeholder="筛选操作（' + total + ' 项）…" autocomplete="off">' +
+      '</label></div><span class="hint" id="a-count"></span></div>');
+    card.appendChild(head);
+
+    const body = el('<div id="a-body"></div>');
+    card.appendChild(body);
+
+    // 计数与筛选框保持同一个节点引用：body 尚未挂载到 document，
+    // 此处不能用 getElementById 查找刚创建的元素。
+    const counter = head.querySelector("#a-count");
+
+    // 折叠状态按 “模块::组” 记忆，跨筛选重绘保持在位；默认全部展开。
+    const collapsed = new Set();
+    const drawActions = () => {
+      const needle = state.actionQuery.trim().toLowerCase();
+      const searching = !!needle;
+      let shown = 0;
+      body.innerHTML = "";
+      order.forEach(g => {
+        const all = groups[g] || [];
+        if (!all.length) return; // 空 group 不渲染
+        const list = all.filter(a =>
+          !needle || matchesQuery((a.label || "") + " " + a.id + " " + (a.description || "") + " " + g, needle));
+        if (!list.length) return; // 该组无匹配则整组隐藏（搜索时）
+        shown += list.length;
+        // 搜索时强制展开，避免折叠把跨组筛选结果藏起来；非搜索时才尊重折叠态。
+        const isCollapsed = collapsed.has(g) && !searching;
+        const gcard = el('<div class="card sub group"></div>');
+        const ghead = el('<div class="group-head" tabindex="0" role="button" aria-expanded="' + (!isCollapsed) + '">' +
+          icon("chevron") +
+          '<span class="group-name">' + esc(g) + '</span>' +
+          '<span class="badge group-count"></span>' +
+        '</div>');
+        if (isCollapsed) ghead.classList.add("collapsed");
+        const countTxt = searching ? (list.length + " / " + all.length) : String(all.length);
+        ghead.querySelector(".group-count").textContent = countTxt + " 项";
+        const wrap = el('<div class="actions"></div>');
+        if (isCollapsed) wrap.style.display = "none";
+        ghead.onclick = () => {
+          if (searching) return; // 过滤中禁止折叠，折叠与筛选互不冲突
+          if (collapsed.has(g)) collapsed.delete(g); else collapsed.add(g);
+          drawActions();
+        };
+        ghead.onkeydown = (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ghead.onclick(); }
+        };
+        gcard.appendChild(ghead);
+        list.forEach(a => {
+          const b = el('<button class="btn' + (a.kind === "danger" ? " danger" : "") +
+            (a.kind === "install" ? " install" : "") + '">' + icon(iconForAction(a)) +
+            esc(a.label || a.id) + '</button>');
+          b.title = a.description || "";
+          b.onclick = () => runAction(m, a, b);
+          wrap.appendChild(b);
+        });
+        gcard.appendChild(wrap);
+        body.appendChild(gcard);
+      });
+      if (!shown) body.appendChild(el('<div class="nav-empty">没有匹配的操作</div>'));
+      counter.textContent = needle ? (shown + " / " + total + " 项") : (total + " 项");
+    };
+
+    const q = head.querySelector("#a-q");
+    q.value = state.actionQuery;
+    // 纯前端过滤：只重绘操作区，输入框保持挂载，焦点与光标不丢失。
+    q.oninput = () => { state.actionQuery = q.value; drawActions(); };
+    const aclear = el('<button class="btn icon-only" id="a-q-clear" title="清空筛选">' + icon("clear") + '</button>');
+    aclear.onclick = () => { state.actionQuery = ""; q.value = ""; q.focus(); drawActions(); };
+    head.querySelector(".field").appendChild(aclear);
+    drawActions();
+  }
+
+  const ui = el('<div class="row"><label>模块界面</label><button class="btn" id="m-ui">' + icon("open") + '打开窗口</button></div>');
+  ui.querySelector("#m-ui").onclick = async () => {
+    try { await transport.call("ui", m.id); }
+    catch (err) { toast(err.message, true); }
+  };
+  card.appendChild(ui);
+
+  if (m.state && Object.keys(m.state).length) {
+    root.appendChild(card);
+    root.appendChild(renderStateCard(m));
+    return;
+  }
+  root.appendChild(card);
+}
+
+// 运行状态的键名中文标签（模块 State() 里的键是英文，直接显示不便阅读）。
+const STATE_LABELS = {
+  running: "运行中", visible: "可见", paused: "已暂停", native: "原生实现",
+  capturing: "正在捕获", panel: "面板已打开", interval_ms: "刷新间隔（毫秒）",
+  cpu_percent: "CPU 占用（%）", mem_percent: "内存占用（%）", disk_percent: "磁盘占用（%）",
+  upload_rate: "上传速率", download_rate: "下载速率", uptime: "开机时长",
+  window: "当前窗口", count: "条目数", last: "最近一条", last_kind: "最近类型",
+  last_title: "最近标题", last_saved: "最近保存", saved_count: "已保存数量",
+  save_dir: "保存目录", format: "图片格式", max_history: "历史上限",
+  max_items: "最大条目", store_images: "保存图片", paste_on_copy: "复制后粘贴",
+  retention_days: "保留天数", capture_mode: "采集模式", pause_on_lock: "锁屏时暂停",
+  source: "修复来源", options: "已保存选项",
+};
+
+// formatScalar renders one scalar state value in a human readable form.
+function formatScalar(v) {
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "boolean") return v ? "是" : "否";
+  if (typeof v === "number") return String(v);
+  if (typeof v === "string") return v === "" ? "（空）" : v;
+  return JSON.stringify(v);
+}
+
+// renderStateValue renders a value: scalars inline, objects/arrays inside a
+// collapsed <details> so the list stays scannable but nothing is hidden.
+function renderStateValue(v) {
+  if (v === null || v === undefined || typeof v !== "object") {
+    return el('<span class="state-v">' + esc(formatScalar(v)) + '</span>');
+  }
+  const flat = Array.isArray(v) && v.every(x => x === null || typeof x !== "object");
+  if (flat && !v.length) return el('<span class="state-v">（空）</span>');
+  // 一维标量数组仍按行内展示，只有嵌套结构才折叠，避免“值”列全是折叠框。
+  if (flat) return el('<span class="state-v">' + esc(v.map(formatScalar).join("、")) + '</span>');
+  const d = el('<details class="state-obj"><summary>' + icon("chevron") + '展开内容</summary></details>');
+  const pre = el('<pre></pre>');
+  pre.textContent = JSON.stringify(v, null, 2);
+  d.appendChild(pre);
+  return d;
+}
+
+// renderStateCard replaces the old raw JSON dump with a "键：值" list plus an
+// opt-in raw view (collapsed by default) for troubleshooting.
+function renderStateCard(m) {
+  const keys = Object.keys(m.state);
+  const st = el('<div class="card"><h2>运行状态</h2>' +
+    '<div class="desc">模块自报的运行时信息。</div><div class="sub-list"></div></div>');
+  const list = st.querySelector(".sub-list");
+
+  keys.forEach(k => {
+    const row = el('<div class="row"><label>' + esc(STATE_LABELS[k] || k) + '</label><div class="grow"></div></div>');
+    row.querySelector(".grow").appendChild(renderStateValue(m.state[k]));
+    list.appendChild(row);
+  });
+
+  // 原始视图入口：默认折叠，排障时展开即可拿到完整 JSON。
+  const raw = el('<div class="raw"></div>');
+  const det = el('<details><summary>' + icon("chevron") + '查看原始数据</summary></details>');
+  const pre = el('<pre></pre>');
+  pre.textContent = JSON.stringify(m.state, null, 2);
+  det.appendChild(pre);
+  raw.appendChild(det);
+  list.appendChild(raw);
+  return st;
+}
+
+// ARM_TIMEOUT is how long a danger button stays in its "确认执行？" state.
+const ARM_TIMEOUT = 4000;
+
+// runAction dispatches one module action.
+//
+// Danger actions no longer use window.confirm (native dialogs feel hostile
+// inside the Wails window): the first click arms the button in place — it
+// turns red and reads "确认执行？" — and only a second click runs it. The arm
+// auto-expires, and any other armed button is disarmed, so exactly one action
+// can ever be pending. Non-danger actions run immediately, as before.
+function runAction(m, a, btn) {
+  const label = a.label || a.id;
+  if (btn.dataset.armed === "1") {
+    clearTimeout(Number(btn.dataset.armTimer));
+    disarmAll();
+    fireAction(m, a, btn, label);
+    return;
+  }
+  if (!a.confirm && a.kind !== "danger") { fireAction(m, a, btn, label); return; }
+
+  disarmAll();
+  const original = btn.innerHTML;
+  btn.dataset.armed = "1";
+  btn.dataset.label = original;
+  btn.classList.add("armed");
+  btn.innerHTML = icon("warn") + '确认执行？';
+  btn.dataset.armTimer = String(setTimeout(() => {
+    if (btn.dataset.armed !== "1") return;
+    btn.dataset.armed = "0";
+    btn.classList.remove("armed");
+    btn.innerHTML = original;
+  }, ARM_TIMEOUT));
+}
+
+// disarmAll resets every armed button back to its original caption.
+function disarmAll() {
+  const armed = document.querySelectorAll('button.btn[data-armed="1"]');
+  for (const b of armed) {
+    clearTimeout(Number(b.dataset.armTimer));
+    b.dataset.armed = "0";
+    b.classList.remove("armed");
+    b.innerHTML = b.dataset.label || b.innerHTML;
+  }
+}
+
+async function fireAction(m, a, btn, label) {
+  const params = {};
+  for (const p of (a.params || [])) {
+    const v = prompt(p.label || p.key, p.default || "");
+    if (v === null) return;
+    params[p.key] = v;
+  }
+  btn.disabled = true;
+  try {
+    await transport.call("action", m.id, a.id, params);
+    toast("已触发：" + label);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderOption(m, o) {
+  const current = (m.state && m.state.options && m.state.options[o.key] !== undefined)
+    ? m.state.options[o.key] : o.default;
+  const row = el('<div class="row"><label>' + esc(o.label || o.key) + '</label><div class="grow"></div></div>');
+  const grow = row.querySelector(".grow");
+  let input;
+  if (o.kind === "bool") {
+    input = el('<input type="checkbox">');
+    input.checked = !!current;
+    input.onchange = () => saveOption(m, o.key, input.checked);
+  } else if (o.kind === "int") {
+    input = el('<input type="number">');
+    input.value = current == null ? "" : current;
+    if (o.min) input.min = o.min;
+    if (o.max) input.max = o.max;
+    if (o.step) input.step = o.step;
+    input.onchange = () => saveOption(m, o.key, parseInt(input.value, 10));
+  } else if (o.kind === "select") {
+    input = el('<select></select>');
+    (o.choices || []).forEach(c => {
+      const opt = el('<option></option>');
+      opt.value = c.value; opt.textContent = c.label || c.value;
+      input.appendChild(opt);
+    });
+    input.value = current == null ? "" : String(current);
+    input.onchange = () => saveOption(m, o.key, input.value);
+  } else if (o.kind === "color") {
+    input = el('<input type="color">');
+    input.value = current || "#4f8cff";
+    input.onchange = () => saveOption(m, o.key, input.value);
+  } else {
+    input = el('<input type="text">');
+    input.value = current == null ? "" : String(current);
+    input.onchange = () => saveOption(m, o.key, input.value);
+  }
+  grow.appendChild(input);
+  if (o.help) {
+    const hint = el('<div class="hint">' + esc(o.help) + '</div>');
+    grow.appendChild(hint);
+  }
+  return row;
+}
+
+async function saveOption(m, key, value) {
+  const opts = {}; opts[key] = value;
+  // 找到对应 option 描述，若其 restart 标记为 true，则保存后提醒需重启生效。
+  // 字段来自后端 core.Option.Restart（provider.go 透传的 ModuleInfo.Options）。
+  const o = (m.options || []).find(x => x.key === key);
+  const needRestart = !!(o && o.restart);
+  try {
+    await patchModule(m.id, { options: opts });
+    toast("已保存：" + key + (needRestart ? "（需重启模块/应用后生效）" : ""));
+  }
+  catch (e) { toast(e.message, true); }
+}
+
+async function patchModule(id, patch) {
+  await transport.call("patch", id, patch);
+}
+
+async function reload() {
+  const s = await transport.call("state");
+  state.modules = s.modules || [];
+  renderNav(); renderPage();
+}
+
+function renderLogPage(root) {
+  const card = el('<div class="card"><h2>事件日志</h2><div class="desc">模块通过事件总线推送的实时消息。</div><div id="log"></div></div>');
+  root.appendChild(card);
+}
+
+function pushLog(ev) {
+  const box = document.getElementById("log");
+  if (!box) return;
+  const d = document.createElement("div");
+  const level = ev.level || ev.type || "info";
+  d.className = "lev-" + level;
+  d.textContent = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] " +
+    (ev.module ? ev.module + " " : "") + (ev.message || JSON.stringify(ev.data || {}));
+  box.insertBefore(d, box.firstChild);
+  while (box.childNodes.length > 300) box.removeChild(box.lastChild);
+}
+
+function connectEvents() {
+  transport.subscribe(pushLog);
+}
+
+load().catch(e => toast("加载失败: " + e.message, true));
+connectEvents();
+// 轮询兜底：仅 HTTP 模式需要（Wails 走事件推送，无需轮询）。
+if (!transport.isWails) {
+  setInterval(() => {
+    transport.call("state").then(s => { state.modules = s.modules || []; }).catch(() => {});
+  }, 5000);
+}
+</script>
+</body>
+</html>

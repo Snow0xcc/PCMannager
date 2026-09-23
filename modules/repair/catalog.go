@@ -180,9 +180,9 @@ var catalog = []Entry{
 	{ID: "install_python", Label: "Python 3", Page: pageDev, Group: "运行环境",
 		WingetID: "Python.Python.3.12", ChocoID: "python", Install: true},
 	{ID: "install_dotnet_runtime", Label: ".NET Runtime", Page: pageDev, Group: "运行环境",
-		WingetID: "Microsoft.DotNet.Runtime", ChocoID: "dotnet-runtime", Install: true},
+		WingetID: "Microsoft.DotNet.Runtime", ChocoID: "dotnet-runtime", Install: true, Admin: true},
 	{ID: "install_dotnet_sdk", Label: ".NET SDK", Page: pageDev, Group: "运行环境",
-		WingetID: "Microsoft.DotNet.SDK", ChocoID: "dotnet-sdk", Install: true},
+		WingetID: "Microsoft.DotNet.SDK", ChocoID: "dotnet-sdk", Install: true, Admin: true},
 	{ID: "install_openjdk", Label: "OpenJDK (Temurin)", Page: pageDev, Group: "运行环境",
 		WingetID: "EclipseAdoptium.Temurin.17", ChocoID: "temurin17", Install: true},
 

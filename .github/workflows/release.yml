@@ -84,7 +84,9 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          go build -trimpath -ldflags="-s -w" -o "${ARTIFACT}" .
+          # 统一走 scripts/build.sh，避免 CI 与本地参数漂移。
+          # 该脚本对 Windows 追加 -H windowsgui，否则启动会弹出黑色控制台窗口。
+          bash scripts/build.sh "${GOOS}" "${GOARCH}" "${ARTIFACT}"
           ls -l "${ARTIFACT}"
 
       - name: upload artifact

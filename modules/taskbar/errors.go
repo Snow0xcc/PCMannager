@@ -8,6 +8,9 @@ var (
 	errFeatureNil = errors.New("taskbar: 模块未初始化")
 	// errInterval rejects a non-positive sampling interval.
 	errInterval = errors.New("taskbar: interval 需要正整数（毫秒）")
+	// errNoTaskbar is reported when Shell_TrayWnd cannot be found, so the
+	// widget falls back to a floating top-level window instead of failing.
+	errNoTaskbar = errors.New("taskbar: 未找到任务栏窗口")
 )
 
 // unknownOptionError is returned for options the module does not declare.

@@ -19,6 +19,14 @@ type actionRunner interface {
 	RunAction(id string, params map[string]string) error
 }
 
+// PanelProvider returns the panel data source for non-HTTP consumers.
+//
+// The native window (internal/wailsapp) needs the same data contract the HTTP
+// handlers use. Exposing it here — rather than letting wailsapp reach into the
+// app's internals — keeps one source of truth for panel data and preserves the
+// app -> server / app -> wailsapp dependency direction.
+func (a *App) PanelProvider() server.Provider { return panelProvider{a: a} }
+
 // panelProvider adapts *App to the server.Provider interface.
 //
 // It lives here rather than in internal/server so the dependency direction
@@ -117,13 +125,14 @@ func (p panelProvider) OpenUI(id string) error { return p.a.OpenUI(id) }
 func (p panelProvider) AppConfig() server.AppConfig {
 	c := p.a.Config().App()
 	return server.AppConfig{
-		Autostart:     c.Autostart,
-		Theme:         c.Theme,
-		LogLevel:      c.LogLevel,
-		DataDir:       c.DataDir,
-		ServerPort:    c.ServerPort,
-		OpenInWebview: c.OpenInWebview,
-		Language:      c.Language,
+		Autostart:        c.Autostart,
+		Theme:            c.Theme,
+		LogLevel:         c.LogLevel,
+		DataDir:          c.DataDir,
+		ServerPort:       c.ServerPort,
+		OpenInWebview:    c.OpenInWebview,
+		Language:         c.Language,
+		EffectiveDataDir: p.a.DataDir(),
 	}
 }
 

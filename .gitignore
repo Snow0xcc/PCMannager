@@ -6,5 +6,9 @@ bin/
 *.log
 *.tmp
 
+# 本地运行产物：root 包 config.yaml 是 app 落盘的用户配置副本
+# （正常位置是 %APPDATA%\GoBox/config.yaml，见 internal/paths）
+/config.yaml
+
 # 工具/编辑器产生的目录（非项目源码）
 .rustcode/

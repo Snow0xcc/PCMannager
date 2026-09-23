@@ -49,6 +49,23 @@ go vet ./...
 - [ ] **真实 Windows 验收**（承接阶段 A）：需在 Windows 机器上跑托盘启退循环、热键触发、
       Explorer 重启恢复、截图/剪贴板/任务栏嵌入实机验证。当前环境为 Linux，无法执行。
 
+## 真实 Windows 实机反馈（2026-09-24，v0.1.0-rc1 之后）
+
+用户提供了真实 Windows 运行日志，暴露出以下已修/待验项：
+
+- [x] **19. 启动弹出黑色控制台窗口**：Go 默认构建 console 子系统。新增
+      `scripts/build.sh` 统一构建参数（CI 与本地同源），对 Windows 追加 `-H windowsgui`；
+      `release.yml` 的 build 步骤改为调用该脚本。已验证产物为 `PE32+ executable (GUI)`。
+      **代价**：GUI 子系统下 stdout/stderr 不可见，排障需看日志文件或面板事件日志页。
+- [x] **20. taskbar 小组件创建失败**（`CreateWindowEx 失败: Cannot create a top-level child window`）：
+      `widget_windows.go` 用 `WS_CHILD` 却传 `parent=0`，Windows 必然拒绝。已改为以
+      `winui.FindTaskbar()` 的 `Shell_TrayWnd` 为父窗口；找不到任务栏时降级为
+      `WS_POPUP|WS_EX_TOPMOST` 悬浮窗（同时改 style，而非只换 parent），并报 `errNoTaskbar`。
+      **未验证**：需在真实 Windows 上确认小组件能嵌入任务栏显示。
+- [ ] **21. 热键被占用**（`RegisterHotKey 失败: Hot key is already registered`）：`F1` 与
+      `Ctrl+\`` 在用户机器上已被其它程序占用，属**真实环境冲突而非代码缺陷**——当前已按设计降级
+      （告警 + 面板/托盘仍可用）。待办：在面板热键编辑器里加"可用性检测"提示，并允许用户改绑。
+
 ## P1 — 待验证与收尾
 
 - [ ] **1. 实际跑一次 CI 发布**：推送测试 tag（如 `v0.0.1-rc1`）验证 `.github/workflows/release.yml` 全流程，
@@ -77,8 +94,17 @@ go vet ./...
       macOS 的 launchd 方案仍未实现（Linux 走 .desktop，Windows 走注册表）。
 - [ ] **7. 自动更新**：代码中**完全没有**。规划用 GitHub Releases API 比对版本 + `go-github-selfupdate` 类库，
       托盘菜单加"检查更新"入口。
-- [ ] **8. 首选项面板迁移到 Wails**：当前仍是 `lxn/walk` 原生对话框（仅 Windows）。
-      规划改为 Wails Web 前端（`frontend/`），复用 `internal/config.Manager/ModuleView` 与 `core.Bus` 的 SSE 通道。
+- [~] **8. 首选项面板迁移到 Wails**：**已按"并存"方案落地原生窗口骨架**（2026-09-24）。
+      新增 `internal/wailsapp`（`_windows.go`/`_other.go` 成对，Wails v2.10.2/WebView2），
+      Windows 启动时在独立 `LockOSThread` 线程开启原生窗口（托盘消息泵仍占 main，互不抢占）；
+      非 Windows 返回 `ErrUnsupported`，继续用 HTTP 面板。
+      **单一数据源**：面板前端从 `internal/server/web/` 迁到 `internal/panel/index.html`，
+      HTTP 与原生窗口共用同一文件；前端新增 `transport` 抽象，自动选择
+      `fetch+EventSource`（HTTP）或 `window.go.wailsapp.API` + `runtime.EventsOn`（Wails）；
+      二者共用 `server.Provider`（经 `App.PanelProvider()`），无重复业务逻辑。
+      `lxn/walk` 面板（preferences/repair）按约定**暂不动**，待原生窗口稳定后再替换。
+      **未验证**：真实 Windows 上 WebView2 窗口能否正常渲染与交互（需 WebView2 运行时）；
+      若运行时缺失会回退到浏览器面板。
       - [ ] 建 `frontend/` 后**必须**加 emoji 检查（正则 `[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]`）——
             客户端界面禁用 emoji，一律用 icon 资源替代。
 - [ ] **9. 托盘图标资源**：`defaultIcon()` 目前硬编码回退 shell 通用图标，无自定义图标文件、无配置项。

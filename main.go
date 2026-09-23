@@ -22,7 +22,11 @@ import (
 func main() {
 	// internal/app resolves the data directory, loads config.yaml, opens the
 	// log file and starts the hotkey router.
-	if dir := configDirEnv(); dir != "" {
+	if dir, warn := configDirEnv(); warn != "" {
+		// The logger is not up yet, so stderr is the only sink. A misconfigured
+		// override must be visible rather than silently degrading to default.
+		os.Stderr.WriteString(warn + "\n")
+	} else if dir != "" {
 		if err := os.Chdir(dir); err != nil {
 			os.Stderr.WriteString("PCMANNAGER_CONFIG 目录不可用: " + err.Error() + "\n")
 		}
@@ -65,6 +69,12 @@ func main() {
 		log.Warn("托盘图标不可用，改用首选项面板", "err", err)
 	}
 
+	// Native window (Wails/WebView2 on Windows) in addition to the HTTP panel.
+	// Both render the same embedded panel and the same provider data, so this
+	// is a presentation choice, not a second implementation. off Windows this
+	// is a no-op and the browser panel remains the control surface.
+	runNativeWindow(a, log.Warn)
+
 	log.Info("PCMannager 已启动", "config", a.Config().Path(), "data_dir", a.DataDir(), "panel", a.PanelURL())
 
 	// Termination signals must release the hotkeys, the log file and the
@@ -89,13 +99,25 @@ func main() {
 // internal/app probes config.yaml relative to the working directory, so a
 // directory (or a config file, whose parent directory is used) selected here
 // wins over the OS data directory while debugging.
-func configDirEnv() string {
-	dir := os.Getenv("PCMANNAGER_CONFIG")
-	if dir == "" {
-		return ""
+// configDirEnv keeps the historical PCMANNAGER_CONFIG override working:
+// internal/app probes config.yaml relative to the working directory, so a
+// directory (or a config file, whose parent directory is used) selected here
+// wins over the OS data directory while debugging.
+//
+// A non-existent value is NOT silently ignored: it is reported so the operator
+// knows the override did not take effect (otherwise the app would silently fall
+// back to the OS default and look misconfigured). The caller logs the warning
+// and continues with the default directory.
+func configDirEnv() (dir string, warn string) {
+	raw := os.Getenv("PCMANNAGER_CONFIG")
+	if raw == "" {
+		return "", ""
 	}
-	if fi, err := os.Stat(dir); err == nil && !fi.IsDir() {
-		dir = filepath.Dir(dir)
+	if fi, err := os.Stat(raw); err == nil && !fi.IsDir() {
+		return filepath.Dir(raw), ""
 	}
-	return dir
+	if _, err := os.Stat(raw); err != nil {
+		return "", "PCMANNAGER_CONFIG 指向的目录不存在，已忽略并回退到默认数据目录: " + raw
+	}
+	return raw, ""
 }

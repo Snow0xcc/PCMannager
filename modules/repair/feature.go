@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
+	"github.com/snow0xcc/pcmannager/internal/sysutil"
 )
 
 // moduleID mirrors the directory name; the registry, the config file and the
@@ -101,7 +102,37 @@ func (f *Feature) RunAction(id string, params map[string]string) error {
 	// Destructive ops are gated on the client side (the walk panel pops a
 	// confirm dialog, the web panel honours a.confirm when confirm_danger is
 	// set); here we just run whatever the catalogue resolves.
+	//
+	// Admin entries need elevation. If we are already running as administrator
+	// we run directly; otherwise we relaunch the command elevated via the UAC
+	// prompt. Only entries flagged Admin are elevated -- ordinary actions keep
+	// running in the current (non-elevated) context.
+	if e.Admin && !sysutil.IsElevated() {
+		if err := sysutil.RunElevated(cmd); err != nil {
+			return err
+		}
+		f.logRun(e.Label, "", nil)
+		return nil
+	}
 	return f.Run(e.Label, cmd)
+}
+
+// logRun records the outcome of a repair command to slog + bus without
+// re-executing it; used for the delegated (elevated) execution path.
+func (f *Feature) logRun(name, out string, err error) {
+	if f.ctx == nil {
+		return
+	}
+	if f.ctx.Logger != nil {
+		if err != nil {
+			f.ctx.Logger.Error("repair 命令失败", "module", moduleID, "action", name, "err", err)
+		} else {
+			f.ctx.Logger.Info("repair 命令完成", "module", moduleID, "action", name)
+		}
+	}
+	if f.ctx.Bus != nil {
+		f.ctx.Bus.Progress(moduleID, name, 100, out)
+	}
 }
 
 func (f *Feature) Start() error {

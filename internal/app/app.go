@@ -456,24 +456,79 @@ func (a *App) PanelURL() string {
 	return a.panelURL
 }
 
-// OpenPanel opens the preferences panel in the default browser.
+// OpenPanel opens the preferences panel using the configured presentation.
+//
+// OpenInWebview is a preference rather than a hard requirement: true prefers
+// the independent native window, while false prefers the system browser. If
+// the preferred route fails, OpenPanel tries the other route so a missing
+// WebView runtime or browser handler does not leave the user without a panel.
 func (a *App) OpenPanel() error {
+	preferNative := a.Config().App().OpenInWebview
+
+	if preferNative && nativePanelAvailable() {
+		nativeErr := showNativePanel()
+		if nativeErr == nil {
+			return nil
+		}
+		a.log.Warn("打开原生面板失败，改用浏览器", "err", nativeErr)
+
+		browserErr := a.openPanelInBrowser()
+		if browserErr == nil {
+			return nil
+		}
+		a.log.Warn("浏览器打开面板失败", "err", browserErr)
+		return fmt.Errorf("打开原生面板失败: %v；浏览器回退也失败: %w", nativeErr, browserErr)
+	}
+
+	if preferNative {
+		a.log.Warn("原生面板不可用，改用浏览器")
+	}
+	browserErr := a.openPanelInBrowser()
+	if browserErr == nil {
+		return nil
+	}
+	a.log.Warn("浏览器打开面板失败，尝试原生窗口", "err", browserErr)
+
+	// Availability may change while the Wails runtime starts, so check it at
+	// fallback time rather than relying on the value observed above.
+	if nativePanelAvailable() {
+		nativeErr := showNativePanel()
+		if nativeErr == nil {
+			return nil
+		}
+		a.log.Warn("原生面板回退失败", "err", nativeErr)
+		return fmt.Errorf("浏览器打开面板失败: %v；原生窗口回退也失败: %w", browserErr, nativeErr)
+	}
+	return browserErr
+}
+
+// openPanelInBrowser preserves the cross-platform browser launch path. The
+// explicit platform launcher is retained as a fallback for systems where the
+// shared URL handler is unavailable.
+func (a *App) openPanelInBrowser() error {
 	url := a.PanelURL()
 	if url == "" {
 		return fmt.Errorf("首选项服务尚未就绪")
 	}
-	if err := sysutil.OpenURL(url); err == nil {
+	openErr := sysutil.OpenURL(url)
+	if openErr == nil {
 		return nil
 	}
-	// Fall back to the platform browser launcher.
+	a.log.Warn("系统 URL 打开器失败，尝试平台浏览器启动器", "url", url, "err", openErr)
+
+	var fallbackErr error
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("cmd", "/c", "start", "", url).Start()
+		fallbackErr = exec.Command("cmd", "/c", "start", "", url).Start()
 	case "darwin":
-		return exec.Command("open", url).Start()
+		fallbackErr = exec.Command("open", url).Start()
 	default:
-		return exec.Command("xdg-open", url).Start()
+		fallbackErr = exec.Command("xdg-open", url).Start()
 	}
+	if fallbackErr != nil {
+		return fmt.Errorf("系统 URL 打开器失败: %v；平台浏览器启动器失败: %w", openErr, fallbackErr)
+	}
+	return nil
 }
 
 // StartPanel boots the preferences HTTP server and records its URL.

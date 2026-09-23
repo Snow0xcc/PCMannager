@@ -55,9 +55,26 @@ func (w *widget) SetStats(s Stats) {
 // A window belongs to the thread that creates it, so this runs on its own
 // locked OS thread for the widget's whole lifetime.
 func (w *widget) Run() {
-	win, err := winui.NewWindow("GoBoxTaskbar",
-		winui.WS_CHILD|winui.WS_CLIPSIBLINGS,
-		winui.WS_EX_NOACTIVATE|winui.WS_EX_TOOLWINDOW, 0)
+	// WS_CHILD requires a real parent: CreateWindowEx rejects a child window
+	// with a NULL parent ("Cannot create a top-level child window"). Embedding
+	// into the taskbar therefore means parenting to Shell_TrayWnd itself.
+	//
+	// If the taskbar cannot be found (Explorer restarting, or a non-standard
+	// shell), fall back to an owned top-level tool window instead of failing:
+	// WS_CHILD with a NULL parent can never succeed, so the style must change
+	// too, not just the parent.
+	parent := winui.FindTaskbar()
+	style := uint32(winui.WS_CHILD | winui.WS_CLIPSIBLINGS)
+	exStyle := uint32(winui.WS_EX_NOACTIVATE | winui.WS_EX_TOOLWINDOW)
+
+	if !parent.Valid() {
+		w.feat.reportError("未找到任务栏窗口，改用悬浮小组件", errNoTaskbar)
+		parent = 0
+		style = winui.WS_POPUP | winui.WS_CLIPSIBLINGS
+		exStyle = winui.WS_EX_NOACTIVATE | winui.WS_EX_TOOLWINDOW | winui.WS_EX_TOPMOST
+	}
+
+	win, err := winui.NewWindow("GoBoxTaskbar", style, exStyle, parent)
 	if err != nil {
 		w.feat.reportError("创建任务栏小组件失败", err)
 		return
