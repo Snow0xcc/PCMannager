@@ -4,6 +4,7 @@
 package repair
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
@@ -49,16 +50,26 @@ func (f *Feature) Options() []core.Option {
 	}
 }
 
-// Actions exposes the repair panel entry point plus a few safe one-click fixes.
+// Actions exposes the repair panel plus the full declarative toolbox. The
+// catalogue is the single source of truth: both the walk window and the web
+// panel render from it, so adding a tool means editing catalog.go only.
 func (f *Feature) Actions() []core.Action {
-	return []core.Action{
+	actions := []core.Action{
 		{ID: "open_panel", Label: "打开修复面板", Kind: core.ActionOpen,
 			Description: "打开带分类按钮的修复/安装面板"},
-		{ID: "flush_dns", Label: "刷新 DNS", Kind: core.ActionNormal,
-			Group: "网络", Description: "ipconfig /flushdns"},
-		{ID: "open_msconfig", Label: "打开系统设置", Kind: core.ActionOpen,
-			Group: "系统", Description: "start ms-settings:"},
 	}
+	for _, e := range Catalog() {
+		actions = append(actions, core.Action{
+			ID:          e.ID,
+			Label:       e.Label,
+			Group:       e.Page,
+			Kind:        e.Kind(),
+			Description: e.Command,
+			Confirm:     e.Danger,
+			Admin:       e.Admin,
+		})
+	}
+	return actions
 }
 
 // Init receives the shared application context.
@@ -67,19 +78,30 @@ func (f *Feature) Init(ctx *core.Context) error {
 	return nil
 }
 
-// RunAction executes a declared action. Unknown ids are reported as errors so
-// the panel can surface typos instead of silently doing nothing.
+// RunAction executes a declared action. Every catalogue entry is reachable by
+// id; unknown ids are reported as errors so the panel can surface typos
+// instead of silently doing nothing.
 func (f *Feature) RunAction(id string, params map[string]string) error {
-	switch id {
-	case "open_panel":
+	if id == "open_panel" {
 		return f.OpenUI()
-	case "flush_dns":
-		return f.Run("刷新 DNS", "ipconfig /flushdns")
-	case "open_msconfig":
-		return f.Run("打开系统设置", "start ms-settings:")
-	default:
+	}
+
+	e, ok := Lookup(id)
+	if !ok {
 		return &unknownActionError{id: id}
 	}
+
+	// Resolve the command line from the stored source preference.
+	source := f.preferSource()
+	cmd, ok := e.ResolveCommand(source)
+	if !ok {
+		return fmt.Errorf("无法为 %s 解析命令（包管理器未配置？）", e.Label)
+	}
+
+	// Destructive ops are gated on the client side (the walk panel pops a
+	// confirm dialog, the web panel honours a.confirm when confirm_danger is
+	// set); here we just run whatever the catalogue resolves.
+	return f.Run(e.Label, cmd)
 }
 
 func (f *Feature) Start() error {

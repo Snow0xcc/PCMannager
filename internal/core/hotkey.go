@@ -224,18 +224,19 @@ func (h *HotkeyManager) Start() {
 // Passing "" unregisters. A conflict with another application, or with a
 // hotkey already owned by another module, is reported through warn and the
 // binding is skipped — it never aborts startup.
+//
+// The backend calls happen outside h.mu. A threaded backend (Windows) blocks
+// until the pump thread answers, so doing that under the lock would stall
+// every other caller. The slot is reserved under the lock first and rolled
+// back if registration fails, which keeps conflict detection intact.
 func (h *HotkeyManager) Bind(module, hotkey string, fn func() error) {
+	// Phase 1: decide under the lock.
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// Remember the handler regardless, so tray/panel paths still work.
 	if fn != nil {
 		h.handlers[module] = fn
 	}
-
-	// Drop any existing registration for this module.
-	if old, ok := h.byModule[module]; ok {
-		_ = h.backend.unregister(old)
+	old, hasOld := h.byModule[module]
+	if hasOld {
 		delete(h.bySlot, old)
 		delete(h.byModule, module)
 		delete(h.combos, module)
@@ -243,43 +244,71 @@ func (h *HotkeyManager) Bind(module, hotkey string, fn func() error) {
 
 	combo, ok, err := ParseHotkey(hotkey)
 	if err != nil {
+		h.mu.Unlock()
 		h.warn("模块 %s 的热键 %q 无效: %v", module, hotkey, err)
+		h.dropOld(old, hasOld)
 		return
 	}
-	if !ok {
-		return // empty = disabled
+	if !ok { // empty = disabled
+		h.mu.Unlock()
+		h.dropOld(old, hasOld)
+		return
 	}
 
 	// Reject duplicates inside our own process.
 	for other, existing := range h.combos {
 		if existing.Mods == combo.Mods && existing.VK == combo.VK {
+			h.mu.Unlock()
 			h.warn("热键 %s 冲突: 模块 %s 已占用，模块 %s 未绑定", combo.Text, other, module)
+			h.dropOld(old, hasOld)
 			return
 		}
 	}
 
+	// Reserve the slot so a concurrent Bind cannot claim the same combo.
 	id := h.nextID
 	h.nextID++
-	if err := h.backend.register(id, combo); err != nil {
-		h.warn("热键 %s 注册失败（可能被其它程序占用）: %v", combo.Text, err)
-		return
-	}
 	h.byModule[module] = id
 	h.bySlot[id] = module
 	h.combos[module] = combo
+	h.mu.Unlock()
+
+	// Phase 2: talk to the backend without holding the lock.
+	h.dropOld(old, hasOld)
+	if err := h.backend.register(id, combo); err != nil {
+		h.mu.Lock()
+		// Roll back only if the slot is still ours (a newer Bind may have
+		// already replaced it).
+		if cur, ok := h.byModule[module]; ok && cur == id {
+			delete(h.byModule, module)
+			delete(h.bySlot, id)
+			delete(h.combos, module)
+		}
+		h.mu.Unlock()
+		h.warn("热键 %s 注册失败（可能被其它程序占用）: %v", combo.Text, err)
+	}
+}
+
+// dropOld removes a stale registration from the backend.
+func (h *HotkeyManager) dropOld(id int, has bool) {
+	if has {
+		_ = h.backend.unregister(id)
+	}
 }
 
 // Unbind removes a module's hotkey registration.
 func (h *HotkeyManager) Unbind(module string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if id, ok := h.byModule[module]; ok {
-		_ = h.backend.unregister(id)
-		delete(h.bySlot, id)
-		delete(h.byModule, module)
-	}
+	id, ok := h.byModule[module]
+	delete(h.bySlot, id)
+	delete(h.byModule, module)
 	delete(h.combos, module)
 	delete(h.handlers, module)
+	h.mu.Unlock()
+
+	if ok {
+		_ = h.backend.unregister(id)
+	}
 }
 
 // Combo returns the active combo for a module, if any.
@@ -323,17 +352,30 @@ func (h *HotkeyManager) Rebind(get func(module string) (string, func() error)) {
 }
 
 // Stop releases every registration and shuts the backend down.
+//
+// The backend calls run outside h.mu: with a threaded backend (Windows) each
+// call now waits for the pump thread, so holding the lock across them would
+// stall every Bind/Combo/Conflicts caller during shutdown.
+//
+// Order matters: registrations are unregistered while the pump is still alive,
+// then close() joins the thread, so Stop returns only after every hotkey is
+// gone and no thread or goroutine is left behind.
 func (h *HotkeyManager) Stop() {
 	h.mu.Lock()
 	started := h.started
 	h.started = false
+	ids := make([]int, 0, len(h.bySlot))
 	for id := range h.bySlot {
-		_ = h.backend.unregister(id)
+		ids = append(ids, id)
 	}
 	h.bySlot = map[int]string{}
 	h.byModule = map[string]int{}
 	h.combos = map[string]Combo{}
 	h.mu.Unlock()
+
+	for _, id := range ids {
+		_ = h.backend.unregister(id)
+	}
 
 	if started {
 		h.backend.close()

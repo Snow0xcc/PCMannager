@@ -22,7 +22,9 @@ import (
 	"github.com/snow0xcc/pcmannager/internal/core"
 	"github.com/snow0xcc/pcmannager/internal/logx"
 	"github.com/snow0xcc/pcmannager/internal/paths"
+	"github.com/snow0xcc/pcmannager/internal/server"
 	"github.com/snow0xcc/pcmannager/internal/sysutil"
+	"github.com/snow0xcc/pcmannager/internal/tray"
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
@@ -40,6 +42,10 @@ type App struct {
 
 	hotkeys *core.HotkeyManager
 
+	// tray renders the notification-area icon. It is nil when the platform
+	// has no native tray (the panel covers those platforms instead).
+	tray tray.Tray
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -48,6 +54,9 @@ type App struct {
 	// panelURL is set once the preferences server is listening.
 	panelURL   string
 	panelURLMu sync.RWMutex
+
+	// panel serves the preferences HTTP API; nil until StartPanel succeeds.
+	panel *server.Server
 
 	// quit is set once shutdown begins so late calls become no-ops.
 	quit    bool
@@ -231,6 +240,7 @@ func (a *App) Enable(id string) error {
 	a.bindHotkey(m)
 	a.log.Info("模块已启动", "module", id)
 	a.bus.State(id, map[string]any{"running": true})
+	a.refreshTrayMenu()
 	return nil
 }
 
@@ -249,6 +259,7 @@ func (a *App) Disable(id string) error {
 
 	a.log.Info("模块已停止", "module", id)
 	a.bus.State(id, map[string]any{"running": false})
+	a.refreshTrayMenu()
 	return nil
 }
 
@@ -315,7 +326,7 @@ func (a *App) ApplyOption(module, key string, value any) error {
 	needsRestart := false
 	for _, o := range m.Options() {
 		if o.Key == key {
-			needsRestart = strings.HasPrefix(o.Help, "[restart]")
+			needsRestart = o.Restart
 			break
 		}
 	}
@@ -362,6 +373,7 @@ func (a *App) SetModuleSettings(id string, enabled *bool, hotkey *string, option
 			return err
 		}
 	}
+	a.refreshTrayMenu()
 	return nil
 }
 
@@ -377,6 +389,29 @@ func (a *App) Shutdown() {
 
 	a.log.Info("正在退出 GoBox")
 	a.hotkeys.Stop()
+
+	// Stop serving the panel first so no in-flight request can observe a
+	// half-torn-down module registry.
+	a.mu.Lock()
+	p := a.panel
+	a.panel = nil
+	a.mu.Unlock()
+	if p != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = p.Shutdown(ctx)
+		cancel()
+	}
+
+	// Remove the icon before stopping modules so a crashed module cannot
+	// leave a dead tray entry behind in the notification area.
+	a.mu.Lock()
+	t := a.tray
+	a.tray = nil
+	a.mu.Unlock()
+	if t != nil {
+		t.Destroy()
+	}
+
 	for _, m := range a.Modules() {
 		if a.Running(m.ID()) {
 			a.safeCall(m.ID(), "Stop", m.Stop)
@@ -384,6 +419,10 @@ func (a *App) Shutdown() {
 	}
 	a.cancel()
 	a.bus.Close()
+
+	// Release the message pump so main's Run() returns and the process exits.
+	a.postQuit()
+
 	if a.logFile != nil {
 		_ = a.logFile.Close()
 	}
@@ -435,6 +474,202 @@ func (a *App) OpenPanel() error {
 	default:
 		return exec.Command("xdg-open", url).Start()
 	}
+}
+
+// StartPanel boots the preferences HTTP server and records its URL.
+//
+// The server listens on 127.0.0.1 only, and a failure to bind is logged
+// rather than fatal: the tray and hotkeys must keep working regardless.
+func (a *App) StartPanel() error {
+	port := a.cfgMgr.Config().App.ServerPort
+	s := server.New(panelProvider{a: a}, server.Options{
+		Port: port,
+		Host: "127.0.0.1",
+		Log:  a.log,
+	})
+
+	url, err := s.Start()
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	a.panel = s
+	a.mu.Unlock()
+
+	a.SetPanelURL(url)
+	a.log.Info("首选项面板已启动", "url", url)
+
+	// The tray menu greys out the panel entry until the URL exists.
+	a.refreshTrayMenu()
+	return nil
+}
+
+// StartTray creates the notification-area icon and installs its menu.
+//
+// On platforms without a native tray the returned tray is a no-op, so callers
+// need no build tags; the panel remains the control surface there.
+func (a *App) StartTray() error {
+	t := a.currentTray()
+	if t == nil {
+		t = tray.New(a.log, tray.HandlerFunc(a.onTraySelect))
+		a.mu.Lock()
+		a.tray = t
+		a.mu.Unlock()
+	}
+
+	a.refreshTrayMenu()
+	return t.Show()
+}
+
+// currentTray returns the tray without holding a lock during menu rebuilds.
+//
+// refreshTrayMenu calls Modules/Running, which take the same mutex; reading
+// the field through this helper avoids nesting RLock (which can deadlock
+// when a writer is waiting between the two acquisitions).
+func (a *App) currentTray() tray.Tray {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.tray
+}
+
+// refreshTrayMenu rebuilds the tray menu from the live module state.
+//
+// It is called after every enable/disable/hotkey/option change so the check
+// marks and the hotkey hints always match the running configuration.
+func (a *App) refreshTrayMenu() {
+	t := a.currentTray()
+	if t == nil {
+		return
+	}
+
+	items := []tray.Item{{
+		ID:    "open_panel",
+		Title: "打开首选项面板",
+	}}
+	if a.PanelURL() == "" {
+		items[0].Disabled = true
+	}
+	items = append(items, tray.Item{Separator: true})
+
+	for _, m := range a.Modules() {
+		id := m.ID()
+		hk := a.cfgMgr.Module(id).Hotkey()
+		title := m.Name()
+		if title == "" {
+			title = id
+		}
+		if hk != "" {
+			title += "  (" + hk + ")"
+		}
+		// A module that is switched off must stay clickable, otherwise there
+		// is no way back on from the tray; Checked mirrors the live state.
+		items = append(items, tray.Item{
+			ID:        "toggle:" + id,
+			Title:     title,
+			Checkable: true,
+			Checked:   a.Running(id) || a.cfgMgr.Module(id).Enabled(),
+		})
+	}
+
+	// One "open" entry per module that exposes a window; modules without a UI
+	// return a no-op from OpenUI, so a generic list stays correct as modules
+	// are added.
+	for _, m := range a.Modules() {
+		title := m.Name()
+		if title == "" {
+			title = m.ID()
+		}
+		items = append(items, tray.Item{
+			ID:    "openui:" + m.ID(),
+			Title: "打开 " + title,
+		})
+	}
+
+	items = append(items,
+		tray.Item{ID: "autostart", Title: "开机自启", Checkable: true, Checked: a.cfgMgr.Config().App.Autostart},
+		tray.Item{Separator: true},
+		tray.Item{ID: "quit", Title: "退出"},
+	)
+
+	t.SetMenu(tray.Menu{
+		Tooltip: "PCMannager",
+		Items:   items,
+	})
+}
+
+// onTraySelect dispatches a tray menu selection.
+func (a *App) onTraySelect(id string) {
+	switch {
+	case id == "open_panel":
+		if err := a.OpenPanel(); err != nil {
+			a.log.Warn("打开面板失败", "err", err)
+		}
+	case id == "quit":
+		a.ShutdownAsync()
+	case id == "autostart":
+		a.toggleAutostart()
+	case strings.HasPrefix(id, "toggle:"):
+		a.toggleFromTray(strings.TrimPrefix(id, "toggle:"))
+	case strings.HasPrefix(id, "openui:"):
+		mod := strings.TrimPrefix(id, "openui:")
+		if err := a.OpenUI(mod); err != nil {
+			a.log.Warn("打开模块界面失败", "module", mod, "err", err)
+		}
+	default:
+		a.log.Warn("未知的托盘菜单项", "id", id)
+	}
+}
+
+// toggleFromTray flips a module's persisted switch and starts/stops it.
+func (a *App) toggleFromTray(id string) {
+	on := !a.cfgMgr.Module(id).Enabled()
+	if err := a.EnableModule(id, on); err != nil {
+		a.log.Warn("切换模块失败", "module", id, "err", err)
+		return
+	}
+	a.log.Info("模块开关已切换", "module", id, "enabled", on)
+	a.bus.State(id, map[string]any{"enabled": on})
+	a.refreshTrayMenu()
+}
+
+// toggleAutostart flips the persisted autostart setting and applies it.
+func (a *App) toggleAutostart() {
+	var on bool
+	if err := a.cfgMgr.UpdateApp(func(cfg *config.App) {
+		cfg.Autostart = !cfg.Autostart
+		on = cfg.Autostart
+	}); err != nil {
+		a.log.Warn("保存开机自启设置失败", "err", err)
+		return
+	}
+	if err := a.applyAutostart(on); err != nil {
+		a.log.Warn("应用开机自启失败", "err", err)
+	}
+	a.refreshTrayMenu()
+}
+
+// SyncAutostart reconciles the OS registration with the persisted setting.
+//
+// It runs at boot so that a config edited on another machine (or by hand)
+// takes effect without the user having to toggle the switch twice.
+func (a *App) SyncAutostart() {
+	want := a.cfgMgr.Config().App.Autostart
+	if sysutil.IsAutostart(paths.AppName) == want {
+		return // already in the requested state
+	}
+	if err := a.applyAutostart(want); err != nil {
+		a.log.Warn("同步开机自启失败", "want", want, "err", err)
+	}
+}
+
+// applyAutostart writes the OS-level autostart registration.
+func (a *App) applyAutostart(on bool) error {
+	if err := sysutil.SetAutostart(paths.AppName, on); err != nil {
+		return err
+	}
+	a.bus.Log("app", "info", fmt.Sprintf("开机自启已%s", map[bool]string{true: "开启", false: "关闭"}[on]))
+	return nil
 }
 
 // moduleContext builds the shared core.Context handed to a module.

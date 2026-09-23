@@ -150,7 +150,7 @@ func (f *Feature) Options() []core.Option {
 				{Value: "single-line", Label: "单行"},
 				{Value: "two-line", Label: "双行"},
 			},
-			Help: "[restart] 双行在任务栏较高时更易读"},
+			Help: "双行在任务栏较高时更易读", Restart: true},
 		{Key: optNumAlign, Label: "数字对齐", Kind: core.KindSelect, Default: defaultNumAlign,
 			Choices: []core.Choice{
 				{Value: "left", Label: "数字左对齐"},
@@ -186,7 +186,7 @@ func (f *Feature) Options() []core.Option {
 			Choices: []core.Choice{
 				{Value: "gdi", Label: "GDI"},
 			},
-			Help: "[restart] 当前仅内置 GDI 渲染"},
+			Help: "当前仅内置 GDI 渲染", Restart: true},
 		{Key: optAvoidWidgets, Label: "避开其他任务栏组件", Kind: core.KindBool, Default: defaultAvoidWidgets},
 		{Key: optMultiMonitor, Label: "在副屏任务栏也显示", Kind: core.KindBool, Default: defaultMultiMonitor},
 	}
@@ -357,7 +357,7 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		optFollowTheme, optSeparator, optAvoidWidgets, optMultiMonitor:
 		f.rebuildWidget()
 	case optLayout, optRender:
-		// Declared as "[restart]": the app restarts this module, rebuilding
+		// Declared with Restart: true — the app restarts this module, rebuilding
 		// here too would race with that restart.
 	default:
 		return &unknownOptionError{key: key}

@@ -10,8 +10,20 @@ permissions:
   contents: write
 
 jobs:
+  lint:
+    name: lint (emoji 约束)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      # 客户端界面禁用 emoji（项目硬约束）：新增前端后必须仍然通过。
+      - name: emoji check
+        run: bash scripts/check-emoji.sh
+
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

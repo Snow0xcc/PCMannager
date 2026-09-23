@@ -114,7 +114,7 @@ func (f *Feature) Options() []core.Option {
 	return []core.Option{
 		{Key: optInterval, Label: "采样间隔(ms)", Kind: core.KindInt,
 			Default: defaultInterval, Min: minInterval, Max: maxInterval, Step: 50,
-			Help: "[restart] 采样活动窗口的间隔"},
+			Help: "采样活动窗口的间隔", Restart: true},
 		{Key: optRetentionDays, Label: "保留天数", Kind: core.KindInt,
 			Default: defaultRetentionDays, Min: 1, Max: 365, Step: 1,
 			Help: "丢弃早于该天数的记录"},

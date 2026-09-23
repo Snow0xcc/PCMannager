@@ -38,22 +38,29 @@ func New(log *slog.Logger, handler Handler) Tray {
 func (t *winTray) SetMenu(m Menu) {
 	t.mu.Lock()
 	t.menu = m
+	added := t.added
 	t.mu.Unlock()
 
-	if t.nid.HWnd.Valid() {
+	// Only touch the shell when an icon is actually registered; reading
+	// t.nid.HWnd without the lock would race with Show/Hide.
+	if added {
 		t.updateTooltip(m.Tooltip)
 	}
 }
 
 // Show makes the icon visible, creating the message window on first use.
+//
+// It must NOT hold mu while calling into the shell: shellNotify used to take
+// mu itself, so Show deadlocked against its own lock (P0-1). The notify icon
+// data is copied under the lock and the Win32 call runs outside it.
 func (t *winTray) Show() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.added {
-		return nil
+		t.mu.Unlock()
+		return nil // idempotent
 	}
 	if err := t.createWindowLocked(); err != nil {
+		t.mu.Unlock()
 		return err
 	}
 
@@ -66,25 +73,35 @@ func (t *winTray) Show() error {
 		Icon:     defaultIcon(),
 	}
 	copyTip(&t.nid, t.menu.Tooltip)
+	nid := t.nid
+	t.mu.Unlock()
 
-	if err := t.shellNotify(winui.NIM_ADD); err != nil {
+	if err := t.notify(winui.NIM_ADD, nid); err != nil {
 		return err
 	}
+
+	t.mu.Lock()
 	t.added = true
 	t.visible = true
+	t.mu.Unlock()
 	return nil
 }
 
-// Hide removes the icon from the notification area.
+// Hide removes the icon from the notification area. Idempotent.
 func (t *winTray) Hide() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if !t.added {
+		t.mu.Unlock()
 		return
 	}
-	_ = t.shellNotify(winui.NIM_DELETE)
+	nid := t.nid
+	// Mark unregistered before the call so a concurrent Show cannot observe a
+	// stale "added" state even if the shell call fails.
 	t.added = false
 	t.visible = false
+	t.mu.Unlock()
+
+	_ = t.notify(winui.NIM_DELETE, nid)
 }
 
 // Visible reports whether the icon is currently shown.
@@ -223,29 +240,50 @@ func (t *winTray) popupMenu() {
 }
 
 // updateTooltip refreshes the hover text.
+//
+// Same protocol as Show: copy the icon data under the lock, call the shell
+// outside it, so a nested shellNotify can never re-enter mu.
 func (t *winTray) updateTooltip(tip string) {
 	t.mu.Lock()
+	if !t.added {
+		t.mu.Unlock()
+		return
+	}
 	copyTip(&t.nid, tip)
+	nid := t.nid
 	t.mu.Unlock()
-	_ = t.shellNotify(winui.NIM_MODIFY)
+
+	_ = t.notify(winui.NIM_MODIFY, nid)
 }
 
-// reAdd re-registers the icon after Explorer restarts.
+// reAdd re-registers the icon after Explorer restarts. It runs outside mu so
+// the nested Show acquires the lock on its own, cleanly.
 func (t *winTray) reAdd() {
 	t.mu.Lock()
 	wasAdded := t.added
 	t.added = false
+	t.visible = false
+	t.nid.HWnd = winui.Invalid
 	t.mu.Unlock()
 	if wasAdded {
 		_ = t.Show()
 	}
 }
 
-// shellNotify wraps Shell_NotifyIconW.
-func (t *winTray) shellNotify(action uint32) error {
-	t.mu.Lock()
-	nid := t.nid
-	t.mu.Unlock()
+// notify performs Shell_NotifyIconW for an already-copied icon descriptor.
+//
+// It takes NO lock: every caller snapshots t.nid under mu and releases it
+// first. That removes the class of bug where a lock-holding helper called a
+// helper that took the same lock (the P0-1 deadlock).
+//
+// The actual Win32 call goes through notifyFn, a package-level seam that tests
+// replace so the locking protocol can be exercised without a real shell.
+func (t *winTray) notify(action uint32, nid winui.NOTIFYICONDATAW) error {
+	return notifyFn(action, nid)
+}
+
+// notifyFn is the single place Shell_NotifyIconW is invoked. Swapped by tests.
+var notifyFn = func(action uint32, nid winui.NOTIFYICONDATAW) error {
 	if !nid.HWnd.Valid() {
 		return nil
 	}

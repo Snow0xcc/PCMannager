@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCMannager 首选项</title>
+<style>
+  :root {
+    --bg: #12141a; --panel: #1b1e26; --panel-2: #232733; --line: #2f3442;
+    --text: #e6e8ee; --muted: #9aa3b2; --accent: #4f8cff; --danger: #e5484d;
+    --ok: #30a46c; --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header .spacer { flex: 1; }
+  header .version { color: var(--muted); font-size: 12px; }
+  #caps { padding: 8px 18px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+  main { display: flex; min-height: calc(100vh - 96px); }
+  nav {
+    width: 210px; flex: none; background: var(--panel);
+    border-right: 1px solid var(--line); padding: 10px 0;
+  }
+  nav button {
+    display: block; width: 100%; text-align: left; padding: 9px 16px;
+    background: none; border: 0; border-left: 3px solid transparent;
+    color: var(--text); font-size: 13px; cursor: pointer;
+  }
+  nav button:hover { background: var(--panel-2); }
+  nav button.active { border-left-color: var(--accent); background: var(--panel-2); font-weight: 600; }
+  section { flex: 1; padding: 18px 22px; overflow: auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 15px; }
+  .card h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+  .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .card.sub { background: var(--panel-2); }
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .row label { width: 130px; flex: none; color: var(--muted); font-size: 13px; }
+  .row .grow { flex: 1; }
+  input[type=text], input[type=number], select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 9px; font: inherit; width: 100%;
+  }
+  input[type=color] { background: none; border: 1px solid var(--line); border-radius: 6px; height: 32px; width: 60px; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  button.btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  button.btn:hover { border-color: var(--accent); }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.btn.danger { border-color: var(--danger); color: var(--danger); }
+  button.btn.install { border-color: var(--ok); color: var(--ok); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .badge {
+    display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  }
+  .badge.on { color: var(--ok); border-color: var(--ok); }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  #toast {
+    position: fixed; right: 18px; bottom: 18px; padding: 10px 14px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line); opacity: 0;
+    transition: opacity .2s; pointer-events: none; max-width: 420px;
+  }
+  #toast.show { opacity: 1; }
+  #toast.err { border-color: var(--danger); color: var(--danger); }
+  #log {
+    background: #0d0f14; border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px; height: 190px; overflow: auto; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px; white-space: pre-wrap;
+  }
+  #log div { border-bottom: 1px solid #191c24; padding: 2px 0; }
+  .lev-warn { color: #f5a524; } .lev-error { color: var(--danger); }
+  .lev-info { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>PCMannager 首选项</h1>
+  <span class="spacer"></span>
+  <span class="version" id="version"></span>
+</header>
+<div id="caps"></div>
+<main>
+  <nav id="nav"></nav>
+  <section id="content"></section>
+</main>
+<div id="toast"></div>
+<script>
+const state = { app: null, modules: [], caps: null, version: "", page: "app" };
+
+function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstElementChild; }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ""; }, 2600);
+}
+
+async function api(path, method, body) {
+  const res = await fetch(path, {
+    method: method || "GET",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  if (!res.ok) throw new Error((data && data.error) || ("请求失败 " + res.status));
+  return data;
+}
+
+async function load() {
+  const s = await api("/api/state");
+  state.app = s.app; state.modules = s.modules || []; state.caps = s.capabilities;
+  state.version = s.version || "";
+  document.getElementById("version").textContent = "v" + state.version;
+  renderCaps(); renderNav(); renderPage();
+}
+
+function renderCaps() {
+  const c = state.caps || {};
+  const names = { native: "原生窗口", taskbar_embedding: "任务栏嵌入", tray_icon: "系统托盘", toasts: "通知", elevation: "提权", hotkeys: "全局热键" };
+  const parts = Object.keys(names).map(k => names[k] + ": " + (c[k] ? "支持" : "不支持"));
+  document.getElementById("caps").textContent = "当前平台能力 — " + parts.join(" · ");
+}
+
+function renderNav() {
+  const nav = document.getElementById("nav");
+  nav.innerHTML = "";
+  const items = [{ id: "app", name: "应用设置" }].concat(state.modules.map(m => ({ id: m.id, name: m.name || m.id })));
+  items.push({ id: "log", name: "事件日志" });
+  items.forEach(it => {
+    const b = el('<button></button>');
+    b.textContent = it.name;
+    if (state.page === it.id) b.className = "active";
+    b.onclick = () => { state.page = it.id; renderNav(); renderPage(); };
+    nav.appendChild(b);
+  });
+}
+
+function mod(id) { return state.modules.find(m => m.id === id); }
+
+function renderPage() {
+  const c = document.getElementById("content");
+  c.innerHTML = "";
+  if (state.page === "app") return renderAppPage(c);
+  if (state.page === "log") return renderLogPage(c);
+  const m = mod(state.page);
+  if (m) return renderModulePage(c, m);
+  c.appendChild(el('<div class="card"><h2>未找到模块</h2></div>'));
+}
+
+function renderAppPage(root) {
+  const a = state.app || {};
+  const card = el('<div class="card"><h2>应用设置</h2><div class="desc">全局行为与面板选项。</div></div>');
+
+  card.appendChild(el('<div class="row"><label>开机自启</label><input type="checkbox" id="f-autostart"></div>'));
+  card.appendChild(el('<div class="row"><label>面板用内置窗口打开</label><input type="checkbox" id="f-webview"></div>'));
+  card.appendChild(el('<div class="row"><label>主题</label><div class="grow"><select id="f-theme"><option value="auto">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></div></div>'));
+  card.appendChild(el('<div class="row"><label>日志级别</label><div class="grow"><select id="f-level"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></div></div>'));
+  card.appendChild(el('<div class="row"><label>面板端口</label><div class="grow"><input type="number" id="f-port"></div></div>'));
+  card.appendChild(el('<div class="row"><label>数据目录</label><div class="grow"><input type="text" id="f-dir"></div></div>'));
+  card.appendChild(el('<div class="row"><label></label><button class="btn primary" id="f-save">保存</button></div>'));
+
+  card.querySelector("#f-autostart").checked = !!a.autostart;
+  card.querySelector("#f-webview").checked = !!a.open_in_webview;
+  card.querySelector("#f-theme").value = a.theme || "auto";
+  card.querySelector("#f-level").value = a.log_level || "info";
+  card.querySelector("#f-port").value = a.server_port || 0;
+  card.querySelector("#f-dir").value = a.data_dir || "";
+
+  card.querySelector("#f-save").onclick = async () => {
+    const port = parseInt(card.querySelector("#f-port").value, 10) || 0;
+    try {
+      const patch = {
+        autostart: card.querySelector("#f-autostart").checked,
+        open_in_webview: card.querySelector("#f-webview").checked,
+        theme: card.querySelector("#f-theme").value,
+        log_level: card.querySelector("#f-level").value,
+        server_port: port,
+        data_dir: card.querySelector("#f-dir").value,
+      };
+      state.app = await api("/api/app", "PATCH", patch);
+      toast("应用设置已保存");
+      renderPage();
+    } catch (e) { toast(e.message, true); }
+  };
+  root.appendChild(card);
+}
+
+function renderModulePage(root, m) {
+  const card = el('<div class="card"></div>');
+  card.appendChild(el('<h2>' + esc(m.name || m.id) + '</h2>'));
+  card.appendChild(el('<div class="desc">' + esc(m.description || "") + '</div>'));
+
+  const status = el('<div class="row"><label>状态</label><span class="grow"></span></div>');
+  status.querySelector(".grow").innerHTML =
+    '<span class="badge' + (m.running ? " on" : "") + '">' + (m.running ? "运行中" : "已停止") + '</span> ' +
+    '<span class="badge">' + (m.enabled ? "已启用" : "已禁用") + '</span>' +
+    (m.hotkey ? ' <span class="badge">' + esc(m.hotkey) + '</span>' : "");
+  card.appendChild(status);
+
+  const sw = el('<div class="row"><label>启用模块</label><input type="checkbox" id="m-enabled"></div>');
+  sw.querySelector("#m-enabled").checked = !!m.enabled;
+  sw.querySelector("#m-enabled").onchange = async (e) => {
+    try { await patchModule(m.id, { enabled: e.target.checked }); toast("已保存"); await reload(); }
+    catch (err) { toast(err.message, true); renderPage(); }
+  };
+  card.appendChild(sw);
+
+  const hk = el('<div class="row"><label>全局热键</label><div class="grow"><input type="text" id="m-hotkey" placeholder="例如 ctrl+alt+f1"></div><button class="btn" id="m-hksave">保存</button></div>');
+  const hkInput = hk.querySelector("#m-hotkey");
+  hkInput.value = m.hotkey || "";
+  hk.querySelector("#m-hksave").onclick = async () => {
+    const value = hkInput.value.trim();
+    try {
+      const v = await api("/api/hotkey/validate", "POST", { hotkey: value });
+      if (!v.ok) { toast(v.error || "热键无效", true); return; }
+      await patchModule(m.id, { hotkey: value });
+      toast("热键已保存"); await reload();
+    } catch (err) { toast(err.message, true); }
+  };
+  card.appendChild(hk);
+  card.appendChild(el('<div class="hint">语法：mod+mod+key，例如 ctrl+alt+f1；留空表示不绑定。</div>'));
+
+  (m.options || []).forEach(o => card.appendChild(renderOption(m, o)));
+
+  if ((m.actions || []).length) {
+    card.appendChild(el('<div class="row"><label>操作</label></div>'));
+    // Group actions by their declared Group so toolboxes (e.g. repair with
+    // ~60 entries) render as categorized sections instead of one flat wall.
+    const groups = {};
+    const order = [];
+    m.actions.forEach(a => {
+      const g = a.group || "其它";
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(a);
+    });
+    order.forEach(g => {
+      const gcard = el('<div class="card sub"><h3>' + esc(g) + '</h3><div class="actions"></div></div>');
+      const wrap = gcard.querySelector(".actions");
+      groups[g].forEach(a => {
+        const b = el('<button class="btn' + (a.kind === "danger" ? " danger" : "") + (a.kind === "install" ? " install" : "") + '">' + esc(a.label || a.id) + '</button>');
+        b.title = a.description || "";
+        b.onclick = async () => {
+          const params = {};
+          for (const p of (a.params || [])) {
+            const v = prompt(p.label || p.key, p.default || "");
+            if (v === null) return;
+            params[p.key] = v;
+          }
+          if (a.confirm && !confirm("确认执行：" + (a.label || a.id))) return;
+          try {
+            await api("/api/modules/" + encodeURIComponent(m.id) + "/actions/" + encodeURIComponent(a.id), "POST", params);
+            toast("已触发：" + (a.label || a.id));
+          } catch (err) { toast(err.message, true); }
+        };
+        wrap.appendChild(b);
+      });
+      card.appendChild(gcard);
+    });
+  }
+
+  const ui = el('<div class="row"><label>模块界面</label><button class="btn" id="m-ui">打开窗口</button></div>');
+  ui.querySelector("#m-ui").onclick = async () => {
+    try { await api("/api/modules/" + encodeURIComponent(m.id) + "/ui", "POST", {}); }
+    catch (err) { toast(err.message, true); }
+  };
+  card.appendChild(ui);
+
+  if (m.state && Object.keys(m.state).length) {
+    const st = el('<div class="card"><h2>运行状态</h2><div id="m-state"></div></div>');
+    st.querySelector("#m-state").textContent = JSON.stringify(m.state, null, 2);
+    st.querySelector("#m-state").style.whiteSpace = "pre-wrap";
+    root.appendChild(card);
+    root.appendChild(st);
+    return;
+  }
+  root.appendChild(card);
+}
+
+function renderOption(m, o) {
+  const current = (m.state && m.state.options && m.state.options[o.key] !== undefined)
+    ? m.state.options[o.key] : o.default;
+  const row = el('<div class="row"><label>' + esc(o.label || o.key) + '</label><div class="grow"></div></div>');
+  const grow = row.querySelector(".grow");
+  let input;
+  if (o.kind === "bool") {
+    input = el('<input type="checkbox">');
+    input.checked = !!current;
+    input.onchange = () => saveOption(m, o.key, input.checked);
+  } else if (o.kind === "int") {
+    input = el('<input type="number">');
+    input.value = current == null ? "" : current;
+    if (o.min) input.min = o.min;
+    if (o.max) input.max = o.max;
+    if (o.step) input.step = o.step;
+    input.onchange = () => saveOption(m, o.key, parseInt(input.value, 10));
+  } else if (o.kind === "select") {
+    input = el('<select></select>');
+    (o.choices || []).forEach(c => {
+      const opt = el('<option></option>');
+      opt.value = c.value; opt.textContent = c.label || c.value;
+      input.appendChild(opt);
+    });
+    input.value = current == null ? "" : String(current);
+    input.onchange = () => saveOption(m, o.key, input.value);
+  } else if (o.kind === "color") {
+    input = el('<input type="color">');
+    input.value = current || "#4f8cff";
+    input.onchange = () => saveOption(m, o.key, input.value);
+  } else {
+    input = el('<input type="text">');
+    input.value = current == null ? "" : String(current);
+    input.onchange = () => saveOption(m, o.key, input.value);
+  }
+  grow.appendChild(input);
+  if (o.help) {
+    const hint = el('<div class="hint">' + esc(o.help) + '</div>');
+    grow.appendChild(hint);
+  }
+  return row;
+}
+
+async function saveOption(m, key, value) {
+  const opts = {}; opts[key] = value;
+  try { await patchModule(m.id, { options: opts }); toast("已保存：" + key); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function patchModule(id, patch) {
+  await api("/api/modules/" + encodeURIComponent(id), "PATCH", patch);
+}
+
+async function reload() {
+  const s = await api("/api/state");
+  state.modules = s.modules || [];
+  renderNav(); renderPage();
+}
+
+function renderLogPage(root) {
+  const card = el('<div class="card"><h2>事件日志</h2><div class="desc">模块通过事件总线推送的实时消息。</div><div id="log"></div></div>');
+  root.appendChild(card);
+}
+
+function pushLog(ev) {
+  const box = document.getElementById("log");
+  if (!box) return;
+  const d = document.createElement("div");
+  const level = ev.level || ev.type || "info";
+  d.className = "lev-" + level;
+  d.textContent = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] " +
+    (ev.module ? ev.module + " " : "") + (ev.message || JSON.stringify(ev.data || {}));
+  box.insertBefore(d, box.firstChild);
+  while (box.childNodes.length > 300) box.removeChild(box.lastChild);
+}
+
+function connectEvents() {
+  const es = new EventSource("/api/events");
+  es.onmessage = (e) => { try { pushLog(JSON.parse(e.data)); } catch (err) { /* ignore */ } };
+  es.onerror = () => { /* EventSource retries on its own. */ };
+}
+
+load().catch(e => toast("加载失败: " + e.message, true));
+connectEvents();
+setInterval(() => { api("/api/state").then(s => { state.modules = s.modules || []; }).catch(() => {}); }, 5000);
+</script>
+</body>
+</html>

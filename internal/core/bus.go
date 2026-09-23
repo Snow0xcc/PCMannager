@@ -25,10 +25,52 @@ const (
 )
 
 // subscriber is one SSE client. slow clients drop events rather than block.
+//
+// Synchronization protocol (P0-3): sending and closing race with each other,
+// because Publish copies the subscriber set under Bus.mu and then sends
+// outside that lock, while unsubscribe/Close close the channel concurrently.
+// A bare `select { case ch <- ev: }` could therefore panic with "send on
+// closed channel". Every send now goes through send(), which is serialized
+// against close() by the subscriber's own mutex and gated on `done`.
+//
+// Lock order is always Bus.mu -> subscriber.mu, never the reverse.
 type subscriber struct {
 	ch   chan Event
-	once sync.Once
+	mu   sync.Mutex
+	done bool
 }
+
+// send delivers ev without blocking. It reports false when the subscriber was
+// already closed or its buffer is full (a slow client drops events).
+func (s *subscriber) send(ev Event) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return false
+	}
+	select {
+	case s.ch <- ev:
+		return true
+	default:
+		return false // drop: subscriber is too slow
+	}
+}
+
+// close closes the channel exactly once; further calls are no-ops, so
+// unsubscribe stays idempotent and repeated Close is safe.
+func (s *subscriber) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return
+	}
+	s.done = true
+	close(s.ch)
+}
+
+// subBuffer is the per-subscriber channel capacity. It is deliberately larger
+// than maxHist so history can be pre-filled without ever blocking.
+const subBuffer = 256
 
 // Bus is a fan-out event broadcaster with per-subscriber buffering.
 // Events are dropped for subscribers that cannot keep up, so a stalled
@@ -68,10 +110,7 @@ func (b *Bus) Publish(ev Event) {
 	b.mu.Unlock()
 
 	for _, s := range subs {
-		select {
-		case s.ch <- ev:
-		default: // drop: subscriber is too slow
-		}
+		s.send(ev)
 	}
 }
 
@@ -99,38 +138,34 @@ func (b *Bus) State(module string, data State) {
 	b.Publish(Event{Type: EventState, Module: module, Data: data})
 }
 
-// Subscribe registers a new subscriber and replays recent history to it.
+// Subscribe registers a new subscriber and pre-fills it with recent history.
+//
+// History is filled synchronously under Bus.mu (through send()) rather than by
+// a detached goroutine: an async replay would send after Subscribe returned,
+// racing with unsubscribe/Close and panicking on a closed channel. Because the
+// buffer (subBuffer) exceeds maxHist, pre-filling can never block — so this
+// keeps Subscribe non-blocking without an unbounded queue.
 func (b *Bus) Subscribe() (<-chan Event, func()) {
-	s := &subscriber{ch: make(chan Event, 256)}
+	s := &subscriber{ch: make(chan Event, subBuffer)}
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
-		close(s.ch)
+		s.close()
 		return s.ch, func() {}
 	}
 	b.subs[s] = struct{}{}
-	hist := make([]Event, len(b.history))
-	copy(hist, b.history)
+	// Pre-fill history while holding Bus.mu, so replayed events are ordered
+	// before any live event published after Subscribe returns.
+	for _, ev := range b.history {
+		s.send(ev)
+	}
 	b.mu.Unlock()
 
-	// Replay asynchronously so Subscribe never blocks on a slow reader.
-	go func() {
-		for _, ev := range hist {
-			select {
-			case s.ch <- ev:
-			default:
-				return
-			}
-		}
-	}()
-
 	return s.ch, func() {
-		s.once.Do(func() {
-			b.mu.Lock()
-			delete(b.subs, s)
-			b.mu.Unlock()
-			close(s.ch)
-		})
+		b.mu.Lock()
+		delete(b.subs, s)
+		b.mu.Unlock()
+		s.close()
 	}
 }
 
@@ -149,6 +184,6 @@ func (b *Bus) Close() {
 	b.subs = map[*subscriber]struct{}{}
 	b.mu.Unlock()
 	for _, s := range subs {
-		s.once.Do(func() { close(s.ch) })
+		s.close()
 	}
 }

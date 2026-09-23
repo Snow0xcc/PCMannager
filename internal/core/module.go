@@ -34,6 +34,12 @@ type Option struct {
 	Step    int        `json:"step,omitempty"`
 	Choices []Choice   `json:"choices,omitempty"`
 	Help    string     `json:"help,omitempty"`
+	// Restart marks options whose change only takes effect after the module is
+	// restarted (e.g. rebuilding a window or re-subscribing a watcher). The app
+	// restarts the module for these; it replaces an earlier "[restart]" prefix
+	// hack in Help, which leaked markup into the UI and broke silently if the
+	// help text was edited.
+	Restart bool `json:"restart,omitempty"`
 	// VisibleIn keeps the option out of the default form when it only makes
 	// sense for a specific value of another option.
 	VisibleIf *VisibleIf `json:"visible_if,omitempty"`

@@ -83,7 +83,7 @@ func (f *Feature) Options() []core.Option {
 			Help: "超出上限后丢弃最旧的未固定条目"},
 		{Key: optStoreImages, Label: "记录图片", Kind: core.KindBool,
 			Default: defaultStoreImages,
-			Help:    "[restart] 同时记录复制的图片（PNG）"},
+			Help:    "同时记录复制的图片（PNG）", Restart: true},
 		{Key: optPasteOnCopy, Label: "写回后自动粘贴", Kind: core.KindBool,
 			Default: defaultPasteOnCopy,
 			Help:    "写回剪贴板后向前台窗口发送 Ctrl+V（尽力而为）"},
@@ -213,7 +213,7 @@ func (f *Feature) OpenUI() error {
 }
 
 // ApplyOption implements core.Module: settings that do not need a restart take
-// effect immediately (the panel restarts the module for "[restart]" ones).
+// effect immediately (the panel restarts the module for Restart-flagged ones).
 func (f *Feature) ApplyOption(key string, value any) error {
 	if f.ctx == nil {
 		return errors.New("clipboard: 模块未初始化")

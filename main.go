@@ -47,8 +47,25 @@ func main() {
 	a.InitModules()
 	a.StartModules()
 
+	// Reconcile the OS autostart registration with the persisted setting so
+	// a config edited by hand (or on another machine) takes effect at boot.
+	a.SyncAutostart()
+
 	log := a.Log()
-	log.Info("GoBox 已启动", "config", a.Config().Path(), "data_dir", a.DataDir())
+
+	// The preferences panel is the cross-platform control surface. A bind
+	// failure is not fatal: the tray and hotkeys keep working without it.
+	if err := a.StartPanel(); err != nil {
+		log.Warn("首选项面板未启动", "err", err)
+	}
+
+	// The tray is the primary control surface on Windows; elsewhere it is a
+	// no-op and the preferences panel takes its place.
+	if err := a.StartTray(); err != nil {
+		log.Warn("托盘图标不可用，改用首选项面板", "err", err)
+	}
+
+	log.Info("PCMannager 已启动", "config", a.Config().Path(), "data_dir", a.DataDir(), "panel", a.PanelURL())
 
 	// Termination signals must release the hotkeys, the log file and the
 	// config file even when no UI is around to request a quit.
@@ -60,8 +77,10 @@ func main() {
 		a.Shutdown()
 	}()
 
-	// Block until Shutdown cancels the application context.
-	a.Wait()
+	// Block until Shutdown cancels the application context. On Windows this
+	// is the Win32 message pump, which is what drives the tray icon; on other
+	// platforms it simply waits for the context.
+	a.Run()
 	// Shutdown is idempotent, so a signal-driven shutdown is not repeated.
 	a.Shutdown()
 }
