@@ -22,6 +22,15 @@ type ModuleInfo struct {
 	Options     []core.Option `json:"options"`
 	Actions     []core.Action `json:"actions"`
 	State       core.State    `json:"state"`
+	// LastError explains the most recent failure of this module: a Start or
+	// Stop error, a hotkey that could not be registered or a runtime error.
+	// "" means nothing has failed.
+	//
+	// The Windows build runs under -H windowsgui, so there is no console to
+	// read: without this field the only way to learn why a module is not
+	// running (e.g. clipboard failing because there is no X11 display) is to
+	// open the log file.
+	LastError string `json:"last_error"`
 }
 
 // ModulePatch is a partial update of a module's settings.

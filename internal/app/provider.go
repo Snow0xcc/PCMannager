@@ -10,9 +10,6 @@ import (
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
-// Version is the application version reported by the panel and the API.
-const Version = "0.1.0"
-
 // actionRunner is implemented by modules that expose user-triggerable actions.
 // It is optional: a module without actions simply skips that panel affordance.
 type actionRunner interface {
@@ -73,6 +70,10 @@ func (p panelProvider) moduleInfo(m core.Module) server.ModuleInfo {
 		Options:     m.Options(),
 		Actions:     m.Actions(),
 		State:       state,
+		// Why the module failed ("" = healthy). Without it the panel can only
+		// report that nothing is running, and on a -H windowsgui build there is
+		// no console to look at either.
+		LastError: p.a.ModuleError(id),
 	}
 }
 

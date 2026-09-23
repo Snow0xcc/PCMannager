@@ -41,6 +41,11 @@ jobs:
       # 产物名在 with: 之前就必须是确定的：steps.*.with 在步骤启动前求值，
       # 无法读取 build 步骤写入 $GITHUB_ENV 的值，因此这里直接用 matrix 计算。
       ARTIFACT: pcmannager-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+      # 版本号必须显式传入：workflow_dispatch 时没有 tag，git describe 会退化成
+      # 短 SHA；GITHUB_REF_NAME 在 tag 触发时就是 tag 名（如 v1.2.3）。
+      # scripts/build.sh 用它 -X 注入 internal/app.Version，面板与 /api/state
+      # 显示的就是这个值，也是自动更新比较的基准。
+      PCM_VERSION: ${{ github.ref_name }}
     steps:
       # 仓库通过 submodule 引入 reference/ 下的第三方参考仓库，必须递归拉取。
       - uses: actions/checkout@v4
@@ -85,7 +90,8 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           # 统一走 scripts/build.sh，避免 CI 与本地参数漂移。
-          # 该脚本对 Windows 追加 -H windowsgui，否则启动会弹出黑色控制台窗口。
+          # 该脚本对 Windows 追加 -H windowsgui，否则启动会弹出黑色控制台窗口；
+          # 并读取 PCM_VERSION（上面已设为 GITHUB_REF_NAME）注入 app.Version。
           bash scripts/build.sh "${GOOS}" "${GOARCH}" "${ARTIFACT}"
           ls -l "${ARTIFACT}"
 

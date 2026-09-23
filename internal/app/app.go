@@ -40,6 +40,18 @@ type App struct {
 	order   []string
 	state   map[string]bool // module id -> running
 
+	// lastError records the most recent failure per module (Start, Stop, a
+	// runtime call or a panic) and hotkeyError does the same for hotkey
+	// registration. Both are guarded by mu.
+	//
+	// They exist because the Windows build runs under -H windowsgui: there is
+	// no console, so without them the panel could only report that a module is
+	// not running and the user would have to open the log file to learn why.
+	// The two slots are kept apart so a later hotkey rebind can never erase the
+	// reason a module failed to start (and vice versa).
+	lastError   map[string]string
+	hotkeyError map[string]string
+
 	hotkeys *core.HotkeyManager
 
 	// tray renders the notification-area icon. It is nil when the platform
@@ -90,10 +102,14 @@ func New() (*App, error) {
 	}
 
 	bus := core.NewBus()
+
+	// sink tees log records into the bus; app is attached once it exists so the
+	// sink can also record failures for the panel (see busSink.Log).
+	sink := &busSink{bus: bus}
 	logger, closer, err := logx.New(logx.Options{
 		Level:   cfgMgr.Config().App.LogLevel,
 		File:    paths.LogFile(dataDir),
-		Sink:    busSink{bus: bus},
+		Sink:    sink,
 		Console: true,
 	})
 	if err != nil {
@@ -102,32 +118,98 @@ func New() (*App, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
-		cfgMgr:  cfgMgr,
-		bus:     bus,
-		log:     logger,
-		logFile: closer,
-		modules: map[string]core.Module{},
-		state:   map[string]bool{},
-		dataDir: dataDir,
-		ctx:     ctx,
-		cancel:  cancel,
-		hotkeys: core.NewHotkeyManager(func(f string, args ...any) {
-			// Hotkey problems are warnings: log them and tell the panel.
-			msg := fmt.Sprintf(f, args...)
-			logger.Warn(msg)
-			bus.Log("hotkey", "warn", msg)
-		}),
+		cfgMgr:      cfgMgr,
+		bus:         bus,
+		log:         logger,
+		logFile:     closer,
+		modules:     map[string]core.Module{},
+		state:       map[string]bool{},
+		lastError:   map[string]string{},
+		hotkeyError: map[string]string{},
+		dataDir:     dataDir,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
+	// The warn callback is installed after `a` exists so it can attribute a
+	// hotkey problem to the module that owns the combo (see hotkeyWarn).
+	a.hotkeys = core.NewHotkeyManager(a.hotkeyWarn)
+	// Let every error-level log record also update LastError: modules report
+	// runtime failures through the bus (which is all a -H windowsgui build
+	// leaves them), so this turns "quiet" errors into panel state.
+	sink.app = a
 	winui.SetDPIAware()
 	return a, nil
+}
+
+// hotkeyWarn is the warn callback handed to core.HotkeyManager.
+//
+// Hotkey problems are warnings: they are logged and pushed to the panel, and
+// the reason is recorded against the module that owns the combo so the panel
+// can explain a dead shortcut. It never stops the module.
+func (a *App) hotkeyWarn(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	a.log.Warn(msg)
+	a.bus.Log("hotkey", "warn", msg)
+	if id := a.hotkeyModule(msg); id != "" {
+		a.setHotkeyError(id, msg)
+	}
+}
+
+// hotkeyModule identifies which registered module a hotkey warning is about.
+//
+// HotkeyManager.warn names the module inside the message text, and the registry
+// is the only authority on which ids exist, so the match is done here against
+// the live registry rather than by parsing. "" means the warning is app-wide
+// (a conflict list, say) and belongs in the log instead of a module's state.
+func (a *App) hotkeyModule(msg string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for id := range a.modules {
+		if id != "" && strings.Contains(msg, id) {
+			return id
+		}
+	}
+	return ""
 }
 
 func defaultDataDir() string { return "" }
 
 // busSink adapts the event bus to the logx.BusSink interface.
-type busSink struct{ bus *core.Bus }
+//
+// It carries an optional *App link: modules report runtime failures by logging
+// (the only channel a -H windowsgui build leaves them), so every error-level
+// record forwarded here is also recorded as that module's LastError. Without
+// this a module that starts fine and then fails at runtime — clipboard losing
+// its X11 connection, say — keeps looking healthy to the panel.
+//
+// The link is written once during New, before any module can log, and is never
+// mutated afterwards, so reading it here needs no lock.
+type busSink struct {
+	bus *core.Bus
+	app *App
+}
 
-func (s busSink) Log(module, level, msg string) { s.bus.Log(module, level, msg) }
+func (s *busSink) Log(module, level, msg string) {
+	s.bus.Log(module, level, msg)
+	if s.app == nil || module == "" || level != "error" {
+		return
+	}
+	s.app.recordRuntimeError(module, msg)
+}
+
+// recordRuntimeError stores a module-reported runtime failure in that module's
+// error slot so the panel can show it.
+//
+// Only known module ids are recorded, so app-level errors ("app", "hotkey", …)
+// stay in the log instead of being attributed to a module.
+func (a *App) recordRuntimeError(module, msg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, known := a.modules[module]; !known {
+		return
+	}
+	a.lastError[module] = msg
+}
 
 // Register adds a module and declares its option defaults.
 func (a *App) Register(m core.Module) error {
@@ -200,9 +282,11 @@ func (a *App) Running(id string) bool {
 // InitModules initialises every module, isolating failures (PRD GFR-12).
 func (a *App) InitModules() {
 	for _, m := range a.Modules() {
-		a.safeCall(m.ID(), "Init", func() error {
+		// A module that fails Init never reaches Start, so its reason would
+		// otherwise never reach the panel either.
+		a.setError(m.ID(), a.safeCallErr(m.ID(), "Init", func() error {
 			return m.Init(a.moduleContext(m))
-		})
+		}))
 	}
 }
 
@@ -230,12 +314,17 @@ func (a *App) Enable(id string) error {
 	}
 
 	if err := a.safeCallErr(id, "Start", m.Start); err != nil {
+		// The Windows build has no console (-H windowsgui), so record the reason:
+		// it is the only place the panel (and therefore the user) can see it.
+		a.setError(id, err)
 		a.bus.Log(id, "error", fmt.Sprintf("启动失败: %v", err))
 		return err
 	}
+
 	a.mu.Lock()
 	a.state[id] = true
 	a.mu.Unlock()
+	a.clearError(id)
 
 	a.bindHotkey(m)
 	a.log.Info("模块已启动", "module", id)
@@ -251,7 +340,12 @@ func (a *App) Disable(id string) error {
 		return fmt.Errorf("未找到模块 %s", id)
 	}
 	a.hotkeys.Unbind(id)
-	a.safeCall(id, "Stop", m.Stop)
+	// Unbinding clears the hotkey slot as well: nothing is registered any more,
+	// so a stale "hotkey occupied" note would be misleading.
+	a.setHotkeyError(id, "")
+
+	stopErr := a.safeCallErr(id, "Stop", m.Stop)
+	a.setError(id, stopErr)
 
 	a.mu.Lock()
 	a.state[id] = false
@@ -275,12 +369,36 @@ func (a *App) EnableModule(id string, on bool) error {
 }
 
 // bindHotkey registers a module's configured global hotkey.
+//
+// core.HotkeyManager.Bind reports problems only through its warn callback, so
+// the outcome is mirrored into the module's "hotkey" error slot here: an
+// invalid or refused hotkey becomes visible as LastError while the module keeps
+// running — a lost shortcut is a warning, not a stopped module.
 func (a *App) bindHotkey(m core.Module) {
 	id := m.ID()
 	hk := a.cfgMgr.Module(id).Hotkey()
-	a.hotkeys.Bind(id, hk, func() error {
-		return a.safeCallErr(id, "OnHotkey", m.OnHotkey)
-	})
+	_, ok, err := core.ParseHotkey(hk)
+	switch {
+	case hk == "":
+		// Unbound on purpose: drop the old registration along with its note.
+		a.hotkeys.Unbind(id)
+		a.setHotkeyError(id, "")
+	case err != nil || !ok:
+		a.hotkeys.Unbind(id)
+		a.setHotkeyError(id, fmt.Sprintf("热键 %s 无效: %v", hk, err))
+	default:
+		// Assume the binding will be refused and clear that again only once the
+		// manager really owns the combo: Bind cannot return an error, so this is
+		// the only way to catch the "occupied by another program" case. A more
+		// specific reason from warn() overwrites it while Bind runs.
+		a.setHotkeyError(id, fmt.Sprintf("热键 %s 注册失败（可能被其它程序占用）", hk))
+		a.hotkeys.Bind(id, hk, func() error {
+			return a.safeCallErr(id, "OnHotkey", m.OnHotkey)
+		})
+		if _, bound := a.hotkeys.Combo(id); bound {
+			a.setHotkeyError(id, "")
+		}
+	}
 }
 
 // RebindHotkeys refreshes every hotkey after a configuration change.
@@ -299,7 +417,9 @@ func (a *App) RunHotkey(id string) error {
 	if !ok {
 		return fmt.Errorf("未找到模块 %s", id)
 	}
-	return a.safeCallErr(id, "OnHotkey", m.OnHotkey)
+	err := a.safeCallErr(id, "OnHotkey", m.OnHotkey)
+	a.setError(id, err)
+	return err
 }
 
 // OpenUI opens a module's dedicated window.
@@ -308,7 +428,9 @@ func (a *App) OpenUI(id string) error {
 	if !ok {
 		return fmt.Errorf("未找到模块 %s", id)
 	}
-	return a.safeCallErr(id, "OpenUI", m.OpenUI)
+	err := a.safeCallErr(id, "OpenUI", m.OpenUI)
+	a.setError(id, err)
+	return err
 }
 
 // ApplyOption applies a runtime option change and, when the module asks for it,
@@ -334,7 +456,12 @@ func (a *App) ApplyOption(module, key string, value any) error {
 	if err := a.safeCallErr(module, "ApplyOption", func() error {
 		return m.ApplyOption(key, value)
 	}); err != nil {
+		// A rejected option is recorded but does not fail the request: the value
+		// is already persisted and restartable options are retried below.
+		a.setError(module, err)
 		a.log.Warn("应用配置项失败", "module", module, "key", key, "err", err)
+	} else {
+		a.clearError(module)
 	}
 
 	if needsRestart && a.Running(module) {
@@ -414,7 +541,7 @@ func (a *App) Shutdown() {
 
 	for _, m := range a.Modules() {
 		if a.Running(m.ID()) {
-			a.safeCall(m.ID(), "Stop", m.Stop)
+			a.setError(m.ID(), a.safeCallErr(m.ID(), "Stop", m.Stop))
 		}
 	}
 	a.cancel()
@@ -741,6 +868,65 @@ func (a *App) moduleContext(m core.Module) *core.Context {
 		Config:  a.cfgMgr.Module(m.ID()),
 		App:     a,
 		DataDir: moduleDir,
+	}
+}
+
+// ModuleError reports the most recent failure recorded for a module: Start,
+// Stop, Init, ApplyOption, OpenUI, OnHotkey, a runtime error published to the
+// bus, or a hotkey that could not be registered. "" means no failure on record.
+//
+// It is the panel-facing half of the slots written by setError/setHotkeyError,
+// and takes the lock itself rather than reading them inline so every read is
+// consistent under a module toggling concurrently.
+func (a *App) ModuleError(id string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return joinModuleError(a.lastError[id], a.hotkeyError[id])
+}
+
+// setError records why a module failed and clears the record when err is nil.
+func (a *App) setError(id string, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err == nil {
+		delete(a.lastError, id)
+		return
+	}
+	a.lastError[id] = err.Error()
+}
+
+// clearError drops a module's recorded failure after a successful operation.
+func (a *App) clearError(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.lastError, id)
+}
+
+// setHotkeyError records or clears a hotkey registration failure for a module.
+//
+// The hotkey slot is separate from setError on purpose: a failed registration
+// is a warning that does not stop the module, so it must neither overwrite a
+// Start failure nor be wiped when Start/Stop succeeds — and a later successful
+// rebind must not erase that Start failure either.
+func (a *App) setHotkeyError(id, msg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if msg == "" {
+		delete(a.hotkeyError, id)
+		return
+	}
+	a.hotkeyError[id] = msg
+}
+
+// joinModuleError merges the two error slots into one panel-facing string.
+func joinModuleError(modErr, hotkeyErr string) string {
+	switch {
+	case modErr != "" && hotkeyErr != "":
+		return modErr + "；" + hotkeyErr
+	case modErr != "":
+		return modErr
+	default:
+		return hotkeyErr
 	}
 }
 
