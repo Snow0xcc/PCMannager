@@ -70,11 +70,12 @@ go vet ./...
 
 - [ ] **1. 实际跑一次 CI 发布**：推送测试 tag（如 `v0.0.1-rc1`）验证 `.github/workflows/release.yml` 全流程，
       确认 4 个产物 `pcmannager-<os>-<arch>[.exe]` 均生成并上传 Release。本地已能构建，但 CI 环境未实测。
-- [ ] **2. 提交当前未入库的改动**：`git status` 中 `main.go`、`modules/*`（多个模块重写/删除文件）、
-      `internal/core/module.go`、`internal/winui/api_windows.go`、`.github/workflows/release.yml` 尚未提交；
-      另有未跟踪的 `docs/MODULE-CONTRACT.md`、`internal/server/`、`.rustcode/`。
-      **注意**：`.rustcode/` 疑似编辑器/工具目录，提交前确认是否应加入 `.gitignore`。
-- [ ] **3. `go mod tidy`**：迁移后依赖可能变化（旧 walk 依赖是否仍需保留），跑一遍并确认 `go.mod`/`go.sum` 干净。
+- [x] **2. 提交当前未入库的改动** ✅ 已完成（`ac6cae4`）：`internal/wailsapp/`、`internal/panel/`
+      （含 `panel.go`）、`scripts/build.sh`、`main_{windows,other}.go` 等全部入库。
+      `.rustcode/` 与根目录 `config.yaml`（app 落盘的用户配置副本，正常位置是数据目录下）
+      已加入 `.gitignore`。
+- [x] **3. `go mod tidy`** ✅ 已跑过：无变化（依赖本就干净）。`lxn/walk` **仍需保留**——
+      `modules/preferences/panel_windows.go` 与 `modules/repair/panel_windows.go` 在用。
 - [x] **4. 确认 `internal/server/` 的作用** ✅ 已落地：面板服务端已接入 `app`。
       `internal/server` 提供 JSON REST（`/api/state`、`/api/modules[/id]`、`/api/app`、`/api/events` SSE）+ `embed`
       内置的 `web/index.html` 单页面板；`internal/app/provider.go` 实现 `server.Provider`
@@ -94,6 +95,10 @@ go vet ./...
       macOS 的 launchd 方案仍未实现（Linux 走 .desktop，Windows 走注册表）。
 - [ ] **7. 自动更新**：代码中**完全没有**。规划用 GitHub Releases API 比对版本 + `go-github-selfupdate` 类库，
       托盘菜单加"检查更新"入口。
+      **前置条件已完成（2026-09-24）**：`internal/app.Version` 由 `const` 改为 `var`，
+      `scripts/build.sh` 用 `-X` 注入；取值优先 `PCM_VERSION`（CI 设为 `github.ref_name`），
+      否则 `git describe`，未打 stamp 时回退内嵌 build info、再兜底 `0.0.0-dev`。
+      因此任何构建都有非空版本号，版本比较有可信基准。
 - [~] **8. 首选项面板迁移到 Wails**：**已按"并存"方案落地原生窗口骨架**（2026-09-24）。
       新增 `internal/wailsapp`（`_windows.go`/`_other.go` 成对，Wails v2.10.2/WebView2），
       Windows 启动时在独立 `LockOSThread` 线程开启原生窗口（托盘消息泵仍占 main，互不抢占）；

@@ -490,6 +490,8 @@ function renderModulePage(root, m) {
   // 最近错误常驻在模块页顶部：模块没跑起来时，用户不必翻事件日志就能看到原因。
   const lastError = String(m.last_error || "");
   if (lastError) {
+    // 热键类错误（冲突/不支持/无效）可以直接引导用户改绑，而不是只告诉他原因。
+    const hotkeyIssue = /热键/.test(lastError);
     const box = el(
       '<div class="alert">' + icon("warn") +
         '<div class="alert-body">' +
@@ -497,7 +499,18 @@ function renderModulePage(root, m) {
           '<div class="alert-hint">该模块未能按预期启动或运行，详情见左侧“事件日志”。</div>' +
         '</div>' +
       '</div>');
-    card.appendChild(box);
+    if (hotkeyIssue) {
+      const jump = el('<button class="btn" id="m-hkfix">' + icon("keyboard") + '修改热键</button>');
+      jump.onclick = () => {
+        const input = box.parentElement.querySelector("#m-hotkey");
+        if (!input) return;
+        input.scrollIntoView({ block: "center", behavior: "smooth" });
+        input.focus();
+        input.select();
+      };
+      box.appendChild(jump);
+    }
+   card.appendChild(box);
   }
 
   const status = el('<div class="row"><label>状态</label><span class="grow"></span></div>');
