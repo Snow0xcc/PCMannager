@@ -138,8 +138,15 @@ go vet ./...
       `clipboard`（History 顺序、上限裁剪、Resize、去重、Delete/DeleteExcept/Clear、PruneOlder、
       并发 AddText 与混合操作 race 验证）、
       `taskbar`（humanScale 档位边界、Collector interval 钳制/采样/Stop 不泄漏、
-      Options 覆盖 25 个 opt*、Actions、toInt/round1/pct/rate、State 字段）。
-      **仍缺** `preferences` 的单测。
+      Options 覆盖 25 个 opt*、Actions、toInt/round1/pct/rate、State 字段）、
+      **`internal/app`** ✅（2026-09-24 补齐，此前零覆盖，而它是 P0 托盘/热键/Bus 修复的调用方）：
+      注册去重与默认值回填、Enable/Disable 往返、`ApplyOption` 的 Restart 与非 Restart 语义、
+      无效热键拒绝且不落盘、`LastError` 记录与清除、Shutdown 幂等、模块注册顺序、`Version` 非空；
+      **`modules/preferences`** ✅（TODO #15 点名的最后一块）：nil Manager 容错、
+      ModuleIDs 顺序与去重、仅存在于配置的模块仍出现、`Show` 在非 Windows 与 nil 下均不 panic。
+      全仓共 **202 个用例**，`go test -race -count=1 ./internal/... ./modules/...` 全绿。
+      **仍缺**：`internal/tray`（Windows build-tag 仅验证可编译）、`internal/winui`、
+      `internal/logx`、`internal/paths`、`internal/wailsapp`（均为平台 UI/IO，收益低）。
 - [ ] **18. 消除 `[restart]` 元数据 hack** ✅ 已修复：原先 `app.go` 用
       `strings.HasPrefix(o.Help, "[restart]")` 判断改配置后是否需重启模块——改一次帮助文案
       就会静默丢失重启语义，且面板上会显示 `[restart]` 脏字符。已新增
