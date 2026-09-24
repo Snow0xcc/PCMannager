@@ -17,6 +17,7 @@ import (
 	"github.com/snow0xcc/pcmannager/modules/screenshot"
 	"github.com/snow0xcc/pcmannager/modules/selfcontext"
 	"github.com/snow0xcc/pcmannager/modules/taskbar"
+	"github.com/snow0xcc/pcmannager/modules/updater"
 )
 
 func main() {
@@ -47,6 +48,7 @@ func main() {
 	a.MustRegister(screenshot.NewFeature())
 	a.MustRegister(selfcontext.NewFeature())
 	a.MustRegister(repair.NewFeature())
+	a.MustRegister(updater.NewFeature())
 
 	a.InitModules()
 	a.StartModules()

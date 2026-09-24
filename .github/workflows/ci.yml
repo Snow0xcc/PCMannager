@@ -1,0 +1,116 @@
+# 持续集成：推送到 main 或发起 PR 时运行。
+#
+# 与 release.yml 的分工：
+#   - 本文件：每次 push/PR 的快速门槛——lint、单测、四平台可编译性。
+#   - release.yml：打 tag 时才跑的发布流程（含产物上传与 GitHub Release）。
+#
+# 抽出来是因为 release.yml 只由 v* tag 触发；没有它，普通提交不会跑任何
+# 检查，问题会积累到打 tag 时才集中爆发。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (emoji 约束)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      # 客户端界面禁用 emoji（项目硬约束）：新增前端后必须仍然通过。
+      - name: emoji check
+        run: bash scripts/check-emoji.sh
+
+  test:
+    name: test (go test -race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      - name: go test
+        run: go test -race -count=1 ./internal/... ./modules/...
+
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      # 编译验证走统一脚本：与发布同源参数，Windows 必须带 -H windowsgui。
+      # 版本号用固定占位——此 job 只验证可编译性，产物不发布。
+      - name: build
+        run: |
+          bash scripts/build.sh "${GOOS}" "${GOARCH}" "pcm-${GOOS}-${GOARCH}"
+          ls -l "pcm-${GOOS}-${GOARCH}"
+
+  vet:
+    name: vet + gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt check
+        run: |
+          set -euo pipefail
+          # 排除 submodule 参考代码 reference/；只检查工作区中真实存在的 .go 文件。
+          mapfile -t files < <(git ls-files '*.go' | grep -v '^reference/' || true)
+          existing=()
+          for f in "${files[@]:-}"; do
+            [ -n "${f}" ] && [ -f "${f}" ] && existing+=("${f}")
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "no go files to check"
+            exit 0
+          fi
+          unformatted=$(gofmt -l "${existing[@]}")
+          if [ -n "${unformatted}" ]; then
+            echo "::error::以下文件未通过 gofmt，请运行 gofmt -w 后重新提交："
+            echo "${unformatted}"
+            exit 1
+          fi
+          echo "gofmt check passed (${#existing[@]} files)"

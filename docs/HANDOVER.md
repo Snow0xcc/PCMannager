@@ -182,14 +182,26 @@ PCM_VERSION=v0.1.0-rc2 bash scripts/build.sh windows amd64 dist/pcmannager-windo
 - 触发 `Danger` 条目：面板需二次确认（红条 + 再点一次）。
 - 判据：命令确实执行且结果写入事件日志。
 
-### 6.5 热键
+### 6.5 自动更新（updater 模块，默认关闭）
+
+面板开启 `自动更新` 模块后逐项验证（Linux 已实测 check/download 前置链路，
+**apply 全链路只能在 Windows 实机验证**）：
+
+- `check_now`：state 显示 `latest` 与匹配的平台资产名（如
+  `pcmannager-windows-amd64.exe`），事件日志出现"已是最新版本/发现新版本"。
+- `download`：更新包落到 `DataDir/pcmannager.update`，state.staged 出现该路径。
+- `apply_update`（danger+admin）：应弹 UAC → 等待本进程退出 → 备份 exe 为
+  `.bak` → 替换 → 自动重启；重启后 `check_now` 应显示 `update_available=false`。
+- 失败恢复点：若替换中断，`.bak` 即旧版本，可手工改回。
+
+### 6.6 热键
 
 - 默认 `F1`（截图）、`Ctrl+\``（剪贴板）、`Ctrl+Alt+T`（任务栏）是否触发。
 - 若被其它程序占用：面板该模块页应显示红色告警条说明原因，并提供
   “修改热键”按钮一键跳到输入框——**这是本轮新增能力**。
 - 改绑为其它组合后应立即生效，不需重启应用。
 
-### 6.6 回归项
+### 6.7 回归项
 
 托盘启退循环、剪贴板历史记录与写回、截图编辑器、selfcontext 采集开关
 （默认关闭，启用前应看到隐私说明块）。

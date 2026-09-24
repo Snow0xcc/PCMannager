@@ -169,6 +169,10 @@ type ModuleConfig interface {
 
 // AppControl exposes application lifecycle to modules.
 type AppControl interface {
+	// Version returns the running application version (ldflags-stamped for
+	// release builds, build-info or "0.0.0-dev" otherwise). Modules such as
+	// the updater compare this against the latest release tag.
+	Version() string
 	// Shutdown exits the application.
 	Shutdown()
 	// PanelURL returns the local preferences panel address.

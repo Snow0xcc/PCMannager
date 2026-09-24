@@ -93,12 +93,21 @@ go vet ./...
       此前**无人调用**。现由 `App.applyAutostart()` 统一承接，三条路径均已接线：
       启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单"开机自启"开关、面板 `PATCH /api/app`。
       macOS 的 launchd 方案仍未实现（Linux 走 .desktop，Windows 走注册表）。
-- [ ] **7. 自动更新**：代码中**完全没有**。规划用 GitHub Releases API 比对版本 + `go-github-selfupdate` 类库，
-      托盘菜单加"检查更新"入口。
-      **前置条件已完成（2026-09-24）**：`internal/app.Version` 由 `const` 改为 `var`，
-      `scripts/build.sh` 用 `-X` 注入；取值优先 `PCM_VERSION`（CI 设为 `github.ref_name`），
-      否则 `git describe`，未打 stamp 时回退内嵌 build info、再兜底 `0.0.0-dev`。
-      因此任何构建都有非空版本号，版本比较有可信基准。
+- [~] **7. 自动更新**：**已实现为 updater 模块**（2026-09-24），零第三方依赖（不用 go-github-selfupdate）。
+      `modules/updater` 实现 `core.Module`：定时检查 GitHub Releases（`auto_check` 默认开、
+      `interval_hours` 1-168h）、`include_prerelease` 开关（SemVer 比较：final > rc，
+      rc→更新 rc 需 opt-in）、发现新版经 Bus 事件 + 系统通知提醒。
+      面板动作三步走：`check_now` 检查 → `download` 下载平台匹配资产到 DataDir 暂存
+      （原子写 + sha256 + 128MiB 上限 + 主机白名单：仅 api.github.com/github.com/
+      objects.githubusercontent.com）→ `apply_update`（danger+admin）显式应用：
+      写 PowerShell helper（等进程退出→备份→替换→重启）经 `sysutil.RunElevated` 提权执行。
+      非 Windows 走 shell 等价路径；root 下直接 swap+syscall.Exec。
+      `core.AppControl` 新增 `Version()`（*App 返回 app.Version），模块由此拿到可信版本基准。
+      默认**模块本身关闭**（`enabled: false`），需用户在面板显式开启。
+      **未验证**：真实替换流程（等进程退出→swap→重启）只能在 Windows 实机验证；
+      主机白名单在代理/企业网环境可能拦截下载（设计如此，安全优先）。
+      - [ ] Windows 实机验证 apply_update 全链路（HANDOVER 6.4 补充）
+      - [ ] 托盘菜单加"检查更新"入口（现仅面板动作）
 - [~] **8. 首选项面板迁移到 Wails**：**已按"并存"方案落地原生窗口骨架**（2026-09-24）。
       新增 `internal/wailsapp`（`_windows.go`/`_other.go` 成对，Wails v2.10.2/WebView2），
       Windows 启动时在独立 `LockOSThread` 线程开启原生窗口（托盘消息泵仍占 main，互不抢占）；

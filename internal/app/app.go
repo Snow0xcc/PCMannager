@@ -579,6 +579,10 @@ func (a *App) SetPanelURL(u string) {
 	a.panelURLMu.Unlock()
 }
 
+// Version implements core.AppControl: it exposes the running version to
+// modules (the updater compares it against the latest release tag).
+func (a *App) Version() string { return Version }
+
 // PanelURL returns the preferences panel address.
 func (a *App) PanelURL() string {
 	a.panelURLMu.RLock()
