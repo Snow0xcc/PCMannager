@@ -54,6 +54,9 @@ type editorState struct {
 	// ctrlResult is the path produced by a finished capture, so "copy" and "open
 	// folder" have something to act on.
 	ctrlResult string
+	// ctrlFont is the control bar's text font, created with the bar and released
+	// when it is destroyed (like the other windows' fonts).
+	ctrlFont uintptr
 	// scrollAuto mirrors the auto-scroll toggle in scroll mode.
 	scrollAuto bool
 
@@ -325,9 +328,14 @@ func (e *editorState) teardown() {
 	// The control bar is a separate window on the same thread, so it must be
 	// destroyed here (DestroyWindow from another thread silently fails and leaks
 	// a dead window on screen).
+	font := e.ctrlFont
+	e.ctrlFont = 0
 	if ctrl != nil {
 		winui.KillTimer(ctrl.HWND(), edCtrlTimer)
 		ctrl.Destroy()
+	}
+	if font != 0 {
+		winui.DeleteObject(font)
 	}
 	if win != nil {
 		winui.KillTimer(win.HWND(), edTimer)

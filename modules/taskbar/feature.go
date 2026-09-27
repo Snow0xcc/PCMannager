@@ -72,9 +72,10 @@ const (
 	defaultSpeedUnit  = "B"
 	defaultUnitSpace  = true
 	defaultFontFamily = "Microsoft YaHei"
-	// defaultFontSize is a point size. 11 reads clearly at typical taskbar
-	// heights; 9 (the old value) was noticeably small against the clock.
-	defaultFontSize = 11
+	// defaultFontSize is a point size. 13 reads clearly at typical taskbar
+	// heights and pairs with the measured layout: the fields now grow with the
+	// font, so a larger readout stays aligned instead of overlapping.
+	defaultFontSize = 13
 	// The size range also moves up: below 8 the readout is not legible, and the
 	// upper bound allows a large, prominent strip.
 	defaultFGColor      = "#FFFFFF"
@@ -85,7 +86,9 @@ const (
 	defaultRender       = "gdi"
 	defaultAvoidWidgets = true
 	defaultMultiMonitor = false
-	defaultWidth        = 200
+	// defaultWidth is wider than the old 200px because the readout is bigger and
+	// the two columns are now measured rather than squeezed into fixed fields.
+	defaultWidth = 230
 )
 
 // Sampling bounds: below 200ms the sampler costs more CPU than it reports on.

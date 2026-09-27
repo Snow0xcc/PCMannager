@@ -156,6 +156,43 @@ go vet ./...
       标注存于窗口坐标并按需重放，导出时用新增的 `winui.RenderOverlay` 合成进裁剪图；
       选区下方浮动工具栏扩展为 8 个按钮，上方新增样式条。
 
+## 真实 Windows 实机反馈（第五轮，2026-09-27）
+
+录屏与滚动截图落地，并修复三处实测缺陷：
+
+- [x] **43. 录屏（GIF）**：`Alt+Shift` 无关，面板动作「录屏 (GIF)」打开编辑器进入框选模式，
+      工具栏为「开始录制 / 取消」；录制中浮现独立置顶控制条（停止并保存 / 丢弃）。
+      实现为 `modules/screenshot/recorder.go`（`frameEncoder`，共享 Plan9 调色板、帧上限 1200）
+      + `record_flow.go`（采样循环）。**格式仅 GIF**：纯 Go 无成熟 H.264 编码器，
+      项目约束零 cgo + 无 ffmpeg，MP4/音频/摄像头/麦克风均无法实现。
+- [x] **44. 滚动截图**：框选后手动滚动或自动滚动（注入滚轮），条带匹配拼接为长图。
+      算法在 `scroll.go`：从上一帧位置**向外辐射**搜索条带（纯色/重复行动内容有多解，
+      全帧扫描会选错位置），容差 4、最大高度 20000、连续 4 帧无新增即判定到底。
+      自动滚动会把光标移到选区中心再 `SendInput` 滚轮（新增 `winui.SetCursorPos/ScrollWheel`），
+      属“控制用户电脑”行为，已在日志与面板提示中说明。
+- [x] **45. 截图/录屏编辑器窗口遮挡与焦点**：
+  - 编辑器窗口本身会盖住选区，故录制/滚动开始前 `parkEditor()` 隐藏它；
+  - 控制条是**另一个窗口**（`WS_EX_TOPMOST|WS_EX_TOOLWINDOW`），与编辑器同线程，
+    `teardown` 里一并销毁（`DestroyWindow` 跨线程会静默失败）；
+  - 编辑器轮询 `captureStatus()` 识别“自然结束”（录屏到帧上限、滚动到底），自动收尾。
+- [x] **46. 非 Windows 降级成对补齐**：`editor_other.go` 的 `openEditor` 签名随模式/hooks 变化，
+      `input_other.go` 新增 `ScrollWheel`/`SetCursorPos` 空实现——否则 linux/darwin 构建会断。
+- [x] **47. 版本号注入失效（影响自动更新）**：`internal/app.Version` 原本是
+      `var Version = versionFromBuildInfo()`，**包初始化器在链接期 `-X` 之后运行**，
+      把注入的 tag 覆盖回内嵌 build info（实测日志显示 `v0.1.0-rc1.0.<日期>+dirty`
+      而非构建时的 `v0.1.0-rc1-8-gd412d3e-dirty`）。
+      修法：`var Version = devVersion` + `init()` 里“仅当仍等于 devVersion 才回退”。
+      实测注入 `PCM_VERSION=v9.9.9-test` 后日志正确显示 `v9.9.9-test`。
+      这是 #7 自动更新的前置条件：比较基准错了会导致误判“有新版本”。
+- [x] **48. 剪贴板面板动作无法自动粘贴**：`Feature.writeBack` 把 `winui.Invalid` 当粘贴目标
+      传给 `sendPaste`，后者校验目标无效直接返回错误 → 「写回最近一条」即使开启
+      `paste_on_copy` 也永远粘贴失败。修法：开启时取 `winui.FocusedWindow()`（写回前捕获）。
+- [x] **49. 任务栏字号偏小、排版拥挤（根因）**：网格的数值域/单位域/标签域/电池图标原本是
+      **固定像素常量**，只在某个字号下对齐；把字号调大后字段还不够宽，文字互相挤压。
+      改为按**字体实测**推导（`measureGrid` → `computeGridMetrics`），字段与行高随字号缩放，
+      默认字号 11→**13**、宽度 200→**230**（配置里写死的旧值仍可通过面板改回）。
+      新增 `grid_windows_test.go` 守护“字段随字号增长 / 不小于内容 / 零测量不塌陷”。
+
 ## P1 — 待验证与收尾
 
 - [ ] **1. 实际跑一次 CI 发布**：推送测试 tag（如 `v0.0.1-rc1`）验证 `.github/workflows/release.yml` 全流程，

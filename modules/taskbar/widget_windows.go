@@ -469,38 +469,115 @@ func (w *widget) paint(hwnd winui.HWND) {
 		winui.DT_SINGLELINE|winui.DT_VCENTER|winui.DT_NOPREFIX|winui.DT_END_ELLIPSIS|w.alignFlags())
 }
 
-// Grid layout metrics, in device pixels.
+// Grid layout metrics.
 const (
-	// gridColGap is the fixed gutter between the system column and the network
-	// column. A fixed gutter (rather than distributing free space) is what keeps
-	// the two groups visually separate and their left edges stable.
-	gridColGap = 14
-	// gridLabelGap separates a label/icon from its value.
-	gridLabelGap = 5
-	// batteryIconW/H size the drawn battery glyph.
-	batteryIconW = 26
-	batteryIconH = 12
-	// gridColumnMax caps each column so a wild network rate cannot push the
-	// system column around; the excess is clipped, not reflowed.
-	gridColumnMax = 150
-
-	// gridNumFieldW is the fixed width the network number is right-aligned in.
-	// This is what makes "13" and "276" share a right edge (the tabular-figures
-	// effect) and keeps the units below each other on one x.
-	gridNumFieldW = 46
-	// gridUnitGap separates the number field from the unit.
-	gridUnitGap = 4
-	// gridUnitW is the room reserved for a unit ("B/s", "KB/s").
-	gridUnitW = 40
 	// unitWeight is how much of the foreground survives in the unit text.
 	unitWeight = 0.6
-
-	// gridLabelFieldW is the fixed field the left column's label or icon occupies,
-	// so the values below each other start at one x.
-	gridLabelFieldW = 30
-	// gridSysValueW is the room reserved for a system value ("100%").
-	gridSysValueW = 44
+	// gridRowLeading is the extra leading added to a measured line, so the two
+	// rows never touch.
+	gridRowLeading = 2
 )
+
+// gridMetrics are the layout dimensions derived from the CURRENT fonts.
+//
+// They are measured rather than fixed constants, and that is the whole point: a
+// fixed pixel field (the old layout reserved 46px for the number) only lines up
+// at one font size, so raising the font made the fields too narrow and the text
+// overlapped — the "ugly, cramped" readout users reported. Measuring keeps every
+// field exactly as wide as its content needs at whatever size is configured.
+type gridMetrics struct {
+	labelFieldW int32
+	sysValueW   int32
+	numFieldW   int32
+	unitW       int32
+	colGap      int32
+	labelGap    int32
+	unitGap     int32
+	batteryW    int32
+	batteryH    int32
+	rowH        int32
+	// blockH is the height of the two stacked rows, used to centre the block.
+	blockH int32
+}
+
+// measureGrid derives the grid dimensions from the value and auxiliary fonts.
+func (w *widget) measureGrid(c *winui.Canvas) gridMetrics {
+	// Value metrics drive the fields the numbers sit in.
+	restore := c.SelectFont(w.font)
+	vh := textHeight(c, "8")
+	vsw := textWidth(c, "100%")
+	// "8888" is the widest number worth reserving for: a rate past 9999 is
+	// rendered at the next unit (KB/s, MB/s), so more digits never appear.
+	vmw := textWidth(c, "8888")
+	restore()
+
+	// Auxiliary metrics drive the labels, arrows and units.
+	restore = c.SelectFont(w.auxFont)
+	ah := textHeight(c, "↑")
+	lw := textWidth(c, "内存")
+	uw := textWidth(c, "KB/s")
+	restore()
+
+	return computeGridMetrics(vh, vsw, vmw, ah, lw, uw)
+}
+
+// computeGridMetrics is the pure layout arithmetic behind the grid.
+//
+// It takes the measured text dimensions as arguments rather than a canvas so it
+// can be tested without a device context — the readout's field sizes are exactly
+// what broke when they were fixed pixel constants, so they deserve a guard that
+// runs in the unit test suite.
+func computeGridMetrics(valueH, valuePctW, numW, auxH, labelW, unitW int32) gridMetrics {
+	var m gridMetrics
+
+	lineH := valueH
+	if auxH > lineH {
+		lineH = auxH
+	}
+	if lineH < 8 {
+		lineH = 8
+	}
+
+	m.rowH = lineH + gridRowLeading
+	m.blockH = 2 * m.rowH
+
+	m.sysValueW = valuePctW
+	m.numFieldW = numW
+	m.unitW = unitW
+	// Gaps scale with the line height so a large font does not look pinched.
+	m.colGap = lineH/2 + 6
+	m.labelGap = lineH/4 + 3
+	m.unitGap = m.labelGap
+
+	// The battery glyph replaces a text label, so it must fit the same field.
+	m.batteryH = lineH - 4
+	if m.batteryH < 8 {
+		m.batteryH = 8
+	}
+	m.batteryW = m.batteryH * 2
+
+	m.labelFieldW = labelW + 2
+	if m.batteryW > m.labelFieldW {
+		m.labelFieldW = m.batteryW
+	}
+
+	return m
+}
+
+// textWidth measures a string in the canvas' currently selected font.
+func textWidth(c *winui.Canvas, s string) int32 {
+	w, _ := c.MeasureText(s)
+	return w
+}
+
+// textHeight measures the line height of the currently selected font.
+func textHeight(c *winui.Canvas, sample string) int32 {
+	_, h := c.MeasureText(sample)
+	if h < 0 {
+		h = -h
+	}
+	return h
+}
 
 // paintGrid renders the readout as a 2x2 grid:
 //
@@ -512,47 +589,39 @@ const (
 // are separated by a fixed gutter, and every row's content is left-aligned
 // within its column so the icons, labels and arrows line up vertically.
 func (w *widget) paintGrid(c *winui.Canvas, s Stats, inner winui.Rect, fg uint32) {
-	leftCell, rightCell, rowTop, rowMid := w.gridCells(inner, c, s)
-
-	// Row heights follow the font, so a large font stays legible instead of
-	// overlapping the row below.
-	rowH := rowMid - rowTop
+	m := w.measureGrid(c)
+	leftCell, rightCell, rowTop := w.gridCells(inner, c, s, m)
 
 	// Left column: memory (row 0) and battery (row 1).
-	w.paintSystemRow(c, s, leftCell, rowTop, rowH, fg, true)
-	w.paintSystemRow(c, s, leftCell, rowMid, rowH, fg, false)
+	w.paintSystemRow(c, s, leftCell, rowTop, m, fg, true)
+	w.paintSystemRow(c, s, leftCell, rowTop+m.rowH, m, fg, false)
 
 	// Right column: upload then download, each on its own row and left-aligned.
-	w.paintNetRow(c, s, rightCell, rowTop, rowH, fg, true)
-	w.paintNetRow(c, s, rightCell, rowMid, rowH, fg, false)
+	w.paintNetRow(c, s, rightCell, rowTop, m, fg, true)
+	w.paintNetRow(c, s, rightCell, rowTop+m.rowH, m, fg, false)
 }
 
-// gridCells computes the two column rectangles and the two row positions.
+// gridCells computes the two column rectangles and the top of the row pair.
 //
-// Column widths are measured from the actual content (so the gutter between the
-// groups is exact), then capped: a runaway network rate must not push the system
-// column sideways, which is the "fixed max width" the layout calls for.
-func (w *widget) gridCells(inner winui.Rect, c *winui.Canvas, s Stats) (left, right winui.Rect, rowTop, rowMid int32) {
-	leftW := w.systemColumnWidth(c, s)
-	rightW := w.netColumnWidth(c, s)
-	if leftW > gridColumnMax {
-		leftW = gridColumnMax
-	}
-	if rightW > gridColumnMax {
-		rightW = gridColumnMax
-	}
+// Column widths come from measured content (so the gutter between the groups is
+// exact), then are clamped to half the available width: a runaway network rate
+// must not push the system column sideways, which is the "fixed max width" the
+// layout calls for.
+func (w *widget) gridCells(inner winui.Rect, c *winui.Canvas, s Stats, m gridMetrics) (left, right winui.Rect, rowTop int32) {
+	leftW := m.labelFieldW + m.labelGap + m.sysValueW
+	rightW := w.netColumnWidth(c, m)
 
-	total := leftW + gridColGap + rightW
-	// If the widget is narrower than the content, shrink the columns equally so
-	// both groups stay visible rather than the right one falling off the edge.
-	if total > inner.Width() {
-		avail := inner.Width() - gridColGap
+	total := leftW + m.colGap + rightW
+	// Shrink the two columns equally when the widget is narrower than its
+	// content, so both groups stay visible rather than the right one falling off.
+	if max := (inner.Width() - m.colGap) / 2; leftW > max || rightW > max {
+		avail := inner.Width() - m.colGap
 		if avail < 2 {
 			avail = inner.Width()
 		}
 		leftW = avail / 2
 		rightW = avail - leftW
-		total = leftW + gridColGap + rightW
+		total = leftW + m.colGap + rightW
 	}
 
 	// Right-align the whole block when the configured alignment says so, which
@@ -571,47 +640,29 @@ func (w *widget) gridCells(inner winui.Rect, c *winui.Canvas, s Stats) (left, ri
 	}
 
 	left = winui.Rect{Left: startX, Top: inner.Top, Right: startX + leftW, Bottom: inner.Bottom}
-	right = winui.Rect{Left: left.Right + gridColGap, Top: inner.Top, Right: left.Right + gridColGap + rightW, Bottom: inner.Bottom}
+	right = winui.Rect{Left: left.Right + m.colGap, Top: inner.Top, Right: left.Right + m.colGap + rightW, Bottom: inner.Bottom}
 
-	// Two rows sized to the font, vertically centred as a block.
-	_, lineH := c.MeasureText("Ag")
-	if lineH <= 0 {
-		lineH = inner.Height() / 2
+	// Vertically centre the two-line block inside the widget.
+	rowTop = inner.Top + (inner.Height()-m.blockH)/2
+	if rowTop < inner.Top {
+		rowTop = inner.Top
 	}
-	if 2*lineH > inner.Height() {
-		lineH = inner.Height() / 2
-	}
-	gap := int32(1)
-	blockH := 2*lineH + gap
-	top := inner.Top + (inner.Height()-blockH)/2
-	if top < inner.Top {
-		top = inner.Top
-	}
-	return left, right, top, top + lineH + gap
-}
-
-// systemColumnWidth is the left column's width: a fixed label field, the label
-// gap, and the room reserved for a value. Using fixed fields (rather than each
-// row's measured width) is what keeps the column from jittering as the numbers
-// change.
-func (w *widget) systemColumnWidth(c *winui.Canvas, s Stats) int32 {
-	return gridLabelFieldW + gridLabelGap + gridSysValueW
+	return left, right, rowTop
 }
 
 // netColumnWidth measures the widest "arrow + number + unit" row on the right.
 //
-// The number field is fixed width (gridNumFieldW), so the measurement uses that
-// constant rather than the value's own width — otherwise the column would resize
-// every time a rate crossed a digit boundary.
-func (w *widget) netColumnWidth(c *winui.Canvas, s Stats) int32 {
+// The number field is the measured width of four digits, so the column does not
+// resize every time a rate crosses a digit boundary and "13" and "276" still
+// share a right edge (the tabular-figures effect).
+func (w *widget) netColumnWidth(c *winui.Canvas, m gridMetrics) int32 {
 	if !w.feat.boolOpt(optShowUp, defaultShowUp) && !w.feat.boolOpt(optShowDown, defaultShowDown) {
 		return 0
 	}
 	restore := c.SelectFont(w.auxFont)
-	aw, _ := c.MeasureText("↑")
-	uw, _ := c.MeasureText("KB/s")
+	aw := textWidth(c, "↑")
 	restore()
-	return aw + gridLabelGap + gridNumFieldW + gridUnitGap + uw
+	return aw + m.labelGap + m.numFieldW + m.unitGap + m.unitW
 }
 
 // rowRect returns the rectangle of one grid row inside a column.
@@ -620,15 +671,15 @@ func rowRect(cell winui.Rect, top, rowH int32) winui.Rect {
 }
 
 // paintSystemRow draws the memory row (first=true) or the battery row.
-func (w *widget) paintSystemRow(c *winui.Canvas, s Stats, cell winui.Rect, top, rowH int32, fg uint32, first bool) {
-	r := rowRect(cell, top, rowH)
+func (w *widget) paintSystemRow(c *winui.Canvas, s Stats, cell winui.Rect, top int32, m gridMetrics, fg uint32, first bool) {
+	r := rowRect(cell, top, m.rowH)
 	labelFg := winui.BlendColors(fg, w.bgForBlend(), labelWeight)
 
 	if first {
 		if !w.feat.boolOpt(optShowMem, defaultShowMem) {
 			return
 		}
-		w.drawLabelValue(c, "内存", pct(s.RAM), r, fg, labelFg)
+		w.drawLabelValue(c, "内存", pct(s.RAM), r, m, fg, labelFg)
 		return
 	}
 
@@ -636,28 +687,27 @@ func (w *widget) paintSystemRow(c *winui.Canvas, s Stats, cell winui.Rect, top, 
 		// Without a battery the second row would be empty; show CPU there
 		// instead so the grid does not look broken on desktops.
 		if w.feat.boolOpt(optShowCPU, defaultShowCPU) {
-			w.drawLabelValue(c, "CPU", pct(s.CPU), r, fg, labelFg)
+			w.drawLabelValue(c, "CPU", pct(s.CPU), r, m, fg, labelFg)
 		}
 		return
 	}
-	w.drawBatteryRow(c, s, r, fg, labelFg)
+	w.drawBatteryRow(c, s, r, m, fg, labelFg)
 }
 
 // drawLabelValue draws "<label>    <value>", with the label de-emphasised and
 // the value emphasised (bold, larger).
 //
-// The label occupies a fixed-width field and the value is left-aligned right
-// after it, so the two rows' labels and values each start at the same x — the
-// same alignment idea used in the network column.
-func (w *widget) drawLabelValue(c *winui.Canvas, text, value string, r winui.Rect, fg, labelFg uint32) {
+// The label occupies a measured field and the value starts right after it, so
+// the two rows' labels and values each start at the same x — the same alignment
+// idea used in the network column.
+func (w *widget) drawLabelValue(c *winui.Canvas, text, value string, r winui.Rect, m gridMetrics, fg, labelFg uint32) {
 	restore := c.SelectFont(w.auxFont)
-	// A fixed label field keeps "内存" and "CPU" from shifting their values.
-	c.DrawText(text, winui.Rect{Left: r.Left, Top: r.Top, Right: r.Left + gridLabelFieldW, Bottom: r.Bottom},
+	c.DrawText(text, winui.Rect{Left: r.Left, Top: r.Top, Right: r.Left + m.labelFieldW, Bottom: r.Bottom},
 		labelFg, winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 	restore()
 
-	valueLeft := r.Left + gridLabelFieldW + gridLabelGap
-	c.DrawText(value, winui.Rect{Left: valueLeft, Top: r.Top, Right: valueLeft + gridSysValueW, Bottom: r.Bottom},
+	valueLeft := r.Left + m.labelFieldW + m.labelGap
+	c.DrawText(value, winui.Rect{Left: valueLeft, Top: r.Top, Right: valueLeft + m.sysValueW, Bottom: r.Bottom},
 		fg, winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 }
 
@@ -665,18 +715,18 @@ func (w *widget) drawLabelValue(c *winui.Canvas, text, value string, r winui.Rec
 //
 // The icon occupies the same field width the text labels use, so the battery
 // percentage lines up with the memory percentage above it.
-func (w *widget) drawBatteryRow(c *winui.Canvas, s Stats, r winui.Rect, fg, labelFg uint32) {
+func (w *widget) drawBatteryRow(c *winui.Canvas, s Stats, r winui.Rect, m gridMetrics, fg, labelFg uint32) {
 	icon := winui.Rect{
 		Left:   r.Left,
-		Top:    r.Top + (r.Height()-batteryIconH)/2,
-		Right:  r.Left + batteryIconW,
-		Bottom: r.Top + (r.Height()-batteryIconH)/2 + batteryIconH,
+		Top:    r.Top + (r.Height()-m.batteryH)/2,
+		Right:  r.Left + m.batteryW,
+		Bottom: r.Top + (r.Height()-m.batteryH)/2 + m.batteryH,
 	}
 	drawBatteryIcon(c, icon, s.BatteryPercent, s.BatteryCharging, fg, labelFg)
 
 	value := itoa(s.BatteryPercent) + "%"
-	valueLeft := r.Left + gridLabelFieldW + gridLabelGap
-	c.DrawText(value, winui.Rect{Left: valueLeft, Top: r.Top, Right: valueLeft + gridSysValueW, Bottom: r.Bottom},
+	valueLeft := r.Left + m.labelFieldW + m.labelGap
+	c.DrawText(value, winui.Rect{Left: valueLeft, Top: r.Top, Right: valueLeft + m.sysValueW, Bottom: r.Bottom},
 		fg, winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 }
 
@@ -687,8 +737,8 @@ func (w *widget) drawBatteryRow(c *winui.Canvas, s Stats, r winui.Rect, fg, labe
 // "tabular figures" effect the design calls for — "13" and "276" end on the same
 // x, so the column reads as aligned even though the digit counts differ, and the
 // units below each other start at the same x for free.
-func (w *widget) paintNetRow(c *winui.Canvas, s Stats, cell winui.Rect, top, rowH int32, fg uint32, first bool) {
-	r := rowRect(cell, top, rowH)
+func (w *widget) paintNetRow(c *winui.Canvas, s Stats, cell winui.Rect, top int32, m gridMetrics, fg uint32, first bool) {
+	r := rowRect(cell, top, m.rowH)
 
 	var arrow string
 	var bps float64
@@ -706,7 +756,7 @@ func (w *widget) paintNetRow(c *winui.Canvas, s Stats, cell winui.Rect, top, row
 
 	// Arrow in the auxiliary font so both arrows occupy identical width.
 	switchTo := c.SelectFont(w.auxFont)
-	aw, _ := c.MeasureText(arrow)
+	aw := textWidth(c, arrow)
 	c.DrawText(arrow, winui.Rect{Left: r.Left, Top: r.Top, Right: r.Left + aw + 2, Bottom: r.Bottom},
 		fg, winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 	switchTo()
@@ -715,16 +765,16 @@ func (w *widget) paintNetRow(c *winui.Canvas, s Stats, cell winui.Rect, top, row
 
 	// Right-align the number in a fixed-width field so digit counts do not shift
 	// the unit to the left or right.
-	numLeft := r.Left + aw + gridLabelGap
-	numRight := numLeft + gridNumFieldW
+	numLeft := r.Left + aw + m.labelGap
+	numRight := numLeft + m.numFieldW
 	c.DrawText(value, winui.Rect{Left: numLeft, Top: r.Top, Right: numRight, Bottom: r.Bottom},
 		fg, winui.DT_RIGHT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 
 	if unit != "" {
 		unitFg := winui.BlendColors(fg, w.bgForBlend(), unitWeight)
 		restore := c.SelectFont(w.auxFont)
-		ul := numRight + gridUnitGap
-		c.DrawText(unit, winui.Rect{Left: ul, Top: r.Top, Right: ul + gridUnitW, Bottom: r.Bottom},
+		ul := numRight + m.unitGap
+		c.DrawText(unit, winui.Rect{Left: ul, Top: r.Top, Right: ul + m.unitW, Bottom: r.Bottom},
 			unitFg, winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 		restore()
 	}

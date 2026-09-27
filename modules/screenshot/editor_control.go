@@ -16,10 +16,12 @@ import (
 // editor covers the screen and would be captured into the result, so it is
 // hidden for the duration, and a hidden window cannot host a stop button.
 const (
-	ctrlW    = 340
-	ctrlH    = 48
-	ctrlBtnW = 96
-	ctrlBtnH = 28
+	// ctrlW is sized so the widest state (three result buttons plus a status
+	// readout) fits without the text running under the buttons.
+	ctrlW    = 520
+	ctrlH    = 52
+	ctrlBtnW = 112
+	ctrlBtnH = 30
 	ctrlGap  = 6
 	ctrlPad  = 10
 )
@@ -28,6 +30,10 @@ const (
 const (
 	ctrlRunning = iota
 	ctrlResult
+	// ctrlSaving is shown while the take is being encoded/written. Its only
+	// meaningful content is the status text: offering buttons during an operation
+	// that cannot be cancelled or repeated would just be a dead click.
+	ctrlSaving
 )
 
 // Control bar messages.
@@ -192,6 +198,11 @@ func (e *editorState) ensureControlBar() {
 
 	e.mu.Lock()
 	e.ctrl = w
+	if e.ctrlFont == 0 {
+		// A normal weight: the bar sits on an opaque surface, so ClearType is fine
+		// here (unlike the taskbar widget, which needs hard-edged glyphs).
+		e.ctrlFont = winui.NewFont("Microsoft YaHei", 12, winui.FW_NORMAL)
+	}
 	e.mu.Unlock()
 	winui.SetForegroundWindow(w.HWND())
 }
@@ -267,6 +278,13 @@ func (e *editorState) isCapRunning() bool {
 //
 // keep=false abandons the capture: the module discards the take and the editor
 // closes without saving anything.
+//
+// The stop + encode step runs on its own goroutine: finalising a recording means
+// encoding every buffered frame into a GIF, which can take seconds, and doing
+// that on the control window's message thread would freeze the very window the
+// user is looking at (Windows would mark it "not responding"). The result is
+// published back into the editor state and the window is invalidated, which is
+// safe from any thread.
 func (e *editorState) collectCapture(keep bool) {
 	e.mu.Lock()
 	if !e.capRunning || e.collected {
@@ -285,27 +303,37 @@ func (e *editorState) collectCapture(keep bool) {
 		return
 	}
 
-	text := ""
-	if e.hooks.Stop != nil {
-		text = e.hooks.Stop()
-	}
-	_, path := sharedOutcome.take()
-	if text == "" {
-		text = "已完成"
-	}
-
+	e.setCtrlStatus("正在保存…")
 	e.mu.Lock()
-	e.ctrlState = ctrlResult
-	e.ctrlStatus = text
-	e.ctrlResult = path
-	ctrl := e.ctrl
+	e.ctrlState = ctrlSaving
 	e.mu.Unlock()
 
-	if ctrl != nil {
-		winui.InvalidateRect(ctrl.HWND())
-		winui.BringToTop(ctrl.HWND())
-		winui.SetForegroundWindow(ctrl.HWND())
-	}
+	go func() {
+		text := ""
+		if e.hooks.Stop != nil {
+			text = e.hooks.Stop()
+		}
+		_, path := sharedOutcome.take()
+		if text == "" {
+			text = "已完成"
+		}
+
+		e.mu.Lock()
+		e.ctrlState = ctrlResult
+		e.ctrlStatus = text
+		e.ctrlResult = path
+		ctrl := e.ctrl
+		e.mu.Unlock()
+
+		if ctrl != nil {
+			// InvalidateRect posts a paint, so this works across threads; the
+			// foreground calls are best-effort (the user may have moved on) and are
+			// what makes the result bar the place their eyes already are.
+			winui.InvalidateRect(ctrl.HWND())
+			winui.BringToTop(ctrl.HWND())
+			winui.SetForegroundWindow(ctrl.HWND())
+		}
+	}()
 }
 
 // onControlClick dispatches a click on the control bar.
@@ -327,6 +355,12 @@ func (e *editorState) controlButtons() []ctrlButton {
 	mode := e.mode
 	hooks := e.hooks
 	e.mu.Unlock()
+
+	// While the take is being written there is nothing the user can usefully do:
+	// the stop already happened, and a second one would be a dead click.
+	if state == ctrlSaving {
+		return nil
+	}
 
 	if state == ctrlRunning {
 		if mode == edModeScroll {
@@ -358,6 +392,24 @@ func (e *editorState) ctrlButtonRect(i, n int) winui.Rect {
 	right := int32(ctrlW - ctrlPad - i*(ctrlBtnW+ctrlGap))
 	top := int32((ctrlH - ctrlBtnH) / 2)
 	return winui.Rect{Left: right - ctrlBtnW, Top: top, Right: right, Bottom: top + ctrlBtnH}
+}
+
+// ctrlTextRect returns the area left for the status readout.
+//
+// It is derived from the CURRENT button count rather than a fixed split: with
+// three result buttons the status gets much less room than while saving (when
+// there are none), and a fixed split would either clip the status or overlap the
+// buttons.
+func ctrlTextRect(n int) winui.Rect {
+	buttonArea := int32(0)
+	if n > 0 {
+		buttonArea = int32(n)*(ctrlBtnW+ctrlGap) - ctrlGap
+	}
+	right := int32(ctrlW) - ctrlPad - buttonArea - ctrlGap
+	if right < ctrlPad+40 {
+		right = ctrlPad + 40
+	}
+	return winui.Rect{Left: ctrlPad, Top: 0, Right: right, Bottom: ctrlH}
 }
 
 // copyResult re-copies the produced file to the clipboard.
@@ -432,8 +484,11 @@ func (e *editorState) paintControl(hwnd winui.HWND) {
 
 	// Status text on the left, buttons on the right.
 	btns := e.controlButtons()
-	btnArea := int32(len(btns))*(ctrlBtnW+ctrlGap) + ctrlPad
-	textRect := winui.Rect{Left: ctrlPad, Top: 0, Right: btnArea, Bottom: ctrlH}
+
+	restore := c.SelectFont(e.ctrlFont)
+	defer restore()
+
+	textRect := ctrlTextRect(len(btns))
 	c.DrawText(status, textRect, edColorText,
 		winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_END_ELLIPSIS|winui.DT_NOPREFIX)
 

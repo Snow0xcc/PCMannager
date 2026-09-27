@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +32,12 @@ type Options struct {
 	Sink BusSink
 	// Console mirrors records to stderr (useful when run from a terminal).
 	Console bool
+	// MaxLogBytes is the size at which each file is rolled over (0 = default).
+	// Rotation is what keeps a continuously running tray app from filling the
+	// disk; see rotate.go.
+	MaxLogBytes int64
+	// MaxLogBackups is how many rolled files to keep per sink (0 = default).
+	MaxLogBackups int
 }
 
 // ParseLevel converts a config string into an slog.Level.
@@ -73,20 +78,18 @@ func New(opts Options) (*slog.Logger, io.Closer, error) {
 	}
 
 	// The primary file plus any extras share identical handling: a failure to
-	// create one never disables the others.
+	// create one never disables the others. Each goes through a rotating writer,
+	// so no sink can grow without bound.
 	for _, path := range append([]string{opts.File}, opts.ExtraFiles...) {
 		if path == "" {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			continue
-		}
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		rw, err := newRotatingWriter(path, opts.MaxLogBytes, opts.MaxLogBackups)
 		if err != nil {
 			continue
 		}
-		writers = append(writers, f)
-		files = append(files, f)
+		writers = append(writers, rw)
+		files = append(files, rw)
 	}
 
 	// A very small log window keeps the panel honest without unbounded memory.

@@ -189,9 +189,13 @@ func (f *Feature) Stop() error {
 	if wasRunning {
 		// A recording or scrolling capture holds an OS-level loop; cancelling it
 		// here is what stops the sampling rather than letting it run until the
-		// process dies.
+		// process dies. Both are idempotent, so a capture that already finished on
+		// its own is unaffected.
 		if sc := f.activeScroller(); sc != nil {
 			sc.requestStop()
+		}
+		if rec := f.activeRecorder(); rec != nil {
+			rec.discard()
 		}
 		done := make(chan struct{})
 		go func() { f.wg.Wait(); close(done) }()
