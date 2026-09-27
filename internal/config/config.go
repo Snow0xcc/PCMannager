@@ -127,11 +127,13 @@ func Default() *Config {
 				Enabled: true,
 				Hotkey:  "F1",
 				Options: map[string]any{
-					"format":      "png",
-					"jpg_quality": 90,
-					"copy_after":  true,
-					"save_dir":    "",
-					"max_history": 200,
+					"format":             "png",
+					"jpg_quality":        90,
+					"copy_after":         true,
+					"save_dir":           "",
+					"max_history":        200,
+					"record_fps":         10,
+					"scroll_interval_ms": 320,
 				},
 			},
 			"repair": {

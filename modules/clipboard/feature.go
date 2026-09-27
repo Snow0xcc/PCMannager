@@ -340,8 +340,18 @@ func (f *Feature) ingest(cfg configView, d clip.Data) {
 }
 
 // writeBack writes an entry back and, when configured, pastes it.
+//
+// The paste target is the window that has focus right now, captured BEFORE the
+// clipboard write: passing no target (winui.Invalid) made sendPaste reject the
+// request outright, so the panel's "写回最近一条" could never auto-paste even
+// with the option enabled.
 func (f *Feature) writeBack(e Entry) error {
-	return f.put(e, f.snapshot().PasteOnCopy, winui.Invalid)
+	autoPaste := f.snapshot().PasteOnCopy
+	target := winui.HWND(0)
+	if autoPaste {
+		target = winui.FocusedWindow()
+	}
+	return f.put(e, autoPaste, target)
 }
 
 // put writes an entry onto the system clipboard, optionally synthesising a

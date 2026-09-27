@@ -19,16 +19,43 @@ import (
 type editorState struct {
 	ctx *core.Context
 
-	mu       sync.Mutex
-	win      *winui.Window
-	img      *image.RGBA
-	sel      winui.Rect
+	// mode selects the workflow the toolbar drives (crop, record or scroll).
+	mode edMode
+	// hooks carries the callbacks for the non-capture workflows.
+	hooks editorHooks
+
+	mu  sync.Mutex
+	win *winui.Window
+	img *image.RGBA
+	sel winui.Rect
+	// origin is where the capture starts in SCREEN coordinates. The client-space
+	// selection is relative to it, and a screen capture needs the sum.
+	origin   image.Point
 	dragging bool
 	anchorX  int32
 	anchorY  int32
 	onSave   func(image.Image)
 	onCopy   func(image.Image)
 	closed   bool
+
+	// ctrl is the small control bar shown while a recording or scrolling capture
+	// is running, or while its result is being offered.
+	ctrl *winui.Window
+	// capRunning is true while a recording or scrolling capture is in flight.
+	capRunning bool
+	// collected makes finalising a capture a one-shot action: both the user's
+	// stop and the poll's auto-detect can race to it.
+	collected bool
+	// ctrlState selects between the running and result layouts of the bar.
+	ctrlState int
+	// ctrlStatus is the bar's live text, written from both the editor and the
+	// capture's poll.
+	ctrlStatus string
+	// ctrlResult is the path produced by a finished capture, so "copy" and "open
+	// folder" have something to act on.
+	ctrlResult string
+	// scrollAuto mirrors the auto-scroll toggle in scroll mode.
+	scrollAuto bool
 
 	// annots is the ordered list of drawn shapes; undo pops the last one.
 	annots []annot
@@ -80,6 +107,14 @@ const (
 // edHint is the prompt shown before anything is selected.
 const edHint = "拖动鼠标框选区域 · 右键或 Esc 取消"
 
+// Mode-specific prompts. They state what the region will be used for, which the
+// generic hint cannot: the same drag means crop, record or scroll depending on
+// the button the user pressed in the panel.
+const (
+	edHintRecord = "拖动框选要录制的区域 · 右键或 Esc 取消"
+	edHintScroll = "拖动框选需要滚动的区域 · 右键或 Esc 取消"
+)
+
 // Win32 messages the editor handles that winui does not name.
 const (
 	edWmKeyDown     = 0x0100
@@ -87,6 +122,16 @@ const (
 	edWmLButtonUp   = 0x0202
 	edWmMouseMove   = 0x0200
 	edWmRButtonUp   = 0x0205
+)
+
+// edTimer is the editor's periodic timer id. It refreshes the control bar's
+// elapsed counter and, for a recording, notices when the frame cap was hit so
+// the take is finalised instead of being left unfinishable.
+const (
+	edTimer      = 1
+	edTimerMS    = 500
+	edCtrlTimer  = 2
+	edCtrlTimerM = 400
 )
 
 // Virtual-key codes bound to the editor's actions.
@@ -97,7 +142,11 @@ const (
 	edVkZ      = 0x5A
 )
 
-// Button ids, laid out right to left in the selection toolbar.
+// Button ids.
+//
+// The capture toolbar lays them out right to left in id order; the record and
+// scroll toolbars pick a subset through editorState.buttons, so adding a mode is
+// a new id plus an entry there rather than a new layout routine.
 const (
 	edBtnConfirm = iota
 	edBtnCopy
@@ -107,21 +156,57 @@ const (
 	edBtnArrow
 	edBtnEllipse
 	edBtnRect
+
+	// edBtnRecord starts (and, when pressed again, ends) a GIF recording.
+	edBtnRecord
+	// edBtnScrollStart begins a scrolling capture.
+	edBtnScrollStart
+	// edBtnScrollAuto toggles injected scrolling for a scrolling capture.
+	edBtnScrollAuto
 )
 
-// edButtonCount is how many buttons the toolbar holds.
+// edButton is one entry of the current mode's toolbar.
+type edButton struct {
+	id    int
+	label string
+}
+
+// edButtonCount is how many buttons the widest (capture) toolbar holds.
 const edButtonCount = 8
 
-// edButtonLabels are the captions, in button-id order.
-var edButtonLabels = [edButtonCount]string{
-	edBtnConfirm: "确认",
-	edBtnCopy:    "复制",
-	edBtnCancel:  "取消",
-	edBtnUndo:    "撤销",
-	edBtnPen:     "画笔",
-	edBtnArrow:   "箭头",
-	edBtnEllipse: "椭圆",
-	edBtnRect:    "矩形",
+// buttons returns the toolbar for the editor's current mode.
+//
+// Index 0 is the RIGHTMOST button: buttonRect lays the row out right to left, so
+// the primary action of every mode ends up where the cursor already is after a
+// selection is dragged (bottom-right of the selection).
+func (e *editorState) buttons() []edButton {
+	switch e.mode {
+	case edModeRecord:
+		return []edButton{{edBtnRecord, "开始录制"}, {edBtnCancel, "取消"}}
+	case edModeScroll:
+		auto := "自动滚动：关"
+		e.mu.Lock()
+		on := e.scrollAuto
+		e.mu.Unlock()
+		if on {
+			auto = "自动滚动：开"
+		}
+		return []edButton{
+			{edBtnScrollStart, "开始滚动截图"},
+			{edBtnScrollAuto, auto},
+			{edBtnCancel, "取消"},
+		}
+	}
+	return []edButton{
+		{edBtnConfirm, "确认"},
+		{edBtnCopy, "复制"},
+		{edBtnCancel, "取消"},
+		{edBtnUndo, "撤销"},
+		{edBtnPen, "画笔"},
+		{edBtnArrow, "箭头"},
+		{edBtnEllipse, "椭圆"},
+		{edBtnRect, "矩形"},
+	}
 }
 
 // edToolCount is the number of drawing tools in the toolbar.
@@ -147,11 +232,13 @@ func toolOf(btn int) int {
 func isToolButton(btn int) bool { return toolOf(btn) >= 0 }
 
 // openEditor shows a full-screen window with the captured image and lets the
-// user drag a region, then Save / Copy / Cancel (Snipaste-style).
+// user drag a region. What happens to that region (crop, record, scroll) is
+// selected by mode and carried out through hooks, so all three workflows share
+// one overlay implementation (Snipaste/Feishu style).
 //
 // It returns immediately: the editor owns a window and therefore its own
 // thread, and blocking here would stall the hotkey dispatcher.
-func openEditor(ctx *core.Context, img *image.RGBA, bounds image.Rectangle, onSave, onCopy func(image.Image)) {
+func openEditor(ctx *core.Context, img *image.RGBA, bounds image.Rectangle, mode edMode, hooks editorHooks) {
 	if ctx == nil || img == nil {
 		return
 	}
@@ -164,9 +251,12 @@ func openEditor(ctx *core.Context, img *image.RGBA, bounds image.Rectangle, onSa
 	}
 	ed := &editorState{
 		ctx:         ctx,
+		mode:        mode,
+		hooks:       hooks,
 		img:         img,
-		onSave:      onSave,
-		onCopy:      onCopy,
+		origin:      bounds.Min,
+		onSave:      hooks.Save,
+		onCopy:      hooks.Copy,
 		tool:        -1,
 		strokeColor: annotPalette[0],
 		strokeWidth: annotWidths[1],
@@ -209,6 +299,11 @@ func (e *editorState) run(bounds image.Rectangle) {
 	}
 	w.Show()
 
+	// A periodic timer drives both the hint repaint (not needed) and the
+	// recording bookkeeping; it is installed on the editor window so it stops when
+	// the window is destroyed.
+	winui.SetTimer(w.HWND(), edTimer, edTimerMS)
+
 	winui.MessageLoop(nil)
 	e.teardown()
 }
@@ -222,10 +317,20 @@ func (e *editorState) teardown() {
 	}
 	e.closed = true
 	win := e.win
+	ctrl := e.ctrl
 	e.win = nil
+	e.ctrl = nil
 	e.mu.Unlock()
 
+	// The control bar is a separate window on the same thread, so it must be
+	// destroyed here (DestroyWindow from another thread silently fails and leaks
+	// a dead window on screen).
+	if ctrl != nil {
+		winui.KillTimer(ctrl.HWND(), edCtrlTimer)
+		ctrl.Destroy()
+	}
 	if win != nil {
+		winui.KillTimer(win.HWND(), edTimer)
 		win.Destroy()
 	}
 	e.retire()
@@ -278,6 +383,9 @@ func (e *editorState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintpt
 	case edWmLButtonUp:
 		e.onUp(int32(lParam&0xFFFF), int32(lParam>>16))
 		return 0, true
+	case winui.WM_TIMER:
+		e.onTimer(uintptr(wParam))
+		return 0, true
 	case edWmRButtonUp:
 		e.cancel()
 		return 0, true
@@ -288,14 +396,39 @@ func (e *editorState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintpt
 	return 0, false
 }
 
+// onTimer refreshes the capture control bar.
+func (e *editorState) onTimer(id uintptr) {
+	if id != edTimer && id != edCtrlTimer {
+		return
+	}
+	e.mu.Lock()
+	running := e.capRunning
+	ctrl := e.ctrl
+	e.mu.Unlock()
+	if !running || ctrl == nil {
+		return
+	}
+	winui.InvalidateRect(ctrl.HWND())
+}
+
 // onKey maps the editor's keyboard shortcuts onto the toolbar actions.
+//
+// While a capture is running the only meaningful key is Esc, which stops the
+// capture and keeps the result: the crop shortcuts would either save a region
+// that is still being recorded or close the window out from under the sampler.
 func (e *editorState) onKey(vk int) {
+	if e.isCapRunning() {
+		if vk == edVkEscape {
+			e.collectCapture(true)
+		}
+		return
+	}
 	switch vk {
 	case edVkReturn: // 确认
 		e.save()
 	case edVkC: // 复制
 		e.copy()
-	case edVkZ: // 撤销（Ctrl+Z 与 Ctrl 同检下面）
+	case edVkZ: // 撤销
 		e.undo()
 	case edVkEscape:
 		e.cancel()
@@ -336,8 +469,15 @@ func (e *editorState) beginDraw(x, y int32) bool {
 	sel := e.sel
 	color := e.strokeColor
 	width := e.strokeWidth
+	mode := e.mode
 	e.mu.Unlock()
 
+	// Annotations belong to the crop workflow: drawing on a region that is about
+	// to be recorded or scrolled into a long shot would bake shapes into the
+	// capture, and neither workflow has an undo for that.
+	if mode != edModeCapture {
+		return false
+	}
 	if tool < 0 {
 		return false
 	}
@@ -367,6 +507,18 @@ func (e *editorState) beginDraw(x, y int32) bool {
 
 // activate runs the action bound to a toolbar button.
 func (e *editorState) activate(id int) {
+	switch id {
+	case edBtnRecord:
+		e.toggleRecording()
+		return
+	case edBtnScrollStart:
+		e.startScroll()
+		return
+	case edBtnScrollAuto:
+		e.toggleScrollAuto()
+		return
+	}
+
 	if tool := toolOf(id); tool >= 0 {
 		e.mu.Lock()
 		// Toggling the active tool off returns to plain selection/crop mode.
@@ -392,6 +544,20 @@ func (e *editorState) activate(id int) {
 	}
 }
 
+// closeEditorWindow asks the editor's own window to close, from any goroutine.
+//
+// The control bar's buttons run on the control window's thread; posting the
+// close rather than calling teardown directly keeps every window operation on
+// its owning thread, which is the rule that DestroyWindow depends on.
+func (e *editorState) closeEditorWindow() {
+	e.mu.Lock()
+	win := e.win
+	e.mu.Unlock()
+	if win != nil {
+		winui.PostMessage(win.HWND(), winui.WM_CLOSE, 0, 0)
+	}
+}
+
 // undo removes the most recent annotation. It is a no-op when there are none.
 func (e *editorState) undo() {
 	e.mu.Lock()
@@ -412,10 +578,11 @@ func (e *editorState) hitButton(x, y int32) int {
 	if sel.Width() < edMinSel || sel.Height() < edMinSel {
 		return -1
 	}
-	for i := 0; i < edButtonCount; i++ {
+	btns := e.buttons()
+	for i := range btns {
 		r := e.buttonRect(i, sel)
 		if x >= r.Left && x <= r.Right && y >= r.Top && y <= r.Bottom {
-			return i
+			return btns[i].id
 		}
 	}
 	return -1
@@ -483,7 +650,10 @@ func (e *editorState) buttonRect(i int, sel winui.Rect) winui.Rect {
 	e.mu.Unlock()
 	full := winui.ClientRect(e.hwndLocked(win))
 
-	toolbarW := int32(edButtonCount)*(edBtnW+edBtnGap) - edBtnGap
+	// The width follows the CURRENT mode's button count, so a two-button record
+	// toolbar does not leave a gap where six more buttons used to be.
+	n := len(e.buttons())
+	toolbarW := int32(n)*(edBtnW+edBtnGap) - edBtnGap
 	top := sel.Bottom + edBtnGap
 	if top+edBtnH > full.Bottom {
 		// No room below: place it above the selection instead.
@@ -712,6 +882,7 @@ func (e *editorState) paint(hwnd winui.HWND) {
 	tool := e.tool
 	strokeColor := e.strokeColor
 	strokeWidth := e.strokeWidth
+	mode := e.mode
 	e.mu.Unlock()
 
 	// 1. The screenshot itself, filling the whole window. This is what makes the
@@ -752,35 +923,51 @@ func (e *editorState) paint(hwnd winui.HWND) {
 			cur.draw(c)
 		}
 
-		// 3. Selection toolbar, hanging just below the selection.
-		for i := 0; i < edButtonCount; i++ {
+		// 3. Selection toolbar, hanging just below the selection. Its contents
+		//    depend on the mode: crop offers confirm/copy/undo plus the drawing
+		//    tools, while record and scroll offer only their own start action and
+		//    cancel.
+		btns := e.buttons()
+		for i, b := range btns {
 			fill := uint32(edColorAccent)
-			switch i {
+			switch b.id {
 			case edBtnCancel:
 				fill = edColorDanger
 			case edBtnUndo:
 				fill = edColorSurface
 			}
 			// Highlight the active drawing tool so the current mode is obvious.
-			active := isToolButton(i) && toolOf(i) == tool
-			if active {
+			if isToolButton(b.id) && toolOf(b.id) == tool {
 				fill = edColorSel
 			}
-			drawButton(c, e.buttonRect(i, sel), edButtonLabels[i], fill, true)
+			drawButton(c, e.buttonRect(i, sel), b.label, fill, true)
 		}
 
 		// 4. Size readout above the selection, so the crop size is visible.
 		e.paintSize(c, sel)
 
 		// 5. Style bar for the drawing tools: swatches for colour, dots for width.
-		e.paintStyleBar(c, sel, strokeColor, strokeWidth, tool >= 0)
+		//    Only the crop workflow has drawable annotations, so it is hidden
+		//    otherwise rather than offering controls that do nothing.
+		e.paintStyleBar(c, sel, strokeColor, strokeWidth, mode == edModeCapture && tool >= 0)
 	} else {
 		// Nothing selected yet: a light wash keeps the desktop readable while
 		// making the mode obvious.
 		c.FillAlpha(full, edColorDim, edMaskAlpha)
-		c.DrawText(edHint, full, edColorText,
+		c.DrawText(e.hintFor(mode), full, edColorText,
 			winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE)
 	}
+}
+
+// hintFor returns the prompt for a mode.
+func (e *editorState) hintFor(mode edMode) string {
+	switch mode {
+	case edModeRecord:
+		return edHintRecord
+	case edModeScroll:
+		return edHintScroll
+	}
+	return edHint
 }
 
 // clampRect confines r to within bounds.
@@ -919,8 +1106,9 @@ func (e *editorState) hwndForPaint() winui.HWND {
 // toolbarRect is the bounding box of the whole button row; buttonRect positions
 // individual buttons inside it.
 func (e *editorState) toolbarRect(sel winui.Rect, full winui.Rect) winui.Rect {
+	btns := e.buttons()
 	first := e.buttonRect(0, sel)
-	last := e.buttonRect(edButtonCount-1, sel)
+	last := e.buttonRect(len(btns)-1, sel)
 	return winui.Rect{Left: last.Left, Top: first.Top, Right: first.Right, Bottom: first.Bottom}
 }
 

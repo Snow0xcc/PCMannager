@@ -3,6 +3,7 @@
 package screenshot
 
 import (
+	"image"
 	"testing"
 
 	"github.com/snow0xcc/pcmannager/internal/winui"
@@ -30,12 +31,89 @@ func TestToolOfMapsButtons(t *testing.T) {
 	}
 }
 
-// TestButtonLabelsCoverAllButtons 守护每个按钮都有标签，否则工具栏会画出空白格。
-func TestButtonLabelsCoverAllButtons(t *testing.T) {
-	for i := 0; i < edButtonCount; i++ {
-		if edButtonLabels[i] == "" {
-			t.Errorf("按钮 %d 缺少标签", i)
+// TestToolbarsCoverAllModes 守护每个模式的工具栏都有按钮、标签非空，且主操作在
+// 最右位（buttonRect 从右往左排，主操作应落在框选结束时光标所在的位置）。
+func TestToolbarsCoverAllModes(t *testing.T) {
+	for _, mode := range []edMode{edModeCapture, edModeRecord, edModeScroll} {
+		e := &editorState{tool: -1, mode: mode}
+		btns := e.buttons()
+		if len(btns) == 0 {
+			t.Fatalf("模式 %d 没有任何工具栏按钮", mode)
 		}
+		seen := map[int]bool{}
+		for _, b := range btns {
+			if b.label == "" {
+				t.Errorf("模式 %d 的按钮 %d 缺少标签", mode, b.id)
+			}
+			if seen[b.id] {
+				t.Errorf("模式 %d 重复出现按钮 %d", mode, b.id)
+			}
+			seen[b.id] = true
+		}
+		if !seen[edBtnCancel] {
+			t.Errorf("模式 %d 缺少取消按钮", mode)
+		}
+	}
+}
+
+// TestOnlyCaptureModeDrawsAnnotations 守护非裁剪模式不启用标注工具，否则图形会
+// 被烘进录屏/长截图且无法撤销。
+func TestOnlyCaptureModeDrawsAnnotations(t *testing.T) {
+	for _, tc := range []struct {
+		mode edMode
+		want bool
+	}{
+		{edModeCapture, true},
+		{edModeRecord, false},
+		{edModeScroll, false},
+	} {
+		e := &editorState{
+			mode:        tc.mode,
+			tool:        int(annotRect),
+			sel:         winui.Rect{Left: 0, Top: 0, Right: 100, Bottom: 100},
+			strokeColor: annotPalette[0],
+			strokeWidth: annotWidths[0],
+		}
+		if got := e.beginDraw(10, 10); got != tc.want {
+			t.Errorf("模式 %d beginDraw = %v, 期望 %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+// TestScreenSelectionAddsOrigin 守护客户区选区到屏幕坐标的换算：屏幕截图按桌面
+// 坐标寻址，少加原点会导致录到/拼到错误的区域。
+func TestScreenSelectionAddsOrigin(t *testing.T) {
+	e := &editorState{tool: -1}
+	sel := winui.Rect{Left: 10, Top: 20, Right: 110, Bottom: 120}
+
+	got := e.screenSelection(sel, image.Pt(1000, 500))
+	if got == nil {
+		t.Fatal("有效选区不应返回 nil")
+	}
+	want := image.Rect(1010, 520, 1110, 620)
+	if *got != want {
+		t.Fatalf("screenSelection = %v, 期望 %v", *got, want)
+	}
+
+	// A tap too small to be a real selection must be rejected rather than
+	// producing a 1-pixel region.
+	if got := e.screenSelection(winui.Rect{Left: 5, Top: 5, Right: 6, Bottom: 6}, image.Point{}); got != nil {
+		t.Fatalf("过小选区应返回 nil, 实际 %v", *got)
+	}
+}
+
+// TestCaptureOutcomeTakeClears 守护结果槽位取值后即清空，避免下一次捕获读到上一次
+// 的路径。
+func TestCaptureOutcomeTakeClears(t *testing.T) {
+	var o captureOutcome
+	o.set("已保存", `C:\tmp\shot.png`)
+
+	text, path := o.take()
+	if text != "已保存" || path != `C:\tmp\shot.png` {
+		t.Fatalf("take = (%q,%q)", text, path)
+	}
+	if text, path := o.take(); text != "" || path != "" {
+		t.Fatalf("第二次 take 应为空, 实际 (%q,%q)", text, path)
 	}
 }
 

@@ -75,6 +75,13 @@ var (
 	procReleaseCapture             = user32.NewProc("ReleaseCapture")
 	procGetWindowDC                = user32.NewProc("GetWindowDC")
 
+	// 剪贴板入口在 user32，GlobalAlloc 系列则在 kernel32。挂错 DLL 不会在启动时
+	// 报错，而是首次调用时 panic。
+	procOpenClipboard    = user32.NewProc("OpenClipboard")
+	procEmptyClipboard   = user32.NewProc("EmptyClipboard")
+	procSetClipboardData = user32.NewProc("SetClipboardData")
+	procCloseClipboard   = user32.NewProc("CloseClipboard")
+
 	procCreateSolidBrush      = gdi32.NewProc("CreateSolidBrush")
 	procCreateFontIndirectW   = gdi32.NewProc("CreateFontIndirectW")
 	procCreateFontW           = gdi32.NewProc("CreateFontW")
@@ -109,6 +116,13 @@ var (
 	procGetModuleFileNameW  = kernel32.NewProc("GetModuleFileNameW")
 
 	procGetSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
+
+	procGlobalAlloc  = kernel32.NewProc("GlobalAlloc")
+	procGlobalLock   = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock = kernel32.NewProc("GlobalUnlock")
+	procGlobalFree   = kernel32.NewProc("GlobalFree")
+	// RtlMoveMemory 用于把数据写进 GlobalLock 返回的地址（见 copyToAddress）。
+	procRtlMoveMemory = kernel32.NewProc("RtlMoveMemory")
 )
 
 // Win32 constants used across the package.
@@ -186,6 +200,16 @@ const (
 	NIF_MESSAGE = 0x00000001
 	NIF_ICON    = 0x00000002
 	NIF_TIP     = 0x00000004
+
+	// CF_HDROP 是 "粘贴一个文件" 的标准剪贴板格式（值为 15），内容是一块以
+	// DROPFILES 开头的 UTF-16 路径列表；聊天客户端据此把粘贴当成发送附件。
+	CF_HDROP = 15
+
+	// 剪贴板载荷必须用可移动全局内存：SetClipboardData 接管的是一块可被系统
+	// 移动的 HGLOBAL，GMEM_MOVEABLE 是它的硬性要求；GMEM_ZEROINIT 则保证
+	// DROPFILES 头里用不到的字段（如 pt/fNC）是干净的 0，避免写入垃圾坐标。
+	GMEM_MOVEABLE = 0x0002
+	GMEM_ZEROINIT = 0x0040
 
 	DT_LEFT         = 0x00000000
 	DT_RIGHT        = 0x00000002
