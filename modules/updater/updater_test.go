@@ -126,12 +126,15 @@ func TestAssetName(t *testing.T) {
 }
 
 func TestFindAsset(t *testing.T) {
+	// 用当前平台的真实资产名构造大小写变体，测试的是大小写不敏感匹配本身，
+	// 而不是某个固定平台——否则在 Windows 上永远匹配不到 linux 资产名。
+	upper := strings.ToUpper(AssetName())
 	rel := &Release{TagName: "v9.9.9", Assets: []Asset{
-		{Name: "pcmannager-linux-amd64"},
-		{Name: "PCMANAGER-DARWIN-ARM64"}, // case-insensitive match
+		{Name: "pcmannager-solaris-sparc"},
+		{Name: upper}, // case-insensitive match
 	}}
 	if rel.findAsset() == nil {
-		t.Fatal("大小写不同的资产应能匹配")
+		t.Fatalf("大小写不同的资产应能匹配: AssetName()=%q, 资产=%q", AssetName(), upper)
 	}
 	rel2 := &Release{TagName: "v9.9.9", Assets: []Asset{{Name: "pcmannager-solaris-sparc"}}}
 	if rel2.findAsset() != nil {

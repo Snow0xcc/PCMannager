@@ -24,6 +24,11 @@ type Options struct {
 	Level string
 	// File is the log file path; empty disables file logging.
 	File string
+	// ExtraFiles are additional log files that receive the same records (for
+	// example the log next to the executable, so a GUI build with no console
+	// can be inspected from the program directory). Failures to open any of
+	// them are reported instead of fatal.
+	ExtraFiles []string
 	// Sink, when non-nil, receives records for the preferences panel.
 	Sink BusSink
 	// Console mirrors records to stderr (useful when run from a terminal).
@@ -54,32 +59,46 @@ type logger struct {
 //
 // File logging never fails the application: if the log file cannot be opened
 // the logger degrades to console/bus-only and reports the problem once.
+//
+// Opened log files are appended to the returned Closer (when it implements a
+// CloseAll-style aggregate), so callers only ever have to close one thing.
 func New(opts Options) (*slog.Logger, io.Closer, error) {
 	var (
 		writers []io.Writer
-		closer  io.Closer
+		files   []io.Closer
 	)
 
 	if opts.Console {
 		writers = append(writers, os.Stderr)
 	}
-	if opts.File != "" {
-		if err := os.MkdirAll(filepath.Dir(opts.File), 0o755); err != nil {
-			writers = append(writers, os.Stderr)
-		} else if f, err := os.OpenFile(opts.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-			writers = append(writers, f)
-			closer = f
+
+	// The primary file plus any extras share identical handling: a failure to
+	// create one never disables the others.
+	for _, path := range append([]string{opts.File}, opts.ExtraFiles...) {
+		if path == "" {
+			continue
 		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			continue
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			continue
+		}
+		writers = append(writers, f)
+		files = append(files, f)
 	}
 
 	// A very small log window keeps the panel honest without unbounded memory.
 	handlers := make([]slog.Handler, 0, 2)
 	if len(writers) > 0 {
-		out := io.Discard
-		if len(writers) == 1 {
-			out = writers[0]
-		} else {
-			out = io.MultiWriter(writers...)
+		var out io.Writer = writers[0]
+		if len(writers) > 1 {
+			// bestEffort, not io.MultiWriter: under -H windowsgui stderr writes
+			// fail with "The handle is invalid", and MultiWriter stops at the
+			// first error, which silently dropped EVERY record from the file
+			// too — precisely on the build that has no console to fall back on.
+			out = bestEffort(writers)
 		}
 		handlers = append(handlers, slog.NewTextHandler(out, &slog.HandlerOptions{
 			Level: ParseLevel(opts.Level),
@@ -91,7 +110,59 @@ func New(opts Options) (*slog.Logger, io.Closer, error) {
 		handlers = append(handlers, &busHandler{sink: opts.Sink, level: ParseLevel(opts.Level), attrs: map[string]string{}})
 	}
 
-	return slog.New(&fanout{handlers: handlers}), closer, nil
+	return slog.New(&fanout{handlers: handlers}), closerFor(files), nil
+}
+
+// closers closes every log file, tolerating individual failures.
+type closers []io.Closer
+
+func (c closers) Close() error {
+	var first error
+	for _, f := range c {
+		if err := f.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// closerFor returns a single Closer over every opened file, or nil when none
+// were opened (matching the historical nil-closer contract).
+func closerFor(files []io.Closer) io.Closer {
+	switch len(files) {
+	case 0:
+		return nil
+	case 1:
+		return files[0]
+	default:
+		return closers(files)
+	}
+}
+
+// bestEffort writes every record to all sinks, tolerating individual failures.
+//
+// This matters on Windows GUI builds, where stderr is an invalid handle: a
+// failing console sink must never suppress a healthy file sink. The first
+// error is returned so the caller can still observe a broken sink.
+type bestEffortWriter struct{ sinks []io.Writer }
+
+func bestEffort(sinks []io.Writer) io.Writer { return &bestEffortWriter{sinks: sinks} }
+
+func (w *bestEffortWriter) Write(p []byte) (int, error) {
+	var (
+		n       int
+		lastErr error
+	)
+	for _, s := range w.sinks {
+		m, err := s.Write(p)
+		if m > n {
+			n = m
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	return n, lastErr
 }
 
 // fanout duplicates each record to every handler.

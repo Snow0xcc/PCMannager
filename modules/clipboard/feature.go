@@ -15,6 +15,7 @@ import (
 	clip "golang.design/x/clipboard"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
+	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
 // Action id for writing the newest entry back (declared by Actions()).
@@ -340,12 +341,16 @@ func (f *Feature) ingest(cfg configView, d clip.Data) {
 
 // writeBack writes an entry back and, when configured, pastes it.
 func (f *Feature) writeBack(e Entry) error {
-	return f.put(e, f.snapshot().PasteOnCopy)
+	return f.put(e, f.snapshot().PasteOnCopy, winui.Invalid)
 }
 
 // put writes an entry onto the system clipboard, optionally synthesising a
-// paste into whatever window the user was last working in.
-func (f *Feature) put(e Entry, autoPaste bool) error {
+// paste into target.
+//
+// target is the window that should receive the paste (the one the user was
+// working in before our window took focus); it is ignored when autoPaste is
+// false.
+func (f *Feature) put(e Entry, autoPaste bool, target winui.HWND) error {
 	if f.ctx == nil {
 		return errors.New("clipboard: 模块未初始化")
 	}
@@ -366,10 +371,10 @@ func (f *Feature) put(e Entry, autoPaste bool) error {
 	f.markEcho(format, buf)
 
 	if autoPaste {
-		if err := sendPaste(); err != nil {
+		if err := sendPaste(target); err != nil {
 			// Pasting is a bonus: the entry is on the clipboard either way.
 			f.ctx.Logger.Warn("自动粘贴未生效", "module", moduleID, "err", err)
-			f.ctx.Bus.Log(moduleID, "warn", "自动粘贴未生效："+err.Error())
+			f.ctx.Bus.Log(moduleID, "warn", "自动粘贴未生效，请手动 Ctrl+V："+err.Error())
 		}
 	}
 	f.ctx.Logger.Info("已写回剪贴板", "module", moduleID, "id", e.ID, "kind", e.Kind)

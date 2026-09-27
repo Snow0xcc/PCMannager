@@ -3,6 +3,7 @@ package taskbar
 import (
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -76,9 +77,9 @@ func TestFeatureIdentity(t *testing.T) {
 func TestOptionsExposeEveryKey(t *testing.T) {
 	want := []string{
 		optInterval, optShowDown, optShowUp, optShowCPU, optShowMem, optShowDisk,
-		optShowUptime, optAlign, optOffsetX, optMarginTop, optMarginV, optLayout,
+		optShowUptime, optShowBattery, optAlign, optOffsetX, optWidth, optMarginTop, optMarginV, optLayout,
 		optNumAlign, optSpeedUnit, optUnitSpace, optFontFamily, optFontSize,
-		optFGColor, optBGMode, optBGColor, optFollowTheme, optSeparator, optRender,
+		optFGColor, optAutoFG, optBGMode, optBGColor, optFollowTheme, optSeparator, optRender,
 		optAvoidWidgets, optMultiMonitor,
 	}
 
@@ -265,12 +266,23 @@ func TestIntervalClampsToSafeBounds(t *testing.T) {
 
 // TestOffsetXReadsConfiguredValue 守护水平偏移：读配置值，缺失时回退默认 8。
 func TestOffsetXReadsConfiguredValue(t *testing.T) {
-	if got, want := newTestFeature(t, nil).offsetX(), defaultOffsetX; got != want {
-		t.Errorf("offsetX() = %d, 期望默认值 %d", got, want)
+	if got, want := newTestFeature(t, nil).intOpt(optOffsetX, defaultOffsetX), defaultOffsetX; got != want {
+		t.Errorf("intOpt(offset_x) = %d, 期望默认值 %d", got, want)
 	}
 	f := newTestFeature(t, map[string]any{optOffsetX: -16})
-	if got, want := f.offsetX(), -16; got != want {
-		t.Errorf("offsetX() = %d, 期望 %d", got, want)
+	if got, want := f.intOpt(optOffsetX, defaultOffsetX), -16; got != want {
+		t.Errorf("intOpt(offset_x) = %d, 期望 %d", got, want)
+	}
+}
+
+// TestWidthReadsConfiguredValue 守护宽度选项：缺失时回退默认 200。
+func TestWidthReadsConfiguredValue(t *testing.T) {
+	if got, want := newTestFeature(t, nil).intOpt(optWidth, defaultWidth), defaultWidth; got != want {
+		t.Errorf("intOpt(width) = %d, 期望默认值 %d", got, want)
+	}
+	f := newTestFeature(t, map[string]any{optWidth: 320})
+	if got, want := f.intOpt(optWidth, defaultWidth), 320; got != want {
+		t.Errorf("intOpt(width) = %d, 期望 %d", got, want)
 	}
 }
 
@@ -392,4 +404,47 @@ func TestStateReflectsStoppedAndHidden(t *testing.T) {
 	if got, ok := st["visible"].(bool); !ok || got {
 		t.Errorf("隐藏时 State[\"visible\"] = %v, 期望 false", st["visible"])
 	}
+}
+
+// TestPartsIncludeBatteryOnlyWhenPresent 守护电量字段：没有电池的设备不应出现
+// BAT 读数（否则面板会显示误导性的 0%），开启开关且有电池时才出现。
+func TestPartsIncludeBatteryOnlyWhenPresent(t *testing.T) {
+	f := newTestFeature(t, map[string]any{optShowBattery: true})
+
+	// 无电池：不出现。
+	w := &widget{feat: f, font: 0}
+	got := w.parts(Stats{BatteryPresent: false, BatteryPercent: 0})
+	if strings.Contains(strings.Join(got, " "), "BAT") {
+		t.Fatalf("无电池时不应出现 BAT 读数: %v", got)
+	}
+
+	// 有电池：出现百分比，充电时带 + 标记。
+	got = w.parts(Stats{BatteryPresent: true, BatteryPercent: 73, BatteryCharging: true})
+	if !containsPart(got, "BAT 73%+") {
+		t.Fatalf("有电池且充电时应出现 BAT 73%%+: %v", got)
+	}
+	got = w.parts(Stats{BatteryPresent: true, BatteryPercent: 42})
+	if !containsPart(got, "BAT 42%") {
+		t.Fatalf("有电池未充电时应出现 BAT 42%%: %v", got)
+	}
+}
+
+// TestPartsOmitBatteryWhenDisabled 守护开关：关闭 optShowBattery 时即使有电池也不显示。
+func TestPartsOmitBatteryWhenDisabled(t *testing.T) {
+	f := newTestFeature(t, map[string]any{optShowBattery: false})
+	w := &widget{feat: f}
+	got := w.parts(Stats{BatteryPresent: true, BatteryPercent: 88})
+	if containsPart(got, "BAT 88%") {
+		t.Fatalf("关闭显示电量时不应出现 BAT: %v", got)
+	}
+}
+
+// containsPart 判断字段切片中是否存在完全匹配的字段。
+func containsPart(parts []string, want string) bool {
+	for _, p := range parts {
+		if p == want {
+			return true
+		}
+	}
+	return false
 }

@@ -18,6 +18,7 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	shcore   = syscall.NewLazyDLL("shcore.dll")
 	dwmapi   = syscall.NewLazyDLL("dwmapi.dll")
+	msimg32  = syscall.NewLazyDLL("msimg32.dll")
 
 	procFindWindowW                = user32.NewProc("FindWindowW")
 	procFindWindowExW              = user32.NewProc("FindWindowExW")
@@ -57,6 +58,7 @@ var (
 	procDestroyMenu                = user32.NewProc("DestroyMenu")
 	procSetForegroundWindow        = user32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
+	procGetFocus                   = user32.NewProc("GetFocus")
 	procGetWindowTextW             = user32.NewProc("GetWindowTextW")
 	procGetClassNameW              = user32.NewProc("GetClassNameW")
 	procGetWindowThreadProcessId   = user32.NewProc("GetWindowThreadProcessId")
@@ -69,9 +71,9 @@ var (
 	procUpdateWindow               = user32.NewProc("UpdateWindow")
 	procFillRect                   = user32.NewProc("FillRect")
 	procDrawTextW                  = user32.NewProc("DrawTextW")
-	procSetBkMode                  = user32.NewProc("SetBkMode")
-	procSetTextColor               = user32.NewProc("SetTextColor")
 	procMessageBoxW                = user32.NewProc("MessageBoxW")
+	procReleaseCapture             = user32.NewProc("ReleaseCapture")
+	procGetWindowDC                = user32.NewProc("GetWindowDC")
 
 	procCreateSolidBrush      = gdi32.NewProc("CreateSolidBrush")
 	procCreateFontIndirectW   = gdi32.NewProc("CreateFontIndirectW")
@@ -84,8 +86,18 @@ var (
 	procSetDCBrushColor       = gdi32.NewProc("SetDCBrushColor")
 	procCreateCompatibleDC    = gdi32.NewProc("CreateCompatibleDC")
 	procDeleteDC              = gdi32.NewProc("DeleteDC")
+	// SetBkMode and SetTextColor live in gdi32, not user32. Resolving them
+	// from user32 makes LazyProc.Call panic ("Failed to find ... procedure")
+	// the first time text is drawn, which crashed the taskbar widget at boot.
+	procSetBkMode    = gdi32.NewProc("SetBkMode")
+	procSetTextColor = gdi32.NewProc("SetTextColor")
+	procGetPixel     = gdi32.NewProc("GetPixel")
 
 	procShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
+
+	// AlphaBlend lives in msimg32, not gdi32/user32: resolving it from the
+	// wrong DLL panics on the first call.
+	procAlphaBlend = msimg32.NewProc("AlphaBlend")
 
 	procSetProcessDpiAwareness        = shcore.NewProc("SetProcessDpiAwareness")
 	procSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
@@ -95,6 +107,8 @@ var (
 	procGetModuleHandleW    = kernel32.NewProc("GetModuleHandleW")
 	procGetCurrentProcessId = kernel32.NewProc("GetCurrentProcessId")
 	procGetModuleFileNameW  = kernel32.NewProc("GetModuleFileNameW")
+
+	procGetSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
 )
 
 // Win32 constants used across the package.
@@ -104,6 +118,8 @@ const (
 	SWP_SHOWWINDOW   = 0x0040
 	SWP_HIDEWINDOW   = 0x0080
 	SWP_FRAMECHANGED = 0x0020
+	SWP_NOSIZE       = 0x0001
+	SWP_NOMOVE       = 0x0002
 
 	SW_HIDE   = 0
 	SW_SHOW   = 5
@@ -117,6 +133,13 @@ const (
 	WS_EX_TOPMOST    = 0x00000008
 	WS_EX_NOACTIVATE = 0x08000000
 	WS_EX_LAYERED    = 0x00080000
+
+	// LWA_COLORKEY makes pixels of one exact colour fully transparent, letting
+	// the parent (the taskbar) show through. This is how a child window gets a
+	// genuinely transparent background: GDI child windows do not composite, so
+	// "not painting" would leave stale pixels rather than reveal the parent.
+	LWA_COLORKEY = 0x00000001
+	LWA_ALPHA    = 0x00000002
 
 	CS_HREDRAW = 0x0002
 	CS_VREDRAW = 0x0001
@@ -135,8 +158,13 @@ const (
 	WM_DISPLAYCHANGE = 0x007E
 	WM_DPICHANGED    = 0x02E0
 	WM_NCDESTROY     = 0x0082
+	WM_NCLBUTTONDOWN = 0x00A1
 	WM_APP           = 0x8000
 	WM_TRAYCALLBACK  = WM_APP + 1
+
+	// HTCAPTION makes DefWindowProc treat the press as a title-bar drag, which
+	// is how a borderless popup gets moved by dragging its client area.
+	HTCAPTION = 2
 
 	MF_STRING       = 0x00000000
 	MF_SEPARATOR    = 0x00000800
@@ -167,11 +195,24 @@ const (
 	DT_NOPREFIX     = 0x00000800
 	DT_END_ELLIPSIS = 0x00008000
 
-	FW_NORMAL         = 400
-	DEFAULT_CHARSET   = 1
-	DEFAULT_PITCH     = 0
-	FF_DONTCARE       = 0
-	CLEARTYPE_QUALITY = 5
+	FW_NORMAL       = 400
+	FW_SEMIBOLD     = 600
+	FW_BOLD         = 700
+	DEFAULT_CHARSET = 1
+	DEFAULT_PITCH   = 0
+	FF_DONTCARE     = 0
+
+	// Font quality. CLEARTYPE blends glyph edges against the DC background with
+	// coloured subpixel fringes; on a colour-key window those fringes are blends
+	// rather than the exact key colour, so they survive and leave magenta edges
+	// around every glyph. NONANTIALIASED_QUALITY draws hard-edged glyphs, whose
+	// pixels are either the key (keyed out) or the text colour (kept) — which is
+	// what makes transparent text work.
+	DRAFT_QUALITY       = 1
+	PROOF_QUALITY       = 2
+	NONANTIALIASED_QUAL = 3
+	ANTIALIASED_QUALITY = 4
+	CLEARTYPE_QUALITY   = 5
 
 	MB_OK            = 0x00000000
 	MB_ICONWARNING   = 0x00000030

@@ -79,14 +79,15 @@ func (a *API) setCtx(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// ctxFor returns the runtime context, or a background one before startup.
+// ctxFor returns the runtime context, or nil before startup.
+//
+// A nil result means no Wails runtime is available yet: callers must NOT fall
+// back to context.Background(), because runtime.EventsEmit validates its
+// context and calls log.Fatalf (os.Exit) on one that lacks the Wails values.
 func (a *API) ctxFor() context.Context {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.ctx != nil {
-		return a.ctx
-	}
-	return context.Background()
+	return a.ctx
 }
 
 // State returns the full panel snapshot: version, app settings, modules and

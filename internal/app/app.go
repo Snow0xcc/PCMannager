@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -104,11 +105,24 @@ func New() (*App, error) {
 	}
 
 	bus := core.NewBus()
+
+	// Two log files, deliberately: the data directory is the canonical one, and a
+	// copy next to the executable means a GUI build (no console) can be inspected
+	// straight from the program directory. When app.data_dir points at the
+	// executable's own directory the two would be the same file, so it is only
+	// added when it is genuinely distinct.
+	dataLog := paths.LogFile(dataDir)
+	var extraLogs []string
+	if exeLog, err := paths.ExecutableLogFile(); err == nil && !sameLogFile(exeLog, dataLog) {
+		extraLogs = append(extraLogs, exeLog)
+	}
+
 	logger, closer, err := logx.New(logx.Options{
-		Level:   cfgMgr.Config().App.LogLevel,
-		File:    paths.LogFile(dataDir),
-		Sink:    busSink{bus: bus},
-		Console: true,
+		Level:      cfgMgr.Config().App.LogLevel,
+		File:       dataLog,
+		ExtraFiles: extraLogs,
+		Sink:       busSink{bus: bus},
+		Console:    true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("初始化日志失败: %w", err)
@@ -140,7 +154,32 @@ func New() (*App, error) {
 	a.errorWatch(bus)
 
 	winui.SetDPIAware()
+
+	// Record where this run logged to. On a -H windowsgui build there is no
+	// console, so this is how an operator finds the log at all.
+	logLocations := dataLog
+	if len(extraLogs) > 0 {
+		logLocations += ", " + strings.Join(extraLogs, ", ")
+	}
+	logger.Info("PCMannager 启动中",
+		"version", Version,
+		"data_dir", dataDir,
+		"logs", logLocations,
+	)
 	return a, nil
+}
+
+// sameLogFile reports whether two log paths refer to the same file, so the
+// executable-dir log is not registered twice when it coincides with the data
+// directory log.
+func sameLogFile(a, b string) bool {
+	if ap, err := filepath.Abs(a); err == nil {
+		a = ap
+	}
+	if bp, err := filepath.Abs(b); err == nil {
+		b = bp
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 // errorWatch mirrors error-level bus events into each module's error slot.

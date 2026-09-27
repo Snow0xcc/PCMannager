@@ -145,8 +145,11 @@ func run(opts Options, prov server.Provider) error {
 	// stall the module that published the event, mirroring the SSE handler's
 	// drop-on-full policy.
 	//
-	// started gates forwarding until a runtime context exists; before that the
-	// window cannot receive events, so they are simply skipped.
+	// started gates forwarding until a runtime context exists. Crucially this
+	// stays blocked until a REAL context arrives: runtime.EventsEmit fatals the
+	// whole process (log.Fatalf → os.Exit) when handed a context that lacks the
+	// Wails values, so falling back to context.Background() here is what made a
+	// mis-built binary exit silently right after startup.
 	ch, unsubscribe := prov.Subscribe()
 	defer unsubscribe()
 
@@ -157,6 +160,12 @@ func run(opts Options, prov server.Provider) error {
 	go func() {
 		<-started // wait for OnStartup to publish the runtime context
 		ctx := api.ctxFor()
+		if ctx == nil {
+			// wails.Run returned without ever starting (for example a binary
+			// built without the required build tags): nothing can receive
+			// events, so stop instead of emitting into a dead runtime.
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -187,11 +196,12 @@ func run(opts Options, prov server.Provider) error {
 			Assets: opts.Assets,
 		},
 		OnStartup: func(ctx context.Context) {
-			api.setCtx(ctx)
-			// Cancelled in OnShutdown to stop the forwarding goroutine.
-			var base context.Context
-			base, cancel = context.WithCancel(ctx)
+			// base derives from the Wails runtime context, so its values (the
+			// "events" frontend in particular) are preserved — EventsEmit needs
+			// them and fatals otherwise.
+			base, c := context.WithCancel(ctx)
 			api.setCtx(base)
+			cancel = c
 			// Publish the package-level context last so Show/Hide only ever
 			// see a context that is fully wired up.
 			setWindowCtx(base)

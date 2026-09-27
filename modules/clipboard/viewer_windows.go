@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/snow0xcc/pcmannager/internal/winui"
@@ -35,6 +36,8 @@ const (
 	viewerTitle = "PCMannager - 剪贴板历史"
 	rowEmpty    = "剪贴板历史为空"
 	rowHint     = "↑↓ 选择 · Enter 写回 · Del 删除 · P 固定"
+	// headerHint advertises the drag affordance, since the window has no caption.
+	headerHint = "（按住标题栏可拖动窗口）"
 )
 
 // dtWordBreak is DT_WORDBREAK, which winui does not name but DrawText needs to
@@ -88,6 +91,13 @@ type clipViewer struct {
 	top    int
 	closed bool
 
+	// prevForeground is the window that had focus BEFORE this viewer opened.
+	// Writing an entry back restores focus to it and pastes there, which is what
+	// makes "pick an item" actually insert it into the user's editor: the viewer
+	// itself holds the foreground while it is on screen, so the current
+	// foreground at paste time would be the viewer (about to close).
+	prevForeground winui.HWND
+
 	hwnd winui.HWND
 	font uintptr
 }
@@ -108,6 +118,10 @@ func showViewer(f *Feature) error {
 		return errNoFeature
 	}
 
+	// Capture the user's window BEFORE the viewer takes focus, so write-back can
+	// restore it and paste there.
+	prev := winui.FocusedWindow()
+
 	viewerMu.Lock()
 	if v := activeViewer; v != nil && !v.isClosed() {
 		viewerMu.Unlock()
@@ -116,7 +130,7 @@ func showViewer(f *Feature) error {
 	}
 	viewerMu.Unlock()
 
-	v := &clipViewer{f: f, sel: -1}
+	v := &clipViewer{f: f, sel: -1, prevForeground: prev}
 	// ready carries the result of creating and showing the window; the message
 	// loop that follows deliberately outlives this call.
 	ready := make(chan error, 1)
@@ -150,10 +164,6 @@ func (v *clipViewer) run(ready chan<- error) {
 		return
 	}
 	v.hwnd = w.HWND()
-	if err := winui.MoveWindow(v.hwnd, 0, 0, viewW, viewH, true); err != nil {
-		// Non-fatal: the window simply keeps the size it was created with.
-		v.f.ctx.Logger.Warn("调整剪贴板窗口大小失败", "module", moduleID, "err", err)
-	}
 	v.font = winui.NewFont("Microsoft YaHei", 10, winui.FW_NORMAL)
 
 	w.Handle = v.wndProc
@@ -162,11 +172,60 @@ func (v *clipViewer) run(ready chan<- error) {
 	v.mu.Unlock()
 	v.refresh()
 	v.setTitle(viewerTitle)
+
+	// Show first, then centre: the window is created at 0,0, so it needs to be
+	// positioned once it exists.
 	w.Show() // SW_SHOW activates the window, so it also receives keyboard input
+	v.centerAndSize()
 	ready <- nil
 
 	winui.MessageLoop(nil)
 	v.teardown()
+}
+
+// centerAndSize centres the viewer on the primary display at its intended size.
+func (v *clipViewer) centerAndSize() {
+	sw, sh := winui.ScreenSize()
+	x := (sw - viewW) / 2
+	y := (sh - viewH) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if err := winui.SetWindowPos(v.hwnd, winui.Invalid, x, y, viewW, viewH,
+		winui.SWP_NOZORDER|winui.SWP_NOACTIVATE); err != nil {
+		v.f.ctx.Logger.Warn("调整剪贴板窗口大小失败", "module", moduleID, "err", err)
+	}
+}
+
+// restoreFocus runs after the viewer closes: it waits for the window to be gone,
+// hands focus back to the window the user was working in, and (when configured)
+// pastes there.
+//
+// The wait matters because closing is asynchronous — the window is destroyed on
+// its own message loop — and synthesising Ctrl+V before the viewer is actually
+// off screen would deliver it to the viewer instead of the user's editor.
+func (v *clipViewer) restoreFocus(target winui.HWND, autoPaste bool) {
+	// Give the destroy sequence time to complete (message loop -> WM_DESTROY).
+	const settleMS = 150
+	time.Sleep(settleMS * time.Millisecond)
+
+	if !target.Valid() || !winui.IsWindow(target) {
+		return
+	}
+	// Focus first even when auto-paste is off: the user asked for this item and
+	// will press Ctrl+V themselves, so the window must be ready to receive it.
+	if !winui.SetForegroundWindow(target) {
+		v.f.ctx.Logger.Warn("恢复前台窗口失败，请手动切换后粘贴", "module", moduleID)
+	}
+	if autoPaste {
+		if err := sendPaste(target); err != nil {
+			v.f.ctx.Logger.Warn("自动粘贴未生效", "module", moduleID, "err", err)
+			v.f.ctx.Bus.Log(moduleID, "warn", "自动粘贴未生效，请手动 Ctrl+V："+err.Error())
+		}
+	}
 }
 
 // setTitle sets the window caption (winui creates the window with none).
@@ -372,21 +431,36 @@ func (v *clipViewer) clearAll() {
 }
 
 // writeBackSelected pushes the selected entry onto the system clipboard and
-// closes the viewer so the user can paste straight into the target window.
+// closes the viewer.
 //
-// The viewer owns the foreground while it is open, so auto-paste is skipped
-// here: there would be no reliable target window to receive it.
+// Focus handling is the crux of "copy from history actually pastes": the viewer
+// holds the foreground while it is open, so the window that should receive the
+// paste is the one remembered at open time. The viewer is closed first and the
+// focus is restored afterwards (see restoreFocus), because pasting while the
+// viewer is still up would type into the viewer itself.
+//
+// autoPaste is applied by restoreFocus rather than here, so the keystrokes are
+// sent only once the viewer is off screen.
 func (v *clipViewer) writeBackSelected() {
 	e := v.selected()
 	if e == nil {
 		return
 	}
-	if err := v.f.put(*e, false); err != nil {
+	autoPaste := v.f.snapshot().PasteOnCopy
+	v.mu.Lock()
+	target := v.prevForeground
+	v.mu.Unlock()
+
+	// put() with autoPaste=false: the clipboard write happens now, the paste is
+	// sequenced by restoreFocus after the window is gone.
+	if err := v.f.put(*e, false, target); err != nil {
 		v.f.ctx.Bus.Notice(moduleID, "写回剪贴板失败："+err.Error())
 		return
 	}
 	v.f.ctx.Bus.Progress(moduleID, "write", 100, "已写回剪贴板")
+
 	v.close()
+	go v.restoreFocus(target, autoPaste)
 }
 
 // wndProc dispatches the viewer's window messages.
@@ -401,7 +475,16 @@ func (v *clipViewer) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr
 		v.onKey(int(wParam))
 		return 0, true
 	case wmLButtonDown:
-		v.onClick(int32(int16(lParam&0xFFFF)), int32(int16(lParam>>16)))
+		x, y := int32(int16(lParam&0xFFFF)), int32(int16(lParam>>16))
+		// The window is a bare WS_POPUP with no caption, so dragging the header
+		// strip is what moves it. Windows runs the drag loop itself once it sees
+		// a synthetic title-bar press, which keeps the coordinates correct for
+		// the rest of the gesture.
+		if y < listTop {
+			winui.BeginDragWindow(hwnd)
+			return 0, true
+		}
+		v.onClick(x, y)
 		return 0, true
 	case wmLButtonDblClk:
 		if v.rowAt(int32(int16(lParam>>16))) >= 0 {
@@ -509,6 +592,12 @@ func (v *clipViewer) paint(c *winui.Canvas) {
 	c.DrawText(rowHeader(len(rows)), winui.Rect{
 		Left: viewPad, Top: viewPad, Right: viewW - viewPad, Bottom: listTop,
 	}, winui.ColorPanelFG, winui.DT_LEFT|winui.DT_SINGLELINE|winui.DT_VCENTER|winui.DT_NOPREFIX)
+
+	// Right-aligned in the same header strip: the window has no caption bar, so
+	// this is where the drag affordance is advertised.
+	c.DrawText(headerHint, winui.Rect{
+		Left: viewPad, Top: viewPad, Right: viewW - viewPad, Bottom: listTop,
+	}, winui.ColorPanelDim, winui.DT_RIGHT|winui.DT_SINGLELINE|winui.DT_VCENTER|winui.DT_NOPREFIX)
 
 	if len(rows) == 0 {
 		c.DrawText(rowEmpty, winui.Rect{

@@ -22,6 +22,12 @@ type Stats struct {
 	NetDn  float64 // bytes/sec
 	Disk   float64 // percent 0-100
 	Uptime time.Duration
+
+	// BatteryPercent / BatteryCharging / BatteryPresent describe the battery.
+	// Present is false on desktops, so the widget can hide the reading.
+	BatteryPercent  int
+	BatteryCharging bool
+	BatteryPresent  bool
 }
 
 // Collector samples system metrics on a fixed interval and publishes snapshots.
@@ -153,6 +159,9 @@ func (c *Collector) sample(prevUp, prevDn uint64) snapshot {
 		}
 	}
 	s.rawUp, s.rawDn = up, dn
+
+	s.BatteryPercent, s.BatteryCharging, s.BatteryPresent = powerStatus()
+
 	c.mu.Lock()
 	c.lastUp, c.lastDn = up, dn
 	c.mu.Unlock()

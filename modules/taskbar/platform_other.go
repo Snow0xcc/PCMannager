@@ -14,3 +14,11 @@ func platformNative() bool { return false }
 
 // describeWindow has no native window to describe off Windows.
 func describeWindow() string { return "no native taskbar (non-Windows)" }
+
+// powerStatus reports no battery off Windows: the widget is Windows-only, and
+// the non-Windows build only collects and logs metrics.
+func powerStatus() (percent int, charging bool, present bool) { return 0, false, false }
+
+// reapStaleWidgets is a no-op off Windows: there is no taskbar to embed into and
+// therefore no native widget windows to clean up.
+func reapStaleWidgets() {}

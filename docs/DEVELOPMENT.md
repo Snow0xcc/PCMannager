@@ -37,24 +37,27 @@ git submodule status   # 每个条目前应带空格或前缀，而非减号(-)
 # 下载/整理依赖（改动 go.mod 后先跑）
 go mod tidy
 
-# 构建（当前平台）
-go build -o pcmannager .
+# 构建（当前平台）：发布类构建统一走脚本，参数与 CI 同源
+bash scripts/build.sh linux amd64 dist/pcmannager
 
-# 交叉构建 Windows 可执行文件（无需 CGO）
-CGO_ENABLED=0 GOOS=windows go build -o pcmannager.exe .
+# Windows 交叉构建（无需 CGO，自动追加 -H windowsgui 与 -tags production）
+bash scripts/build.sh windows amd64 dist/pcmannager.exe
+
+# 开发期快速跑（控制台子系统，便于看日志）：注意它没有 production 标签，
+# Wails 原生窗口会退回桩实现（内部有加固，不会因此退出），仅适合核心逻辑调试
+go run .
 
 # 静态检查
-go vet ./...
+CGO_ENABLED=0 go vet ./...
 
 # 格式化检查 / 修复
 gofmt -l .          # 列出未格式化文件
 gofmt -w .          # 就地格式化
-
-# 运行（开发期直接跑主程序）
-go run .
 ```
 
 Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。
+
+> **不要裸调 `go build` 产出发布版**：必须带 `-tags production`（Wails 需要）且 Windows 需 `-H windowsgui`（否则弹控制台）。`scripts/build.sh` 已把两者固定下来，发布请一律走它。
 
 ## 4. 开发工作流
 
@@ -66,22 +69,24 @@ Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心
 
 ## 5. 本地运行与调试
 
-- 配置文件默认位于用户配置目录下的 `PCMannager/config.json`。可用环境变量覆盖路径以便调试：
+- 配置文件默认位于用户配置目录下的 `GoBox/config.yaml`（Windows `%APPDATA%\GoBox`）。可用环境变量覆盖路径以便调试：
 
   ```bash
-  PCMANNAGER_CONFIG=/path/to/dev-config.json go run .
+  PCMANNAGER_CONFIG=/path/to/dev-config go run .
   ```
 
-- 日志写入配置文件同级的 `pcmannager.log`。
+- 日志同时写入两处：数据目录 `logs/gobox.log` **和程序所在目录** `logs/gobox.log`（即 exe 旁边的 `logs/`，启动时自动创建）。后者对无控制台的 GUI 构建尤其重要——直接去程序目录就能看到日志。
 
-## 6. 已知构建缺口（重要）
+## 6. 构建与运行的坑
 
-当前 `main.go` 仍引用旧版 `core` API（`Manager`/`Feature`/`App`），而 `internal/core` 已重构为 `Module`/`Registry`/`Bus` 体系，二者尚未对齐，**直接 `go build` 会失败**。
+历史上 `main.go` 曾引用旧版 `core` API 而无法 `go build`，该缺口已修复：现在 `go build ./...`、`go vet ./...` 与四个目标平台交叉构建都通过。
 
-在迁移缺口修好之前：
+仍要注意两点（都会导致“看起来构建成功、但行为异常”）：
 
-- CI（`.github/workflows/release.yml`）在构建步骤会报错，属预期。
-- 本地无法完整 `go run .`。若需先跑通，需先把 `main.go` 与 `internal/core` 的新接口对齐（这是独立的迁移任务，不在普通功能开发范围内）。
+- **Wails 的 `production` 标签**：缺它会让 `wailsapp` 退回 `app_default_windows.go` 桩实现（`CreateApp` 弹框返回 `nil`），事件转发随后以无效 context 调 `runtime.EventsEmit`，内部 `log.Fatalf` 直接退出进程。`scripts/build.sh` 已固定该标签。
+- **Windows 的 `-H windowsgui`**：缺它会在启动时弹出黑色控制台窗口。
+
+开发期用 `go run .`（无标签、控制台子系统）调试核心逻辑是可行的；`wailsapp` 侧已加固为“拿到空 context 就停止转发”，不会因此退出进程。
 
 ## 7. 提交说明
 

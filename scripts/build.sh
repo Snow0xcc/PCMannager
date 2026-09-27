@@ -48,7 +48,16 @@ if [ "$goos" = "windows" ]; then
   ldflags="$ldflags -H windowsgui"
 fi
 
+# Wails 的原生窗口（internal/wailsapp）要求 dev 或 production 构建标签。
+# 漏掉它时 Wails 会退回到 app_default_windows.go 的桩实现：CreateApp 只弹
+# 错误框并返回 nil，随后 wails.Run 立即返回，事件转发 goroutine 以
+# context.Background() 调用 runtime.EventsEmit，触发 log.Fatalf 退出进程——
+# 在 GUI 子系统下表现为“创建完 config 后静默退出”（无控制台、无日志）。
+# 本项目始终走生产路径，故固定 production；非 Windows 未 import wails，
+# 该标签对它们无副作用。
+tags="production"
+
 CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-  go build -trimpath -ldflags="$ldflags" -o "$out" .
+  go build -tags "$tags" -trimpath -ldflags="$ldflags" -o "$out" .
 
 echo "built: $out ($(wc -c <"$out") bytes)"
