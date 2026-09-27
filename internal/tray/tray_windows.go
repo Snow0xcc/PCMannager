@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/snow0xcc/pcmannager/internal/logo"
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
@@ -313,8 +314,38 @@ func copyTip(nid *winui.NOTIFYICONDATAW, tip string) {
 	copy(nid.Tip[:], syscall.StringToUTF16(string(runes)))
 }
 
-// defaultIcon loads the application's own small icon.
+// brandIcon lazily rasterises the butterfly logo into a small HICON for the
+// notification area.
+//
+// The tray draws at the system's small-icon metric (typically 16, but it is
+// DPI dependent), so the size is queried rather than hardcoded; a 32px source
+// downscaled by the shell stays crisp for the butterfly's simple geometry.
+var brandIcon = struct {
+	once sync.Once
+	h    uintptr
+}{}
+
+// brandIconHandle returns the HICON for the butterfly mark, or 0 when it could
+// not be built (the caller then falls back to a shell-provided icon).
+func brandIconHandle() uintptr {
+	brandIcon.once.Do(func() {
+		img := logo.Render(32)
+		if img == nil {
+			return
+		}
+		brandIcon.h = winui.IconFromRGBA(img)
+	})
+	return brandIcon.h
+}
+
+// defaultIcon loads the application's own small icon, preferring the embedded
+// butterfly brand mark over whatever binary icon the exe carries (a plain
+// `go build` produces an exe with no icon resource at all, so without this the
+// tray would show the generic shell application icon).
 func defaultIcon() uintptr {
+	if h := brandIconHandle(); h != 0 {
+		return h
+	}
 	const (
 		imageIcon     = 1
 		lrDefaultSize = 0x0000

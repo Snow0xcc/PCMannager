@@ -29,13 +29,16 @@ func (h HWND) Valid() bool { return h != 0 }
 
 // CapabilitiesInfo describes which native features the current build offers.
 // The preferences panel shows this so users understand platform differences.
+// Fonts lists the installed font family names (Windows only), so the panel can
+// populate font pickers without another endpoint.
 type CapabilitiesInfo struct {
-	Native           bool `json:"native"`
-	TaskbarEmbedding bool `json:"taskbar_embedding"`
-	TrayIcon         bool `json:"tray_icon"`
-	Toasts           bool `json:"toasts"`
-	Elevation        bool `json:"elevation"`
-	Hotkeys          bool `json:"hotkeys"`
+	Native           bool     `json:"native"`
+	TaskbarEmbedding bool     `json:"taskbar_embedding"`
+	TrayIcon         bool     `json:"tray_icon"`
+	Toasts           bool     `json:"toasts"`
+	Elevation        bool     `json:"elevation"`
+	Hotkeys          bool     `json:"hotkeys"`
+	Fonts            []string `json:"fonts,omitempty"`
 }
 
 // Capabilities reports platform feature availability.

@@ -20,6 +20,10 @@ const (
 	KindString OptionKind = "string"
 	KindSelect OptionKind = "select"
 	KindColor  OptionKind = "color"
+	// KindFont renders a dropdown of the system's installed font families
+	// (populated by the panel via winui.FontFamilies on Windows). The value is
+	// a plain family name string, so modules read it like any string option.
+	KindFont OptionKind = "font"
 )
 
 // Option is a declarative configuration field. The web panel builds its form

@@ -12,6 +12,9 @@ import (
 )
 
 func platformCapabilities() CapabilitiesInfo {
+	// Fonts are enumerated once and carried with the capabilities blob: the
+	// list cannot change while the process runs, and the panel needs it for
+	// every font picker. Failing enumeration just omits the field.
 	return CapabilitiesInfo{
 		Native:           true,
 		TaskbarEmbedding: true,
@@ -19,6 +22,7 @@ func platformCapabilities() CapabilitiesInfo {
 		Toasts:           true,
 		Elevation:        true,
 		Hotkeys:          true,
+		Fonts:            FontFamilies(),
 	}
 }
 

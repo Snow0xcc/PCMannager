@@ -507,8 +507,20 @@ func (e *editorState) paintControl(hwnd winui.HWND) {
 		} else {
 			fill = edColorSurface
 		}
-		drawButton(c, e.ctrlButtonRect(i, len(btns)), btns[i].label, fill, true)
+		drawCtrlButton(c, e.ctrlButtonRect(i, len(btns)), btns[i].label, fill)
 	}
+}
+
+// drawCtrlButton paints one control-bar button: plate plus text label.
+//
+// The capture control bar keeps TEXT buttons, unlike the editor toolbar's
+// icons: its actions (停止并保存/丢弃/复制到剪贴板…) have no natural single
+// glyph, and this bar has room for labels. It must not use drawToolbarButton,
+// which renders a glyph by edBtn id and would draw a meaningless dot here.
+func drawCtrlButton(c *winui.Canvas, r winui.Rect, label string, fill uint32) {
+	c.Fill(r, fill)
+	c.DrawText(label, r, winui.ContrastText(fill),
+		winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 }
 
 // The clipboard and file-manager helpers live behind winui/sysutil; nothing

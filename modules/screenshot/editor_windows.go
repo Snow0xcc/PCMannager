@@ -72,6 +72,20 @@ type editorState struct {
 	// started shapes.
 	strokeColor uint32
 	strokeWidth int32
+
+	// toolbarDX/DY is the user's drag offset for the whole toolbar row. The row
+	// defaults to snapping under the selection; the handle lets the user move it
+	// anywhere (it keeps its position until the editor closes).
+	toolbarDX int32
+	toolbarDY int32
+	// handleDrag is true while the user is dragging the grab handle, and the
+	// anchor remembers where in the toolbar the grab started so the row follows
+	// the cursor 1:1 instead of jumping.
+	handleDrag           bool
+	handleAnchorX, handleAnchorY int32
+	// hoverID is the toolbar button (or edHandleID) currently under the cursor,
+	// or -1; it drives both the hover highlight and the tooltip.
+	hoverID int
 }
 
 // edMu guards the one active editor instance.
@@ -99,12 +113,17 @@ const (
 
 // Editor geometry, in device pixels.
 const (
-	edBtnW   = 66
-	edBtnH   = 26
-	edBtnGap = 6
+	edBtnW   = 44
+	edBtnH   = 30
+	edBtnGap = 4
 	edMargin = 16
 	// edMinSel is the smallest selection treated as a real crop (px).
 	edMinSel = 4
+	// edHandleW is the width of the drag handle that leads the toolbar. It is
+	// narrower than a button: it only has to be a comfortable grab target.
+	edHandleW = 22
+	// edTooltipGap is how far above a button its tooltip floats.
+	edTooltipGap = 6
 )
 
 // edHint is the prompt shown before anything is selected.
@@ -166,22 +185,32 @@ const (
 	edBtnScrollStart
 	// edBtnScrollAuto toggles injected scrolling for a scrolling capture.
 	edBtnScrollAuto
+	// edBtnPin floats the selection on screen as a borderless topmost window.
+	edBtnPin
 )
 
+// edHandleID is the pseudo button id returned when the drag handle is hit.
+//
+// It is deliberately not part of the edBtn* sequence: the handle is a toolbar
+// affordance, not an action, and giving it a real id would let an accidental
+// fall-through in activate() try to execute it.
+const edHandleID = -2
+
 // edButton is one entry of the current mode's toolbar.
+//
+// label is the tooltip text (and a debug aid); the toolbar itself renders a
+// vector glyph instead of the label, so the buttons stay legible at any size.
 type edButton struct {
 	id    int
 	label string
 }
 
-// edButtonCount is how many buttons the widest (capture) toolbar holds.
-const edButtonCount = 8
-
 // buttons returns the toolbar for the editor's current mode.
 //
 // Index 0 is the RIGHTMOST button: buttonRect lays the row out right to left, so
 // the primary action of every mode ends up where the cursor already is after a
-// selection is dragged (bottom-right of the selection).
+// selection is dragged (bottom-right of the selection). The drag handle is not
+// part of this list; buttonRect reserves its slot at the far left.
 func (e *editorState) buttons() []edButton {
 	switch e.mode {
 	case edModeRecord:
@@ -201,14 +230,15 @@ func (e *editorState) buttons() []edButton {
 		}
 	}
 	return []edButton{
-		{edBtnConfirm, "确认"},
-		{edBtnCopy, "复制"},
-		{edBtnCancel, "取消"},
-		{edBtnUndo, "撤销"},
+		{edBtnConfirm, "保存截图"},
+		{edBtnCopy, "复制到剪贴板"},
+		{edBtnPin, "屏幕贴图"},
+		{edBtnCancel, "取消截图"},
+		{edBtnUndo, "撤销编辑"},
 		{edBtnPen, "画笔"},
 		{edBtnArrow, "箭头"},
 		{edBtnEllipse, "椭圆"},
-		{edBtnRect, "矩形"},
+		{edBtnRect, "矩形截图"},
 	}
 }
 
@@ -449,7 +479,20 @@ func (e *editorState) onKey(vk int) {
 // tool is active and a selection exists), and only then selection dragging, so
 // drawing inside the selected area does not restart the crop.
 func (e *editorState) onDown(x, y int32) {
-	if id := e.hitButton(x, y); id >= 0 {
+	id := e.hitButton(x, y)
+	if id == edHandleID {
+		// Grabbing the handle starts a toolbar drag. The anchor is where inside
+		// the ROW the grab happened, so the toolbar follows the cursor 1:1.
+		e.mu.Lock()
+		sel := e.sel
+		e.handleDrag = true
+		e.handleAnchorX = x
+		e.handleAnchorY = y
+		_ = sel
+		e.mu.Unlock()
+		return
+	}
+	if id >= 0 {
 		e.activate(id)
 		return
 	}
@@ -545,11 +588,38 @@ func (e *editorState) activate(id int) {
 		e.save()
 	case edBtnCopy:
 		e.copy()
+	case edBtnPin:
+		e.pinToScreen()
 	case edBtnCancel:
 		e.cancel()
 	case edBtnUndo:
 		e.undo()
 	}
+}
+
+// pinToScreen floats the current selection (with its annotations) as a
+// borderless topmost window, then closes the editor.
+//
+// Closing is deliberate: the user has already re-used the capture by pinning
+// it, and leaving a full-screen dimming overlay up would invite them to pin the
+// same region twice. The pin keeps living in its own window/thread.
+func (e *editorState) pinToScreen() {
+	img := e.export()
+	if img == nil {
+		return
+	}
+	e.mu.Lock()
+	sel := e.sel
+	origin := e.origin
+	e.mu.Unlock()
+
+	pos := image.Pt(origin.X+int(sel.Left), origin.Y+int(sel.Top))
+	if err := pinImage(e.ctx, img, pos); err != nil {
+		e.ctx.Logger.Warn("贴图失败", "module", moduleID, "err", err)
+		e.ctx.Bus.Notice(moduleID, "贴图失败："+err.Error())
+		return
+	}
+	e.close()
 }
 
 // closeEditorWindow asks the editor's own window to close, from any goroutine.
@@ -578,13 +648,16 @@ func (e *editorState) undo() {
 
 // hitButton reports which toolbar button contains (x,y), or -1 for none.
 // The toolbar only exists once a selection has been made, so there is nothing
-// to hit before that.
+// to hit before that. The drag handle reports edHandleID.
 func (e *editorState) hitButton(x, y int32) int {
 	e.mu.Lock()
 	sel := e.sel
 	e.mu.Unlock()
 	if sel.Width() < edMinSel || sel.Height() < edMinSel {
 		return -1
+	}
+	if h := e.handleRect(sel); x >= h.Left && x <= h.Right && y >= h.Top && y <= h.Bottom {
+		return edHandleID
 	}
 	btns := e.buttons()
 	for i := range btns {
@@ -646,22 +719,31 @@ func (e *editorState) applyStyle(id int) {
 	e.repaint()
 }
 
+// edToolbarWidth returns the toolbar row's full width for n buttons: the drag
+// handle at the far left, the gap after it, then the buttons right to left.
+func edToolbarWidth(n int) int32 {
+	return edHandleW + edBtnGap + int32(n)*(edBtnW+edBtnGap) - edBtnGap
+}
+
 // buttonRect returns the rectangle of the i-th toolbar button.
 //
 // The toolbar hangs just below the selection (Feishu/Snipaste style) so the
 // confirm/cancel actions are next to what they apply to, rather than in a bar
 // far away at the screen edge. It flips above the selection when there is no
-// room below, and is clamped inside the window horizontally.
+// room below, is clamped inside the window horizontally, and is then shifted by
+// the user's drag offset (toolbarDX/DY) — clamped again so the row can always
+// be reached, wherever it was dragged.
 func (e *editorState) buttonRect(i int, sel winui.Rect) winui.Rect {
 	e.mu.Lock()
-	win := e.win
+	dx, dy := e.toolbarDX, e.toolbarDY
 	e.mu.Unlock()
+	win := e.win
 	full := winui.ClientRect(e.hwndLocked(win))
 
 	// The width follows the CURRENT mode's button count, so a two-button record
 	// toolbar does not leave a gap where six more buttons used to be.
 	n := len(e.buttons())
-	toolbarW := int32(n)*(edBtnW+edBtnGap) - edBtnGap
+	toolbarW := edToolbarWidth(n)
 	top := sel.Bottom + edBtnGap
 	if top+edBtnH > full.Bottom {
 		// No room below: place it above the selection instead.
@@ -671,9 +753,6 @@ func (e *editorState) buttonRect(i int, sel winui.Rect) winui.Rect {
 		top = full.Top
 	}
 	left := sel.Right - toolbarW
-	if left < full.Left+edMargin {
-		left = sel.Left
-	}
 	if max := full.Right - edMargin - toolbarW; left > max {
 		left = max
 	}
@@ -681,8 +760,41 @@ func (e *editorState) buttonRect(i int, sel winui.Rect) winui.Rect {
 		left = full.Left + edMargin
 	}
 
-	right := left + toolbarW - int32(i)*(edBtnW+edBtnGap)
+	// Apply the drag offset, keeping the row fully inside the window: a toolbar
+	// dragged half out of view would have unreachable buttons. The window must
+	// be at least as wide/tall as the toolbar for these bounds to be sane; a
+	// zero rect (no window yet) or a degenerate one leaves the position alone
+	// rather than clamping everything into a negative coordinate.
+	left += dx
+	top += dy
+	if full.Right-full.Left >= toolbarW && full.Bottom-full.Top >= edBtnH {
+		if left < full.Left {
+			left = full.Left
+		}
+		if max := full.Right - toolbarW; left > max {
+			left = max
+		}
+		if top < full.Top {
+			top = full.Top
+		}
+		if max := full.Bottom - edBtnH; top > max {
+			top = max
+		}
+	}
+
+	// Layout is right to left: button 0 is the rightmost, and the handle sits
+	// at the far left of the row (its own slot, not part of the button list).
+	right := left + toolbarW - edHandleW - edBtnGap - int32(i)*(edBtnW+edBtnGap)
 	return winui.Rect{Left: right - edBtnW, Top: top, Right: right, Bottom: top + edBtnH}
+}
+
+// handleRect returns the drag-handle rectangle: the leftmost slot of the row.
+// It shares buttonRect's positioning logic so the two can never disagree about
+// where the row is (that mismatch would make clicks land off target).
+func (e *editorState) handleRect(sel winui.Rect) winui.Rect {
+	b0 := e.buttonRect(len(e.buttons())-1, sel)
+	left := b0.Left - edBtnGap - edHandleW
+	return winui.Rect{Left: left, Top: b0.Top, Right: left + edHandleW, Bottom: b0.Bottom}
 }
 
 // hwndLocked reads the window handle without holding the lock during the call.
@@ -693,9 +805,20 @@ func (e *editorState) hwndLocked(win *winui.Window) winui.HWND {
 	return win.HWND()
 }
 
-// onMove extends the selection or the in-progress annotation.
+// onMove extends the selection or the in-progress annotation, drags the
+// toolbar by its handle, or updates the hover state for tooltips.
 func (e *editorState) onMove(x, y int32) {
 	e.mu.Lock()
+	if e.handleDrag {
+		// Move the toolbar by the distance the cursor travelled since the grab;
+		// buttonRect clamps the result back inside the window.
+		e.toolbarDX += x - e.handleAnchorX
+		e.toolbarDY += y - e.handleAnchorY
+		e.handleAnchorX, e.handleAnchorY = x, y
+		e.mu.Unlock()
+		e.repaint()
+		return
+	}
 	if e.drawing {
 		e.growAnnotLocked(x, y)
 		e.mu.Unlock()
@@ -703,7 +826,14 @@ func (e *editorState) onMove(x, y int32) {
 		return
 	}
 	if !e.dragging {
+		// Not dragging anything: update the hover highlight / tooltip.
+		hover := e.hitButton(x, y)
+		changed := hover != e.hoverID
+		e.hoverID = hover
 		e.mu.Unlock()
+		if changed {
+			e.repaint()
+		}
 		return
 	}
 	e.sel = normalize(winui.Rect{Left: e.anchorX, Top: e.anchorY, Right: x, Bottom: y})
@@ -727,6 +857,11 @@ func (e *editorState) growAnnotLocked(x, y int32) {
 // shape.
 func (e *editorState) onUp(x, y int32) {
 	e.mu.Lock()
+	if e.handleDrag {
+		e.handleDrag = false
+		e.mu.Unlock()
+		return
+	}
 	if e.drawing {
 		e.growAnnotLocked(x, y)
 		a := e.curAnnot
@@ -762,6 +897,13 @@ func (e *editorState) onUp(x, y int32) {
 	e.sel = r
 	e.mu.Unlock()
 	e.repaint()
+}
+
+// endHandleDrag finishes a toolbar drag started on the grab handle.
+func (e *editorState) endHandleDrag() {
+	e.mu.Lock()
+	e.handleDrag = false
+	e.mu.Unlock()
 }
 
 // pointInRect reports whether (x,y) lies inside r, inclusive.
@@ -934,8 +1076,10 @@ func (e *editorState) paint(hwnd winui.HWND) {
 		// 3. Selection toolbar, hanging just below the selection. Its contents
 		//    depend on the mode: crop offers confirm/copy/undo plus the drawing
 		//    tools, while record and scroll offer only their own start action and
-		//    cancel.
+		//    cancel. Buttons render vector glyphs (icons_windows.go), not text —
+		//    the label is the tooltip — and the row starts with a drag handle.
 		btns := e.buttons()
+		hover := e.hoverIDLocked()
 		for i, b := range btns {
 			fill := uint32(edColorAccent)
 			switch b.id {
@@ -944,11 +1088,32 @@ func (e *editorState) paint(hwnd winui.HWND) {
 			case edBtnUndo:
 				fill = edColorSurface
 			}
-			// Highlight the active drawing tool so the current mode is obvious.
+			// Highlight the active drawing tool so the current mode is obvious,
+			// and the hovered button so the tooltip's subject is unambiguous.
 			if isToolButton(b.id) && toolOf(b.id) == tool {
 				fill = edColorSel
 			}
-			drawButton(c, e.buttonRect(i, sel), b.label, fill, true)
+			if hover == b.id {
+				fill = winui.BlendColors(fill, edColorText, 0.25)
+			}
+			r := e.buttonRect(i, sel)
+			drawToolbarButton(c, r, b.id, fill)
+			if hover == b.id {
+				e.paintTooltip(c, r, b.label)
+			}
+		}
+
+		// The drag handle at the far left of the row; brighter while grabbed so
+		// the user can see the toolbar is being carried.
+		hr := e.handleRect(sel)
+		handleFg := uint32(edColorText)
+		if hover == edHandleID || e.handleDragLocked() {
+			handleFg = edColorSel
+		}
+		c.Fill(hr, edColorSurface)
+		drawDragHandle(c, hr, handleFg)
+		if hover == edHandleID {
+			e.paintTooltip(c, hr, "拖动工具栏")
 		}
 
 		// 4. Size readout above the selection, so the crop size is visible.
@@ -1117,17 +1282,79 @@ func (e *editorState) toolbarRect(sel winui.Rect, full winui.Rect) winui.Rect {
 	btns := e.buttons()
 	first := e.buttonRect(0, sel)
 	last := e.buttonRect(len(btns)-1, sel)
-	return winui.Rect{Left: last.Left, Top: first.Top, Right: first.Right, Bottom: first.Bottom}
+	return winui.Rect{Left: last.Left - edHandleW - edBtnGap, Top: first.Top, Right: first.Right, Bottom: first.Bottom}
 }
 
-// drawButton paints one bottom-bar button; disabled ones are dimmed.
-func drawButton(c *winui.Canvas, r winui.Rect, label string, fill uint32, enabled bool) {
-	fg := uint32(edColorText)
-	if !enabled {
-		fill, fg = edColorEdge, edColorDisabled
-	}
+// drawToolbarButton paints one editor-toolbar button: the plate plus its
+// vector glyph.
+//
+// The label is NOT drawn — buttons are identified by icon (icons_windows.go) —
+// so the glyph colour must contrast with the plate, whatever fill the caller
+// picked (the palette varies: accent, danger, selection blue, surface). The
+// tooltip carries the text description instead.
+//
+// The capture control bar (editor_control.go) keeps TEXT buttons: its actions
+// (停止并保存/丢弃/复制到剪贴板…) have no natural single glyph, and that bar has
+// room for labels.
+func drawToolbarButton(c *winui.Canvas, r winui.Rect, id int, fill uint32) {
 	c.Fill(r, fill)
-	c.DrawText(label, r, fg, winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE)
+	drawToolbarIcon(c, r, id, winui.ContrastText(fill))
+}
+
+// hoverIDLocked returns the hovered button id; the zero default (-1) means none.
+func (e *editorState) hoverIDLocked() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.hoverID
+}
+
+// handleDragLocked reports whether a toolbar drag is in progress.
+func (e *editorState) handleDragLocked() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.handleDrag
+}
+
+// paintTooltip floats a small label above a button, describing it in Chinese.
+//
+// It is drawn as part of the editor's own paint pass (rather than via the
+// common-controls TOOLTIPS_CLASS): the editor is a single window with full
+// control of its paint order, so a hand-drawn label needs no extra child
+// window, no message forwarding and no dependency on a second HWND — and it
+// naturally sits above everything else because it is drawn last.
+func (e *editorState) paintTooltip(c *winui.Canvas, btn winui.Rect, text string) {
+	if text == "" {
+		return
+	}
+	tw, th := c.MeasureText(" " + text + " ")
+	if tw <= 0 || th <= 0 {
+		return
+	}
+
+	// Centre on the button, then clamp inside the window so a tooltip near an
+	// edge stays readable instead of being cut off.
+	full := winui.ClientRect(e.hwndForPaint())
+	left := btn.Left + (btn.Width()-tw)/2
+	top := btn.Top - edTooltipGap - th
+	if top < full.Top {
+		// No room above (toolbar flipped to the top edge): show below instead.
+		top = btn.Bottom + edTooltipGap
+	}
+	if left < full.Left {
+		left = full.Left
+	}
+	if max := full.Right - tw; left > max {
+		left = max
+	}
+	if top+th > full.Bottom {
+		top = full.Bottom - th
+	}
+
+	r := winui.Rect{Left: left, Top: top, Right: left + tw, Bottom: top + th}
+	c.Fill(r, edColorSurface)
+	c.StrokeRect(r, edColorEdge, 1)
+	c.DrawText(" "+text+" ", r, edColorText,
+		winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 }
 
 // normalize orders a rectangle so Left<=Right and Top<=Bottom.
