@@ -1,13 +1,18 @@
 // Package clipboard implements the Ditto-style clipboard history module: it
 // records what the user copies, keeps a bounded history and can write any
 // entry back onto the system clipboard.
+//
+// Image payloads are never kept in memory: each captured PNG is flushed to a
+// cache file under the module data directory and the history entry only holds
+// its absolute path; write-back reads the file back on demand.
 package clipboard
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +35,9 @@ const (
 	writeTimeout = 2 * time.Second
 	// maxPreview is the length of the excerpt published to the panel.
 	maxPreview = 120
+	// cachePrefix/cacheExt shape the cache file names swept at startup.
+	cachePrefix = "img_"
+	cacheExt    = ".png"
 )
 
 // Module-level errors.
@@ -53,9 +61,12 @@ type Feature struct {
 	running bool
 	cancel  context.CancelFunc
 	// echo* remembers the last payload this module wrote so the watcher can
-	// skip it instead of re-adding it to the history.
+	// skip it instead of re-adding it to the history. Only one kind is set at
+	// a time; images/files are remembered by identity, never by bytes, so a
+	// write-back does not pin a BLOB in memory either.
 	echoText  string
-	echoImage []byte
+	echoImage string
+	echoFile  string
 	echoAt    time.Time
 }
 
@@ -73,7 +84,7 @@ func (f *Feature) Name() string { return "剪贴板历史" }
 
 // Description implements core.Module.
 func (f *Feature) Description() string {
-	return "Ditto 式剪贴板历史：自动记录复制的文本与图片，可随时写回"
+	return "Ditto 式剪贴板历史：自动记录复制的文本与图片（图片落盘缓存），可随时写回"
 }
 
 // Options implements core.Module.
@@ -84,7 +95,7 @@ func (f *Feature) Options() []core.Option {
 			Help: "超出上限后丢弃最旧的未固定条目"},
 		{Key: optStoreImages, Label: "记录图片", Kind: core.KindBool,
 			Default: defaultStoreImages,
-			Help:    "同时记录复制的图片（PNG）", Restart: true},
+			Help:    "同时记录复制的图片（PNG 落盘缓存，不常驻内存）", Restart: true},
 		{Key: optPasteOnCopy, Label: "写回后自动粘贴", Kind: core.KindBool,
 			Default: defaultPasteOnCopy,
 			Help:    "写回剪贴板后向前台窗口发送 Ctrl+V（尽力而为）"},
@@ -118,6 +129,16 @@ func (f *Feature) Init(ctx *core.Context) error {
 			f.ctx.Bus.State(moduleID, f.State())
 		}
 	})
+	// 条目被删除或驱逐时联动清理其缓存文件；失败仅记日志，不影响历史本身。
+	f.hist.SetOnDelete(func(e Entry) {
+		if e.Kind != KindImage || e.Path == "" {
+			return // 文件条目的 Path 指向用户文件，绝不能删除
+		}
+		if err := os.Remove(e.Path); err != nil && !os.IsNotExist(err) {
+			f.logCacheSweepFailure(e.Path, err)
+		}
+	})
+	f.sweepCache()
 	return nil
 }
 
@@ -147,6 +168,9 @@ func (f *Feature) Start() error {
 	f.mu.Unlock()
 
 	go f.watch(ctx, cfg)
+	// golang.design/x/clipboard 的抽象只覆盖文本/图片位图，收不到资源管理器
+	// 复制的文件列表；Windows 下由独立的 CF_HDROP 轮询器补齐这条通路。
+	go f.pollFiles(ctx)
 
 	f.ctx.Logger.Info("剪贴板历史已启动", "module", moduleID,
 		"max_items", cfg.MaxItems, "store_images", cfg.StoreImages)
@@ -181,7 +205,7 @@ func (f *Feature) State() core.State {
 	entries := f.hist.All()
 	last, lastKind := "", string(KindText)
 	if n := len(entries); n > 0 {
-		last = summary(entries[n-1].Text, maxPreview)
+		last = summary(entrySummary(entries[n-1]), maxPreview)
 		lastKind = string(entries[n-1].Kind)
 	}
 	f.mu.Lock()
@@ -196,6 +220,8 @@ func (f *Feature) State() core.State {
 		"store_images":   cfg.StoreImages,
 		"paste_on_copy":  cfg.PasteOnCopy,
 		"retention_days": cfg.Retention,
+		"cache_dir":      f.cacheDir(),
+		"cache_bytes":    f.cacheBytes(),
 	}
 }
 
@@ -312,27 +338,34 @@ func (f *Feature) watch(ctx context.Context, cfg configView) {
 			if !ok {
 				return
 			}
-			f.ingest(cfg, d)
+			f.ingest(ctx, cfg, d)
 		}
 	}
 }
 
 // ingest stores one clipboard change, skipping empty payloads and the echo of
 // this module's own write-back.
-func (f *Feature) ingest(cfg configView, d clip.Data) {
+func (f *Feature) ingest(ctx context.Context, cfg configView, d clip.Data) {
 	if len(d.Bytes) == 0 {
 		return
 	}
 	if d.Format == clip.FmtImage {
-		if !cfg.StoreImages || f.isEcho(clip.FmtImage, d.Bytes) {
+		if !cfg.StoreImages || f.isEchoImage(d.Bytes) {
 			return
 		}
-		f.hist.AddImage(d.Bytes)
-		f.ctx.Logger.Debug("已记录剪贴板图片", "module", moduleID, "bytes", len(d.Bytes))
+		path, size, err := f.writePNGCache(ctx, d.Bytes)
+		if err != nil {
+			// 落盘失败就放弃该条：宁可少记一条，也不把整张 PNG 留在内存里。
+			f.ctx.Logger.Warn("图片缓存写入失败，放弃记录该条", "module", moduleID, "err", err)
+			f.ctx.Bus.Log(moduleID, "warn", "图片缓存写入失败，未记录该条图片")
+			return
+		}
+		f.hist.AddImageFile(path, size)
+		f.ctx.Logger.Debug("已记录剪贴板图片", "module", moduleID, "bytes", size, "path", path)
 		return
 	}
 	text := strings.TrimRight(string(d.Bytes), " \t\r\n")
-	if text == "" || f.isEcho(clip.FmtText, []byte(text)) {
+	if text == "" || f.isEchoText(text) {
 		return
 	}
 	f.hist.AddText(text)
@@ -359,27 +392,56 @@ func (f *Feature) writeBack(e Entry) error {
 //
 // target is the window that should receive the paste (the one the user was
 // working in before our window took focus); it is ignored when autoPaste is
-// false.
+// false. The image branch reads the PNG back from its cache file on demand --
+// the bytes never persist in the entry itself.
 func (f *Feature) put(e Entry, autoPaste bool, target winui.HWND) error {
 	if f.ctx == nil {
 		return errors.New("clipboard: 模块未初始化")
 	}
-	format, buf := clip.FmtText, []byte(e.Text)
-	if e.Kind == KindImage {
-		format, buf = clip.FmtImage, e.Data
+	switch e.Kind {
+	case KindImage:
+		png, err := os.ReadFile(e.Path)
+		if err != nil {
+			err = fmt.Errorf("clipboard: 读取图片缓存失败: %w", err)
+			f.ctx.Logger.Error("写回图片失败", "module", moduleID, "id", e.ID, "path", e.Path, "err", err)
+			return err
+		}
+		return f.writeBytes(e, clip.FmtImage, png, autoPaste, target)
+	case KindFile:
+		// CF_HDROP：聊天客户端与资源管理器把这类粘贴当作“发送文件”。
+		// 非 Windows 平台 winui 返回 errUnsupported，错误照常上报。
+		if err := winui.ClipboardFileDrop([]string{e.Path}); err != nil {
+			f.ctx.Logger.Error("写回文件失败", "module", moduleID, "id", e.ID, "path", e.Path, "err", err)
+			return err
+		}
+		f.markEchoFile(e.Path)
+		f.afterWrite(e, autoPaste, target)
+		return nil
+	default:
+		return f.writeBytes(e, clip.FmtText, []byte(e.Text), autoPaste, target)
 	}
+}
+
+// writeBytes performs the actual clip.Write for text/image payloads and
+// records the echo so the watcher does not re-ingest our own write.
+func (f *Feature) writeBytes(e Entry, format clip.Format, buf []byte, autoPaste bool, target winui.HWND) error {
 	if len(buf) == 0 {
 		return errors.New("clipboard: 条目内容为空")
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	if _, err := clip.Write(ctx, format, buf); err != nil {
 		f.ctx.Logger.Error("写回剪贴板失败", "module", moduleID, "id", e.ID, "err", err)
 		return err
 	}
-	f.markEcho(format, buf)
+	f.markEchoBytes(format, buf)
+	f.afterWrite(e, autoPaste, target)
+	return nil
+}
 
+// afterWrite handles the shared post-write bookkeeping: best-effort auto
+// paste plus the log/notice every branch reports.
+func (f *Feature) afterWrite(e Entry, autoPaste bool, target winui.HWND) {
 	if autoPaste {
 		if err := sendPaste(target); err != nil {
 			// Pasting is a bonus: the entry is on the clipboard either way.
@@ -389,34 +451,180 @@ func (f *Feature) put(e Entry, autoPaste bool, target winui.HWND) error {
 	}
 	f.ctx.Logger.Info("已写回剪贴板", "module", moduleID, "id", e.ID, "kind", e.Kind)
 	f.ctx.Bus.Notice(moduleID, "已写回剪贴板")
-	return nil
 }
 
-// markEcho records the payload just written so ingest can ignore it.
-func (f *Feature) markEcho(format clip.Format, buf []byte) {
+// markEchoBytes records the payload just written so ingest can ignore it.
+func (f *Feature) markEchoBytes(format clip.Format, buf []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.echoAt = time.Now()
 	if format == clip.FmtImage {
+		// 只记录身份（大小 + 采样指纹），不复制字节：写回大图不应把 PNG 钉在内存里。
+		f.echoImage = imageFingerprint(buf)
 		f.echoText = ""
-		f.echoImage = append([]byte(nil), buf...)
+		f.echoFile = ""
 		return
 	}
-	f.echoImage = nil
 	f.echoText = string(buf)
+	f.echoImage = ""
+	f.echoFile = ""
 }
 
-// isEcho reports whether buf is this module's own recent write-back.
-func (f *Feature) isEcho(format clip.Format, buf []byte) bool {
+// markEchoFile records the file path just written so the poller can ignore it.
+func (f *Feature) markEchoFile(path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.echoAt = time.Now()
+	f.echoFile = path
+	f.echoText = ""
+	f.echoImage = ""
+}
+
+// isEchoText reports whether text is this module's own recent write-back.
+func (f *Feature) isEchoText(text string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.echoAt.IsZero() || time.Since(f.echoAt) > echoWindow {
 		return false
 	}
-	if format == clip.FmtImage {
-		return len(f.echoImage) > 0 && bytes.Equal(f.echoImage, buf)
+	return f.echoText != "" && f.echoText == text
+}
+
+// isEchoImage reports whether png is this module's own recent write-back,
+// compared by fingerprint so the full payload never needs to be stored.
+func (f *Feature) isEchoImage(png []byte) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.echoAt.IsZero() || time.Since(f.echoAt) > echoWindow {
+		return false
 	}
-	return f.echoText != "" && f.echoText == string(buf)
+	return f.echoImage != "" && f.echoImage == imageFingerprint(png)
+}
+
+// isEchoFile reports whether path is this module's own recent write-back.
+func (f *Feature) isEchoFile(path string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.echoAt.IsZero() || time.Since(f.echoAt) > echoWindow {
+		return false
+	}
+	return f.echoFile != "" && f.echoFile == path
+}
+
+// imageFingerprint derives a cheap identity for a PNG payload: its size plus
+// a sampled hash of head/middle/tail bytes. Only used to recognise our own
+// echo within a 3s window, where a collision is practically impossible and
+// benign (one duplicate entry at worst).
+func imageFingerprint(buf []byte) string {
+	if len(buf) == 0 {
+		return ""
+	}
+	const samples = 32
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d:", len(buf))
+	for _, off := range []int{0, len(buf) / 2, len(buf) - samples} {
+		if off < 0 {
+			off = 0
+		}
+		end := off + samples
+		if end > len(buf) {
+			end = len(buf)
+		}
+		b.Write(buf[off:end])
+	}
+	return b.String()
+}
+
+// entrySummary renders one entry for the panel's "last" preview.
+func entrySummary(e Entry) string {
+	switch e.Kind {
+	case KindImage:
+		return fmt.Sprintf("[图片 %d KB]", e.Size/1024)
+	case KindFile:
+		return "[文件] " + e.Text
+	}
+	return e.Text
+}
+
+// cacheDir returns the directory holding image cache files (the module data
+// directory itself; DataDir is per-module, so no extra subdirectory needed).
+func (f *Feature) cacheDir() string {
+	if f.ctx == nil || f.ctx.DataDir == "" {
+		return ""
+	}
+	return f.ctx.DataDir
+}
+
+// writePNGCache flushes a captured PNG into the cache directory and returns
+// its absolute path and byte size. The 3s echo window makes second-level
+// timestamps unique enough; the fetch-based sweep still tolerates collisions.
+func (f *Feature) writePNGCache(ctx context.Context, png []byte) (string, int, error) {
+	dir := f.cacheDir()
+	if dir == "" {
+		return "", 0, errors.New("clipboard: 缓存目录不可用")
+	}
+	name := fmt.Sprintf("%s%d%s", cachePrefix, time.Now().Unix(), cacheExt)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, png, 0o600); err != nil {
+		return "", 0, err
+	}
+	return path, len(png), nil
+}
+
+// sweepCache removes cache files that no entry references anymore (crash
+// leftovers, pruned entries whose cleanup was interrupted, name collisions).
+// Real file entries live outside the cache dir and are never touched.
+func (f *Feature) sweepCache() {
+	dir := f.cacheDir()
+	if dir == "" {
+		return
+	}
+	keep := make(map[string]bool)
+	for _, e := range f.hist.All() {
+		if e.Path != "" {
+			keep[e.Path] = true
+		}
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, cachePrefix+"*"+cacheExt))
+	if err != nil {
+		return
+	}
+	for _, p := range matches {
+		if keep[p] {
+			continue
+		}
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			f.logCacheSweepFailure(p, err)
+		}
+	}
+}
+
+// logCacheSweepFailure reports a failed cache-file removal once per file.
+func (f *Feature) logCacheSweepFailure(path string, err error) {
+	f.ctx.Logger.Warn("剪贴板缓存文件删除失败", "module", moduleID, "path", path, "err", err)
+}
+
+// cacheBytes walks the cache directory and sums file sizes; on error it
+// reports whatever was counted so far (the panel display is best-effort).
+func (f *Feature) cacheBytes() int64 {
+	dir := f.cacheDir()
+	if dir == "" {
+		return 0
+	}
+	var total int64
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	for _, de := range entries {
+		if de.IsDir() {
+			continue
+		}
+		if info, err := de.Info(); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
 }
 
 // configView is this module's settings as read from the configuration.

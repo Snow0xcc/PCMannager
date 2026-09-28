@@ -34,8 +34,11 @@ func singleLine(s string) string {
 // previewText mirrors the Windows preview pane for callers that render the
 // entry through the panel instead of a native window.
 func previewText(e Entry) string {
-	if e.Kind == KindImage {
-		return fmt.Sprintf("[图片 PNG，%d 字节]", len(e.Data))
+	switch e.Kind {
+	case KindImage:
+		return fmt.Sprintf("[图片 PNG，%d 字节]", e.Size)
+	case KindFile:
+		return filePreview(e)
 	}
 	return e.Text
 }

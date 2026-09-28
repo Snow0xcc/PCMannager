@@ -322,6 +322,13 @@ func (f *Feature) activeScroller() *scrollCapture {
 	return f.scroll
 }
 
+// activeMP4 returns the in-flight MP4 recording, if any.
+func (f *Feature) activeMP4() *mp4Recorder {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mp4
+}
+
 // scrollInterval reads the configured sampling period.
 func (f *Feature) scrollInterval() time.Duration {
 	ms := defaultScrollWait

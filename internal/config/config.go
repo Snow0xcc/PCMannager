@@ -133,6 +133,7 @@ func Default() *Config {
 					"save_dir":           "",
 					"max_history":        200,
 					"record_fps":         10,
+					"record_format":      "gif",
 					"scroll_interval_ms": 320,
 				},
 			},
@@ -142,6 +143,16 @@ func Default() *Config {
 				Options: map[string]any{
 					"prefer_source":  "auto",
 					"confirm_danger": true,
+				},
+			},
+			"launcher": {
+				Enabled: true,
+				// Alt+Space 是系统菜单键，可能被其它工具（PowerToys Run 等）
+				// 占用；注册失败会出现在面板热键错误里，可改绑。
+				Hotkey: "Alt+Space",
+				Options: map[string]any{
+					"hotkey":      "alt+space",
+					"max_results": 8,
 				},
 			},
 		},

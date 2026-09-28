@@ -1,11 +1,21 @@
 package clipboard
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	clip "golang.design/x/clipboard"
+
+	"github.com/snow0xcc/pcmannager/internal/core"
 )
 
 // textsOf 提取条目文本序列，便于按顺序断言历史内容。
@@ -84,12 +94,12 @@ func TestHistoryAddKeepsOrderKindAndSize(t *testing.T) {
 			wantSize: []int{len("一"), len("二"), len("三")},
 		},
 		{
-			name: "图片条目记录 PNG 字节长度且排在文本之后",
+			name: "图片条目记录缓存路径与大小且排在文本之后",
 			max:  10,
 			setup: func(h *History) {
 				h.AddText("文本")
-				h.AddImage([]byte{0x89, 0x50, 0x4E, 0x47})
-				h.AddImage([]byte{0x89, 0x50})
+				h.AddImageFile(filepath.Join("\\\\cache", "img_1.png"), 4)
+				h.AddImageFile(filepath.Join("\\\\cache", "img_2.png"), 2)
 			},
 			wantLen:  3,
 			wantText: []string{"文本", "", ""},
@@ -106,12 +116,11 @@ func TestHistoryAddKeepsOrderKindAndSize(t *testing.T) {
 			wantSize: []int{len("有效")},
 		},
 		{
-			name: "空图片不入栈",
+			name: "空图片路径不入栈",
 			max:  10,
 			setup: func(h *History) {
-				h.AddImage(nil)
-				h.AddImage([]byte{})
-				h.AddImage([]byte{0x01})
+				h.AddImageFile("", 1)
+				h.AddImageFile(filepath.Join("\\\\cache", "img_ok.png"), 1)
 			},
 			wantLen:  1,
 			wantText: []string{""},
@@ -311,24 +320,43 @@ func TestHistoryAddDeduplicates(t *testing.T) {
 		})
 	}
 
-	t.Run("图片按字节内容去重", func(t *testing.T) {
+	t.Run("图片按缓存路径去重", func(t *testing.T) {
 		h := NewHistory(100)
-		png := []byte{0x89, 0x50, 0x4E, 0x47}
-		h.AddImage(png)
-		again := h.AddImage(append([]byte{}, png...))
+		p := filepath.Join("\\\\cache", "img_dup.png")
+		first := h.AddImageFile(p, 4)
+		again := h.AddImageFile(p, 4)
 		if len(h.All()) != 1 {
-			t.Fatalf("相同 PNG 应去重：期望 1 条，实际 %d 条", len(h.All()))
+			t.Fatalf("相同缓存路径应去重：期望 1 条，实际 %d 条", len(h.All()))
 		}
-		first := h.All()[0]
-		if again.ID != first.ID {
-			t.Errorf("重复图片应复用原条目 ID：期望 %d，实际 %d", first.ID, again.ID)
+		got := h.All()[0]
+		if again.ID != got.ID {
+			t.Errorf("重复图片应复用原条目 ID：期望 %d，实际 %d", got.ID, again.ID)
 		}
-		if !again.Timestamp.Before(first.Timestamp) && !again.Timestamp.Equal(first.Timestamp) {
-			t.Errorf("重复图片返回的时间戳异常：期望不早于原条目 %v，实际 %v", first.Timestamp, again.Timestamp)
+		if got.ID != first.ID {
+			t.Errorf("重复图片应指向原条目：期望 ID %d，实际 %d", first.ID, got.ID)
 		}
-		h.AddImage([]byte{0x89, 0x51})
+		if !again.Timestamp.Before(got.Timestamp) && !again.Timestamp.Equal(got.Timestamp) {
+			t.Errorf("重复图片返回的时间戳异常：期望不早于原条目 %v，实际 %v", got.Timestamp, again.Timestamp)
+		}
+		if h.AddImageFile(filepath.Join("\\\\cache", "img_other.png"), 2); len(h.All()) != 2 {
+			t.Errorf("不同缓存路径应正常入栈：期望 2 条，实际 %d 条", len(h.All()))
+		}
+	})
+
+	t.Run("文件条目按路径去重", func(t *testing.T) {
+		h := NewHistory(100)
+		p := filepath.Join("C:\\Users", "report.pdf")
+		h.AddFileEntry(p, "report.pdf")
+		h.AddFileEntry(p, "report.pdf")
+		if len(h.All()) != 1 {
+			t.Fatalf("相同文件路径应去重：期望 1 条，实际 %d 条", len(h.All()))
+		}
+		h.AddFileEntry(filepath.Join("C:\\Users", "other.pdf"), "other.pdf")
 		if len(h.All()) != 2 {
-			t.Errorf("不同 PNG 应正常入栈：期望 2 条，实际 %d 条", len(h.All()))
+			t.Errorf("不同文件路径应正常入栈：期望 2 条，实际 %d 条", len(h.All()))
+		}
+		if got := h.All()[0]; got.Kind != KindFile || got.Path != p || got.Text != "report.pdf" {
+			t.Errorf("文件条目字段不符：Kind=%q Path=%q Text=%q", got.Kind, got.Path, got.Text)
 		}
 	})
 
@@ -830,5 +858,233 @@ func TestHistoryConcurrentMixedOps(t *testing.T) {
 	h.Clear()
 	if left := h.All(); len(left) != 0 {
 		t.Errorf("Clear 后仍残留条目：期望 0 条，实际 %d 条，内容=%v", len(left), textsOf(left))
+	}
+}
+
+// TestHistoryOnDeleteCallback 守护：删除/驱逐/清空都会回调 onDelete（供调用方
+// 清理缓存文件），Pinned 条目永不触发，回调异步执行不阻塞写入路径。
+func TestHistoryOnDeleteCallback(t *testing.T) {
+	t.Run("Delete/DeleteExcept/Clear 各触发一次", func(t *testing.T) {
+		ch := make(chan int, 8)
+		h := NewHistory(100)
+		h.SetOnDelete(func(e Entry) { ch <- e.ID })
+		a := h.AddText("a")
+		b := h.AddText("b")
+		c := h.AddText("c")
+
+		h.Delete(a.ID)
+		if got := <-ch; got != a.ID {
+			t.Errorf("Delete 回调不符：期望 ID %d，实际 %d", a.ID, got)
+		}
+
+		h.DeleteExcept(map[int]bool{b.ID: true})
+		if got := <-ch; got != c.ID {
+			t.Errorf("DeleteExcept 回调不符：期望 ID %d，实际 %d", c.ID, got)
+		}
+
+		h.Clear()
+		if got := <-ch; got != b.ID {
+			t.Errorf("Clear 回调不符：期望 ID %d，实际 %d", b.ID, got)
+		}
+
+		select {
+		case got := <-ch:
+			t.Errorf("出现多余回调：ID=%d", got)
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+
+	t.Run("驱逐条目携带缓存路径，供调用方删文件", func(t *testing.T) {
+		ch := make(chan string, 8)
+		h := NewHistory(2)
+		h.SetOnDelete(func(e Entry) { ch <- e.Path })
+		p1 := filepath.Join("C:\\cache", "img_1.png")
+		p2 := filepath.Join("C:\\cache", "img_2.png")
+		p3 := filepath.Join("C:\\cache", "img_3.png")
+		h.AddImageFile(p1, 1)
+		h.AddImageFile(p2, 1)
+		h.AddImageFile(p3, 1) // 挤出 img_1
+
+		select {
+		case got := <-ch:
+			if got != p1 {
+				t.Errorf("驱逐条目路径不符：期望 %q，实际 %q", p1, got)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("驱逐未触发 onDelete 回调")
+		}
+	})
+
+	t.Run("Pinned 条目永不被驱逐也不回调", func(t *testing.T) {
+		ch := make(chan int, 8)
+		h := NewHistory(2)
+		h.SetOnDelete(func(e Entry) { ch <- e.ID })
+		p := h.AddText("pin")
+		p.Pinned = true
+		h.Update(p)
+		for i := 0; i < 5; i++ {
+			h.AddText(fmt.Sprintf("挤入-%d", i))
+		}
+		h.Clear() // 驱逐最后一条未置顶条目
+		// max=2、置顶占 1 席：5 条新文全部被驱逐；回调异步投递不保证顺序，
+		// 故按集合比较——Pinned 条目（ID=1）绝不能出现。
+		evicted := make(map[int]bool, 5)
+		deadline := time.Now().Add(2 * time.Second)
+		for len(evicted) < 5 {
+			select {
+			case got := <-ch:
+				if got == p.ID {
+					t.Errorf("Pinned 条目 ID=%d 不应触发 onDelete", got)
+				}
+				evicted[got] = true
+			case <-time.After(time.Until(deadline)):
+				t.Fatalf("驱逐回调不全：已收到 %v，期望 ID 2..6 共 5 条", evicted)
+			}
+		}
+		for want := p.ID + 1; want <= p.ID+5; want++ {
+			if !evicted[want] {
+				t.Errorf("驱逐回调缺失 ID=%d：实际 %v", want, evicted)
+			}
+		}
+		select {
+		case got := <-ch:
+			t.Errorf("出现多余回调：ID=%d（Pinned 条目不应触发）", got)
+		case <-time.After(100 * time.Millisecond):
+		}
+		if all := h.All(); len(all) != 1 || all[0].ID != p.ID || !all[0].Pinned {
+			t.Errorf("Pinned 条目应是唯一幸存者：实际 %+v", all)
+		}
+	})
+}
+
+// TestEchoGuards 守护写回防抖：文本全等比较、图片按指纹比较（完整字节不驻留
+// 内存）、文件按路径比较；回声窗口外的载荷一律视为新内容。
+func TestEchoGuards(t *testing.T) {
+	t.Run("文本回声", func(t *testing.T) {
+		f := &Feature{hist: NewHistory(10)}
+		f.markEchoBytes(clip.FmtText, []byte("hello"))
+		if !f.isEchoText("hello") {
+			t.Error("刚写回的文本应被识别为回声")
+		}
+		if f.isEchoText("world") {
+			t.Error("不同文本不应识别为回声")
+		}
+	})
+
+	t.Run("图片回声按指纹比较且不驻留全量字节", func(t *testing.T) {
+		f := &Feature{hist: NewHistory(10)}
+		png := bytes.Repeat([]byte{0x89, 0x50}, 2048) // 4KB 载荷
+		f.markEchoBytes(clip.FmtImage, png)
+		if !f.isEchoImage(png) {
+			t.Error("刚写回的图片应被识别为回声")
+		}
+		trimmed := append([]byte(nil), png[:len(png)-1]...)
+		if f.isEchoImage(trimmed) {
+			t.Error("尾部差一个字节的图片不应识别为回声")
+		}
+		if len(f.echoImage) >= len(png) {
+			t.Errorf("回声记录必须远小于载荷：指纹 %d 字节，载荷 %d 字节", len(f.echoImage), len(png))
+		}
+	})
+
+	t.Run("文件回声记录路径", func(t *testing.T) {
+		f := &Feature{hist: NewHistory(10)}
+		p := filepath.Join("C:\\Users", "a.txt")
+		f.markEchoFile(p)
+		if !f.isEchoFile(p) {
+			t.Error("刚写回的文件应被识别为回声")
+		}
+		if f.isEchoFile(filepath.Join("C:\\Users", "b.txt")) {
+			t.Error("不同路径不应识别为回声")
+		}
+		if f.isEchoText(p) {
+			t.Error("文件回声不应被文本通道误认")
+		}
+	})
+
+	t.Run("回声窗口过期后视为新载荷", func(t *testing.T) {
+		f := &Feature{hist: NewHistory(10)}
+		f.markEchoBytes(clip.FmtText, []byte("hello"))
+		f.mu.Lock()
+		f.echoAt = time.Now().Add(-2 * echoWindow)
+		f.mu.Unlock()
+		if f.isEchoText("hello") {
+			t.Error("窗口过期后不应再识别为回声")
+		}
+	})
+}
+
+// TestCacheSweepAndWrite 守护：图片落盘路径/大小正确，启动清扫只删孤儿
+// img_*.png（不动 Entry 引用的文件与无关文件），条目删除后回调联动删文件。
+func TestCacheSweepAndWrite(t *testing.T) {
+	dir := t.TempDir()
+	f := &Feature{
+		hist: NewHistory(10),
+		ctx: &core.Context{
+			DataDir: dir,
+			Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		},
+	}
+
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	path, size, err := f.writePNGCache(context.Background(), png)
+	if err != nil {
+		t.Fatalf("writePNGCache 失败: %v", err)
+	}
+	if size != len(png) {
+		t.Errorf("返回大小不符：期望 %d，实际 %d", len(png), size)
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("缓存路径必须是绝对路径：实际 %q", path)
+	}
+	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, png) {
+		t.Errorf("落盘内容不符：err=%v data=%v", err, data)
+	}
+	if filepath.Dir(path) != dir {
+		t.Errorf("缓存文件应落在数据目录内：期望 %q，实际 %q", dir, filepath.Dir(path))
+	}
+
+	// 孤儿：匹配 img_*.png 但无 Entry 引用；无关文件：不匹配模式，不能动。
+	orphan := filepath.Join(dir, "img_999.png")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
+		t.Fatalf("写入孤儿文件失败: %v", err)
+	}
+	foreign := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(foreign, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("写入无关文件失败: %v", err)
+	}
+
+	keep := f.hist.AddImageFile(path, size)
+	f.sweepCache()
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("Entry 引用的缓存文件被误删：%v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("孤儿缓存文件应被清扫：err=%v", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("非缓存命名文件不应被触碰：%v", err)
+	}
+
+	// 条目删除 → onDelete 回调 → 调用方删掉缓存文件。
+	f.hist.SetOnDelete(func(e Entry) {
+		if e.Kind == KindImage {
+			os.Remove(e.Path)
+		}
+	})
+	f.hist.Delete(keep.ID)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("条目删除后缓存文件未被 onDelete 回调清理")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("无关文件仍不应被触碰：%v", err)
 	}
 }

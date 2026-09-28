@@ -139,6 +139,24 @@ func (Base) OnHotkey() error               { return nil }
 func (Base) OpenUI() error                 { return nil }
 func (Base) ApplyOption(string, any) error { return nil }
 
+// ExtraHotkey declares an additional fixed hotkey beyond the module's primary
+// one (the screenshot module exposes 录屏 Alt+Shift+R 与滚动截图 Ctrl+Shift+A).
+type ExtraHotkey struct {
+	// Hotkey is the combo in mod+mod+key form. Empty entries are skipped.
+	Hotkey string
+	// Label names the binding for logs and error slots (e.g. "录屏").
+	Label string
+	// Fire is invoked on press.
+	Fire func() error
+}
+
+// ExtraHotkeysProvider is implemented by modules that need more than one global
+// hotkey. Bindings are registered under synthetic ids (<module>/<n>) so they
+// never collide with the module's primary slot.
+type ExtraHotkeysProvider interface {
+	ExtraHotkeys() []ExtraHotkey
+}
+
 // Context is the shared runtime handed to every module.
 type Context struct {
 	// Ctx is cancelled when the application shuts down.

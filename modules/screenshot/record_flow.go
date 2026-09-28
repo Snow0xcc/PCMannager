@@ -241,6 +241,22 @@ func (f *Feature) recordingFPS() int {
 	return n
 }
 
+// recordingFormat reads the configured recording format, degrading to GIF
+// whenever MP4 is requested but ffmpeg is missing（探测失败时静默回退，
+// 面板的选项列表里 MP4 本就不可选，这里是双保险）。
+func (f *Feature) recordingFormat() string {
+	s := defaultRecFormat
+	if f.ctx != nil {
+		if v, ok := f.ctx.Config.Get(optRecFormat, defaultRecFormat).(string); ok {
+			s = v
+		}
+	}
+	if s == "mp4" && !ffmpegAvailable() {
+		return defaultRecFormat
+	}
+	return s
+}
+
 // saveRecording writes GIF bytes to the screenshot directory.
 func (f *Feature) saveRecording(data []byte) (string, error) {
 	dir := f.saveDir()

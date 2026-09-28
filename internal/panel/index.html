@@ -9,6 +9,17 @@
     --bg: #12141a; --panel: #1b1e26; --panel-2: #232733; --line: #2f3442;
     --text: #e6e8ee; --muted: #9aa3b2; --accent: #4f8cff; --danger: #e5484d;
     --ok: #30a46c; --radius: 8px;
+    --log-bg: #0d0f14; --log-line: #191c24;
+    color-scheme: dark;
+  }
+  /* ---- 浅色主题（模块五）：完整变量集，与深色一一对应。
+     由 [data-theme=light] 显式指定；跟随系统时由 JS 写入 data-theme。 */
+  [data-theme="light"] {
+    --bg: #f4f5f8; --panel: #ffffff; --panel-2: #eceef2; --line: #d8dce4;
+    --text: #1c2333; --muted: #6b7680; --accent: #2f6fe0; --danger: #d03038;
+    --ok: #1f8f56;
+    --log-bg: #f0f1f5; --log-line: #e2e5ec;
+    color-scheme: light;
   }
   * { box-sizing: border-box; }
   body {
@@ -95,7 +106,7 @@
   .state-obj > summary:hover, .raw > summary:hover { color: var(--text); }
   .state-obj[open] > summary, .raw[open] > summary { color: var(--text); }
   .state-obj > pre, .raw > pre {
-    margin: 6px 0 0; padding: 8px; background: #0d0f14; border: 1px solid var(--line);
+    margin: 6px 0 0; padding: 8px; background: var(--log-bg); border: 1px solid var(--line);
     border-radius: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
     white-space: pre-wrap; word-break: break-all; color: var(--muted); overflow: auto;
   }
@@ -107,13 +118,25 @@
   #toast.show { opacity: 1; }
   #toast.err { border-color: var(--danger); color: var(--danger); }
   #log {
-    background: #0d0f14; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--log-bg); border: 1px solid var(--line); border-radius: var(--radius);
     padding: 10px; height: 190px; overflow: auto; font-family: ui-monospace, Consolas, monospace;
     font-size: 12px; white-space: pre-wrap;
   }
-  #log div { border-bottom: 1px solid #191c24; padding: 2px 0; }
+  /* 日志页的容器：让日志框吃掉页面剩余高度（而不是固定 190px）——
+     高分屏上固定高度只占屏幕一小条，观感上像“日志区没显示”。 */
+  .log-page {
+    display: flex; flex-direction: column;
+    min-height: calc(100vh - 150px);
+  }
+  .log-page .log-flex {
+    flex: 1; min-height: 240px;
+  }
+  #log div { border-bottom: 1px solid var(--log-line); padding: 2px 0; }
   .lev-warn { color: #f5a524; } .lev-error { color: var(--danger); }
   .lev-info { color: var(--muted); }
+  .lev-notice { color: var(--text); }
+  .lev-progress { color: var(--accent); }
+  .lev-debug { color: var(--muted); opacity: .7; }
 
   /* ---- 内联 SVG 图标（项目禁用 emoji，界面图标一律为几何 SVG） ---- */
   svg.i {
@@ -185,6 +208,17 @@
 </main>
 <div id="toast"></div>
 <script>
+// 主题先于首帧渲染：localStorage 缓存上次选择（"auto" 交由 matchMedia
+// 判定），避免深色用户每次打开面板都闪一下白底。
+(function () {
+  try {
+    var saved = localStorage.getItem("pcm-theme") || "auto";
+    var q = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+    document.documentElement.dataset.theme =
+      saved === "auto" ? ((q && q.matches) ? "light" : "dark") : saved;
+  } catch (e) { /* 隐私模式等 localStorage 不可用时维持深色默认 */ }
+})();
+
 const state = {
   app: null, modules: [], caps: null, version: "", page: "app",
   navQuery: "",      // 左侧导航搜索词（纯前端过滤）
@@ -311,7 +345,15 @@ const transport = (function () {
   function subscribe(onEvent) {
     if (!isWails) {
       const es = new EventSource("/api/events");
-      es.onmessage = (e) => { try { onEvent(JSON.parse(e.data)); } catch (err) { /* 忽略坏帧 */ } };
+      // 服务端为每条事件写了 "event: <type>" 命名帧（server.go handleEvents），
+      // 而 onmessage 只收无 event: 字段或 event: message 的帧——只挂 onmessage
+      // 会把所有命名事件静默丢掉，日志页因此一条都看不到（实测确认）。
+      // 这里按后端可能出现的类型逐一监听，兜底再挂 onmessage。
+      const dispatch = (e) => {
+        try { onEvent(JSON.parse(e.data)); } catch (err) { /* 忽略坏帧 */ }
+      };
+      ["log", "state", "progress", "notice"].forEach(t => es.addEventListener(t, dispatch));
+      es.onmessage = dispatch;
       es.onerror = () => { /* EventSource 自行重连 */ };
       return;
     }
@@ -341,8 +383,41 @@ async function load() {
   const s = await transport.call("state");
   state.app = s.app; state.modules = s.modules || []; state.caps = s.capabilities;
   state.version = s.version || "";
-  document.getElementById("version").textContent = "v" + state.version;
+  // 后端（git describe）通常已带 v 前缀，但不要重复拼接（曾显示成 vv0.1.0）。
+  const v = state.version;
+  document.getElementById("version").textContent = v.startsWith("v") ? v : "v" + v;
+  applyTheme((state.app && state.app.theme) || "auto");
   renderCaps(); renderNav(); renderPage();
+}
+
+// ---- 主题（模块五）：跟随系统 + 无感自动切换 ----
+
+// applyTheme 把主题选项落到 <html data-theme>。
+//
+// "auto" 表示跟随系统：不写死颜色，而是实时订阅 prefers-color-scheme 变化
+// （事件回调里读当前 app 设置，避免保存的 auto 被旧闭包覆盖）。
+// "dark"/"light" 则显式覆盖，用户选择优先于系统。
+const systemThemeQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
+
+function applyTheme(mode) {
+  try { localStorage.setItem("pcm-theme", mode); } catch (e) { /* 同上 */ }
+  let theme = mode;
+  if (mode === "auto") {
+    theme = (systemThemeQuery && systemThemeQuery.matches) ? "light" : "dark";
+  }
+  document.documentElement.dataset.theme = theme;
+}
+
+// 系统外观变化（含昼夜切换、定时主题）：无感重染。
+if (systemThemeQuery) {
+  const onSystemTheme = () => {
+    if (!state.app || state.app.theme === "auto") applyTheme("auto");
+  };
+  if (systemThemeQuery.addEventListener) {
+    systemThemeQuery.addEventListener("change", onSystemTheme);
+  } else if (systemThemeQuery.addListener) {
+    systemThemeQuery.addListener(onSystemTheme); // 旧版 Safari/WebView
+  }
 }
 
 function renderCaps() {
@@ -475,6 +550,8 @@ function renderAppPage(root) {
         data_dir: card.querySelector("#f-dir").value,
       };
       state.app = await transport.call("app", patch);
+      // 主题立即生效（不等下一次 load）。
+      applyTheme(state.app.theme || "auto");
       toast("应用设置已保存");
       renderPage();
     } catch (e) { toast(e.message, true); }
@@ -931,20 +1008,75 @@ async function reload() {
 }
 
 function renderLogPage(root) {
-  const card = el('<div class="card"><h2>事件日志</h2><div class="desc">模块通过事件总线推送的实时消息。</div><div id="log"></div></div>');
+  const card = el('<div class="card log-page"><h2>事件日志</h2>' +
+    '<div class="desc">模块通过事件总线推送的实时消息（含打开本页前的事件，最近 ' + LOG_BUFFER_MAX + ' 条）。</div>' +
+    '<div class="actions"><button class="btn" id="log-clear">' + icon("clear") + '清空显示</button>' +
+    '<button class="btn" id="log-copy">' + icon("save") + '复制全部</button></div>' +
+    '<div id="log" class="log-flex"></div></div>');
   root.appendChild(card);
+
+  // 回放离线缓冲：打开页面时把订阅以来缓存的事件全部补上——
+  // 这是“日志不显示”的主因修复（此前只在页面上实时追加，打开前的事件全丢）。
+  // 必须倒序遍历：logBuffer 是 unshift（新→旧），而 appendLogLine 把每条
+  // 插到最上；正序回放会把显示顺序反转成旧→新，与实时路径不一致。
+  const box = card.querySelector("#log");
+  for (let i = logBuffer.length - 1; i >= 0; i--) {
+    appendLogLine(box, logBuffer[i]);
+  }
+  card.querySelector("#log-clear").onclick = () => { box.innerHTML = ""; };
+  card.querySelector("#log-copy").onclick = async () => {
+    const text = Array.from(box.children).map(d => d.textContent).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("已复制 " + box.children.length + " 条日志");
+    } catch (e) { toast("复制失败：" + e.message, true); }
+  };
+}
+
+// LOG_BUFFER_MAX 是离线缓冲上限：足够覆盖订阅到打开页面之间的窗口期，
+// 又不会在长会话里无界增长。
+const LOG_BUFFER_MAX = 400;
+
+// logBuffer 缓存订阅以来收到的全部事件（与当前页面无关），
+// 供日志页打开时回放。unshift 使其保持新→旧顺序，与日志视图一致。
+const logBuffer = [];
+
+// appendLogLine 把一条事件渲染为日志框中的一行（新事件插在最上面）。
+// 独立成函数是因为实时路径与回放路径都要走同一套渲染规则。
+function appendLogLine(box, ev) {
+  const d = document.createElement("div");
+  // 事件类型作为级别的兑底：notice/progress 也是用户关心的日志，
+  // 此前它们因无 level 字段落到未知样式类上，看起来像“没有日志”。
+  const level = ev.level || ev.type || "info";
+  d.className = "lev-" + level;
+  let text = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] ";
+  if (ev.module) text += ev.module + " ";
+  if (ev.message) {
+    text += ev.message;
+  } else if (ev.data && ev.data.line) {
+    // progress 事件的正文在 data.line 里。
+    text += ev.data.line;
+  } else if (ev.data && Object.keys(ev.data).length) {
+    text += JSON.stringify(ev.data);
+  }
+  d.textContent = text;
+  box.insertBefore(d, box.firstChild);
+  while (box.childNodes.length > LOG_BUFFER_MAX) box.removeChild(box.lastChild);
 }
 
 function pushLog(ev) {
+  // state 事件是模块运行状态快照（高频、无文本语义），由模块页消费，
+  // 混进日志只会刷屏；log/notice/progress 才是用户要看的消息。
+  if (ev.type === "state") return;
+
+  // 先进离线缓冲（有界），再尝试写入当前视图——
+  // 页面不在日志页时 box 为 null，缓冲保证稍后打开仍能看到。
+  logBuffer.unshift(ev);
+  if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.length = LOG_BUFFER_MAX;
+
   const box = document.getElementById("log");
   if (!box) return;
-  const d = document.createElement("div");
-  const level = ev.level || ev.type || "info";
-  d.className = "lev-" + level;
-  d.textContent = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] " +
-    (ev.module ? ev.module + " " : "") + (ev.message || JSON.stringify(ev.data || {}));
-  box.insertBefore(d, box.firstChild);
-  while (box.childNodes.length > 300) box.removeChild(box.lastChild);
+  appendLogLine(box, ev);
 }
 
 function connectEvents() {

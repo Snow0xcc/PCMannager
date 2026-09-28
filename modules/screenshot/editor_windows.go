@@ -81,7 +81,7 @@ type editorState struct {
 	// handleDrag is true while the user is dragging the grab handle, and the
 	// anchor remembers where in the toolbar the grab started so the row follows
 	// the cursor 1:1 instead of jumping.
-	handleDrag           bool
+	handleDrag                   bool
 	handleAnchorX, handleAnchorY int32
 	// hoverID is the toolbar button (or edHandleID) currently under the cursor,
 	// or -1; it drives both the hover highlight and the tooltip.
@@ -211,15 +211,38 @@ type edButton struct {
 // the primary action of every mode ends up where the cursor already is after a
 // selection is dragged (bottom-right of the selection). The drag handle is not
 // part of this list; buttonRect reserves its slot at the far left.
+//
+// The capture-mode list is a package-level singleton: it is immutable, and
+// buttons() runs several times per mouse move (hitButton, buttonRect and paint
+// each call it), so allocating a fresh slice every time is pure GC churn. The
+// scroll-mode label carries live state (自动滚动：开/关), so that one is built
+// fresh; it is only three elements and changes rarely.
+var edCaptureButtons = []edButton{
+	{edBtnConfirm, "保存截图"},
+	{edBtnCopy, "复制到剪贴板"},
+	{edBtnPin, "屏幕贴图"},
+	{edBtnCancel, "取消截图"},
+	{edBtnUndo, "撤销编辑"},
+	{edBtnPen, "画笔"},
+	{edBtnArrow, "箭头"},
+	{edBtnEllipse, "椭圆"},
+	{edBtnRect, "矩形截图"},
+}
+
+var edRecordButtons = []edButton{
+	{edBtnRecord, "开始录制"},
+	{edBtnCancel, "取消"},
+}
+
 func (e *editorState) buttons() []edButton {
 	switch e.mode {
 	case edModeRecord:
-		return []edButton{{edBtnRecord, "开始录制"}, {edBtnCancel, "取消"}}
+		return edRecordButtons
 	case edModeScroll:
-		auto := "自动滚动：关"
 		e.mu.Lock()
 		on := e.scrollAuto
 		e.mu.Unlock()
+		auto := "自动滚动：关"
 		if on {
 			auto = "自动滚动：开"
 		}
@@ -229,17 +252,7 @@ func (e *editorState) buttons() []edButton {
 			{edBtnCancel, "取消"},
 		}
 	}
-	return []edButton{
-		{edBtnConfirm, "保存截图"},
-		{edBtnCopy, "复制到剪贴板"},
-		{edBtnPin, "屏幕贴图"},
-		{edBtnCancel, "取消截图"},
-		{edBtnUndo, "撤销编辑"},
-		{edBtnPen, "画笔"},
-		{edBtnArrow, "箭头"},
-		{edBtnEllipse, "椭圆"},
-		{edBtnRect, "矩形截图"},
-	}
+	return edCaptureButtons
 }
 
 // edToolCount is the number of drawing tools in the toolbar.
@@ -349,6 +362,12 @@ func (e *editorState) teardown() {
 		return
 	}
 	e.closed = true
+	// 拖动/悬停状态随窗口销毁一并复位：窗口没了，这些状态没有存在意义，
+	// 留着只会在下一个编辑器实例复用结构体时造成困惑。
+	e.handleDrag = false
+	e.drawing = false
+	e.dragging = false
+	e.hoverID = -1
 	win := e.win
 	ctrl := e.ctrl
 	e.win = nil
@@ -481,14 +500,13 @@ func (e *editorState) onKey(vk int) {
 func (e *editorState) onDown(x, y int32) {
 	id := e.hitButton(x, y)
 	if id == edHandleID {
-		// Grabbing the handle starts a toolbar drag. The anchor is where inside
-		// the ROW the grab happened, so the toolbar follows the cursor 1:1.
+		// Grabbing the handle starts a toolbar drag. The anchor is where the
+		// cursor grabbed it, so the toolbar follows the cursor 1:1 (the delta is
+		// applied in onMove).
 		e.mu.Lock()
-		sel := e.sel
 		e.handleDrag = true
 		e.handleAnchorX = x
 		e.handleAnchorY = y
-		_ = sel
 		e.mu.Unlock()
 		return
 	}
@@ -652,16 +670,33 @@ func (e *editorState) undo() {
 func (e *editorState) hitButton(x, y int32) int {
 	e.mu.Lock()
 	sel := e.sel
+	dx, dy := e.toolbarDX, e.toolbarDY
 	e.mu.Unlock()
+	return e.hitButtonLockedWithOffset(x, y, sel, dx, dy)
+}
+
+// hitButtonLocked is hitButton's lock-free core, for callers that already hold
+// mu (onMove/onUp update hover inside their critical sections).
+//
+// Splitting the two is what keeps the mutex non-reentrant-safe: Go 的
+// sync.Mutex 不可重入，拿锁后再调一个内部拿同一把锁的函数会直接死锁
+// （托盘 notify 的 P0-1 同款陷阱）。sel/dx/dy 由调用方在持锁下读好传入。
+func (e *editorState) hitButtonLocked(x, y int32, sel winui.Rect) int {
+	return e.hitButtonLockedWithOffset(x, y, sel, 0, 0)
+}
+
+// hitButtonLockedWithOffset 在给出拖动偏移时做命中测试（测试用零偏移的
+// hitButtonLocked 只是它的便捷封装）。
+func (e *editorState) hitButtonLockedWithOffset(x, y int32, sel winui.Rect, dx, dy int32) int {
 	if sel.Width() < edMinSel || sel.Height() < edMinSel {
 		return -1
 	}
-	if h := e.handleRect(sel); x >= h.Left && x <= h.Right && y >= h.Top && y <= h.Bottom {
+	if h := e.handleRectLocked(sel, dx, dy); x >= h.Left && x <= h.Right && y >= h.Top && y <= h.Bottom {
 		return edHandleID
 	}
 	btns := e.buttons()
 	for i := range btns {
-		r := e.buttonRect(i, sel)
+		r := e.buttonRectLocked(i, sel, dx, dy)
 		if x >= r.Left && x <= r.Right && y >= r.Top && y <= r.Bottom {
 			return btns[i].id
 		}
@@ -737,6 +772,12 @@ func (e *editorState) buttonRect(i int, sel winui.Rect) winui.Rect {
 	e.mu.Lock()
 	dx, dy := e.toolbarDX, e.toolbarDY
 	e.mu.Unlock()
+	return e.buttonRectLocked(i, sel, dx, dy)
+}
+
+// buttonRectLocked 是 buttonRect 的无锁核心，供已持锁的调用方复用。
+// dx/dy 由调用方在持锁下读好传入。
+func (e *editorState) buttonRectLocked(i int, sel winui.Rect, dx, dy int32) winui.Rect {
 	win := e.win
 	full := winui.ClientRect(e.hwndLocked(win))
 
@@ -792,7 +833,15 @@ func (e *editorState) buttonRect(i int, sel winui.Rect) winui.Rect {
 // It shares buttonRect's positioning logic so the two can never disagree about
 // where the row is (that mismatch would make clicks land off target).
 func (e *editorState) handleRect(sel winui.Rect) winui.Rect {
-	b0 := e.buttonRect(len(e.buttons())-1, sel)
+	e.mu.Lock()
+	dx, dy := e.toolbarDX, e.toolbarDY
+	e.mu.Unlock()
+	return e.handleRectLocked(sel, dx, dy)
+}
+
+// handleRectLocked 是 handleRect 的无锁核心（调用方已持锁或已读好偏移）。
+func (e *editorState) handleRectLocked(sel winui.Rect, dx, dy int32) winui.Rect {
+	b0 := e.buttonRectLocked(len(e.buttons())-1, sel, dx, dy)
 	left := b0.Left - edBtnGap - edHandleW
 	return winui.Rect{Left: left, Top: b0.Top, Right: left + edHandleW, Bottom: b0.Bottom}
 }
@@ -811,7 +860,8 @@ func (e *editorState) onMove(x, y int32) {
 	e.mu.Lock()
 	if e.handleDrag {
 		// Move the toolbar by the distance the cursor travelled since the grab;
-		// buttonRect clamps the result back inside the window.
+		// buttonRect clamps the result back inside the window. 拖动中不更新
+		// hover（指针语义上还"在把手上"），松手时由 onUp 统一重算。
 		e.toolbarDX += x - e.handleAnchorX
 		e.toolbarDY += y - e.handleAnchorY
 		e.handleAnchorX, e.handleAnchorY = x, y
@@ -827,7 +877,8 @@ func (e *editorState) onMove(x, y int32) {
 	}
 	if !e.dragging {
 		// Not dragging anything: update the hover highlight / tooltip.
-		hover := e.hitButton(x, y)
+		// hitButtonLocked 而非 hitButton：这里已持有 mu，Go 的 Mutex 不可重入。
+		hover := e.hitButtonLocked(x, y, e.sel)
 		changed := hover != e.hoverID
 		e.hoverID = hover
 		e.mu.Unlock()
@@ -859,7 +910,12 @@ func (e *editorState) onUp(x, y int32) {
 	e.mu.Lock()
 	if e.handleDrag {
 		e.handleDrag = false
+		// 松手时光标可能已不在把手上（WM_LBUTTONUP 的坐标就是证据），重算
+		// hover，避免把手高亮和 tooltip 滞留。用无锁版本：mu 已在本
+		// goroutine 手里，Mutex 不可重入。
+		e.hoverID = e.hitButtonLocked(x, y, e.sel)
 		e.mu.Unlock()
+		e.repaint()
 		return
 	}
 	if e.drawing {
@@ -870,6 +926,15 @@ func (e *editorState) onUp(x, y int32) {
 		// Keep only shapes that actually drew something.
 		if a.Kind == annotPen {
 			if len(a.Points) >= 2 {
+				e.annots = append(e.annots, a)
+			}
+		} else if a.Kind == annotArrow {
+			// 箭头的 From/To 是真实起止点，不做归一化：把 From 钉到外接矩形
+			// 左上角会改变线段方向（从右下往左上画时方向直接反转），这就是
+			// “箭头只能横竖画”的根因。箭头只要求两点中任一点动过，
+			// 长度下限单独判断。
+			if lengthAtLeast(a.From.Left, a.From.Top, a.To.Left, a.To.Top, edMinSel) {
+				a.To = winui.Rect{Left: a.To.Left, Top: a.To.Top}
 				e.annots = append(e.annots, a)
 			}
 		} else {
@@ -900,6 +965,9 @@ func (e *editorState) onUp(x, y int32) {
 }
 
 // endHandleDrag finishes a toolbar drag started on the grab handle.
+//
+// The normal path is onUp clearing the flag inline; this exists for the
+// capture-cancelling paths (Esc during a drag) where no matching onUp arrives.
 func (e *editorState) endHandleDrag() {
 	e.mu.Lock()
 	e.handleDrag = false
@@ -1014,13 +1082,30 @@ func (e *editorState) repaint() {
 
 // paint renders the screenshot, the dim mask, the selection toolbar and the
 // selection size readout.
+//
+// 走双缓冲（winui.BeginBufferedPaint）：本函数包含整屏图像 blit、4 块半透明遮罩、
+// 标注重放、工具栏与样式条等几十次绘制调用，直接画到窗口 DC 上时屏幕会依次
+// 闪过每个中间状态——这就是“按截图快捷键后全屏疯狂闪烁”的根因（每次鼠标
+// 移动都触发一次全量 WM_PAINT，无缓冲时闪烁频率与鼠标移动频率一致）。
+// 双缓冲下一切绘制先合成到内存位图，done 里一次性 BitBlt 上屏，中间态不可见。
 func (e *editorState) paint(hwnd winui.HWND) {
-	c, ps := winui.BeginPaint(hwnd)
-	if c.DC() == 0 {
+	c, done, err := winui.BeginBufferedPaint(hwnd)
+	if err != nil {
+		// 双缓冲建不起来（极端环境）：退回直绘——闪但不黑屏。
+		c, ps := winui.BeginPaint(hwnd)
+		if c.DC() == 0 {
+			return
+		}
+		defer winui.EndPaint(hwnd, ps)
+		e.paintContent(c, hwnd)
 		return
 	}
-	defer winui.EndPaint(hwnd, ps)
+	defer done()
+	e.paintContent(c, hwnd)
+}
 
+// paintContent 是 paint 的实际绘制体，与上屏方式无关（缓冲/直绘共用）。
+func (e *editorState) paintContent(c *winui.Canvas, hwnd winui.HWND) {
 	full := winui.ClientRect(hwnd)
 
 	e.mu.Lock()
@@ -1078,6 +1163,10 @@ func (e *editorState) paint(hwnd winui.HWND) {
 		//    tools, while record and scroll offer only their own start action and
 		//    cancel. Buttons render vector glyphs (icons_windows.go), not text —
 		//    the label is the tooltip — and the row starts with a drag handle.
+		//    拖动偏移只读一次（每按钮调一次拿锁版会放大成 N 次锁+系统调用）。
+		e.mu.Lock()
+		dx, dy := e.toolbarDX, e.toolbarDY
+		e.mu.Unlock()
 		btns := e.buttons()
 		hover := e.hoverIDLocked()
 		for i, b := range btns {
@@ -1096,7 +1185,7 @@ func (e *editorState) paint(hwnd winui.HWND) {
 			if hover == b.id {
 				fill = winui.BlendColors(fill, edColorText, 0.25)
 			}
-			r := e.buttonRect(i, sel)
+			r := e.buttonRectLocked(i, sel, dx, dy)
 			drawToolbarButton(c, r, b.id, fill)
 			if hover == b.id {
 				e.paintTooltip(c, r, b.label)
@@ -1105,7 +1194,7 @@ func (e *editorState) paint(hwnd winui.HWND) {
 
 		// The drag handle at the far left of the row; brighter while grabbed so
 		// the user can see the toolbar is being carried.
-		hr := e.handleRect(sel)
+		hr := e.handleRectLocked(sel, dx, dy)
 		handleFg := uint32(edColorText)
 		if hover == edHandleID || e.handleDragLocked() {
 			handleFg = edColorSel

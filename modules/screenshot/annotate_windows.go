@@ -129,11 +129,8 @@ func (a annot) drawArrow(c *winui.Canvas) {
 	}
 	// Unit vector along the line, rotated +/- 30 degrees for the two barbs.
 	const spread = 30 * math.Pi / 180
-	ux, uy := dx/length, dy/length
 	for _, sign := range []float64{1, -1} {
-		ang := sign * spread
-		bx := x2 - int32(head*(ux*math.Cos(ang)-uy*math.Sin(ang)))
-		by := y2 - int32(head*(ux*math.Sin(ang)+uy*math.Cos(ang)))
+		bx, by := arrowHeadBarb(x1, y1, x2, y2, spread, head, sign)
 		c.Line(x2, y2, bx, by, a.Color, a.Width)
 	}
 }
@@ -156,6 +153,42 @@ func normalizePointRect(x1, y1, x2, y2 int32) winui.Rect {
 		r.Top, r.Bottom = r.Bottom, r.Top
 	}
 	return r
+}
+
+// lengthAtLeast reports whether the segment (x1,y1)→(x2,y2) is at least min
+// pixels long in EITHER axis (Chebyshev distance).
+//
+// 箭头用 Chebyshev 距离而不是外接矩形的宽/高：一笔几乎纯垂直的箭头宽为 0，
+// 矩形判定会把它当“没画”丢掉；而两点距离才是用户意图的正确表达。
+func lengthAtLeast(x1, y1, x2, y2, min int32) bool {
+	dx, dy := x1-x2, y1-y2
+	if dx < 0 {
+		dx = -dx
+	}
+	if dy < 0 {
+		dy = -dy
+	}
+	return dx >= min || dy >= min
+}
+
+// arrowHeadBarb 计算箭头头部一根倒刺的端点。
+//
+// 纯函数抽出是为了可测试：它编码了“任意角度箭头”的全部数学——
+// 沿线段方向的单位向量 (ux,uy) 旋转 ±spread 后，从箭尖往回推 head 长度。
+// 修复前 From 被归一化到外接矩形左上角，导致从右下往左上画时方向反转、
+// 只剩横竖方向碰巧“看起来对”。
+func arrowHeadBarb(x1, y1, x2, y2 int32, spread, head float64, sign float64) (int32, int32) {
+	dx := float64(x2 - x1)
+	dy := float64(y2 - y1)
+	length := math.Hypot(dx, dy)
+	if length < 1 {
+		return x2, y2
+	}
+	ux, uy := dx/length, dy/length
+	ang := sign * spread
+	bx := x2 - int32(head*(ux*math.Cos(ang)-uy*math.Sin(ang)))
+	by := y2 - int32(head*(ux*math.Sin(ang)+uy*math.Cos(ang)))
+	return bx, by
 }
 
 // cloneImage returns a copy of img, so annotations never mutate the capture the

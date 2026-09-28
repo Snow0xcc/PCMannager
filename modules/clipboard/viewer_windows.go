@@ -3,10 +3,10 @@
 package clipboard
 
 import (
-	"bytes"
 	"fmt"
 	"image"
 	_ "image/png" // registers the PNG decoder used for image entry details
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -676,23 +676,29 @@ func rowLabel(e Entry) string {
 
 // rowExcerpt returns a short, single-line description of an entry.
 func rowExcerpt(e Entry) string {
-	if e.Kind == KindImage {
-		if w, h, ok := imageSize(e.Data); ok {
+	switch e.Kind {
+	case KindImage:
+		if w, h, ok := imageSize(e); ok {
 			return fmt.Sprintf("[图片 %dx%d]", w, h)
 		}
-		return fmt.Sprintf("[图片 %d KB]", len(e.Data)/1024)
+		return fmt.Sprintf("[图片 %d KB]", e.Size/1024)
+	case KindFile:
+		return "[文件] " + singleLine(e.Text)
 	}
 	return singleLine(e.Text)
 }
 
 // previewText renders the right-hand detail pane for the selected entry.
 func previewText(e Entry) string {
-	if e.Kind == KindImage {
-		if w, h, ok := imageSize(e.Data); ok {
+	switch e.Kind {
+	case KindImage:
+		if w, h, ok := imageSize(e); ok {
 			return fmt.Sprintf("[图片 %dx%d]\nPNG，%d 字节\n\n选中“写回剪贴板”即可把图片写回剪贴板。",
-				w, h, len(e.Data))
+				w, h, e.Size)
 		}
-		return fmt.Sprintf("[图片]\nPNG，%d 字节\n\n选中“写回剪贴板”即可把图片写回剪贴板。", len(e.Data))
+		return fmt.Sprintf("[图片]\nPNG，%d 字节\n\n选中“写回剪贴板”即可把图片写回剪贴板。", e.Size)
+	case KindFile:
+		return filePreview(e)
 	}
 	if strings.TrimSpace(e.Text) == "" {
 		return "(空文本)"
@@ -700,9 +706,15 @@ func previewText(e Entry) string {
 	return e.Text
 }
 
-// imageSize decodes an image's dimensions from PNG bytes.
-func imageSize(buf []byte) (int, int, bool) {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(buf))
+// imageSize decodes an image's dimensions from its cached PNG file.
+func imageSize(e Entry) (int, int, bool) {
+	// 只读头部而非整张图片：PNG 的宽高就写在固定偏移的 IHDR 里。
+	f, err := os.Open(e.Path)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
 	if err != nil {
 		return 0, 0, false
 	}

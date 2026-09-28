@@ -21,6 +21,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"time"
@@ -29,15 +30,26 @@ import (
 // apiBase is the GitHub REST endpoint for the latest release of this project.
 const apiBase = "https://api.github.com/repos/Snow0xcc/PCMannager/releases/latest"
 
+// proxyBase is the 国内加速代理前缀（ghfast.top）：它按原样转发 GitHub 资源
+// 请求，用于直连 api.github.com / github.com 慢或不可达时的加速下载。
+//
+// 重要认知：代理是可用性加速而非安全边界。它只是另一个可 dial 的主机，
+// 安全性仍完全由 allowedHosts 的 per-dial 校验保证——经代理的每一跳
+// （含重定向）都必须命中白名单，代理若把请求重定向到任意主机同样会被
+// Control 钩子拒绝。
+const proxyBase = "https://ghfast.top/"
+
 // maxAssetSize caps a downloaded release asset (128 MiB).
 const maxAssetSize = 128 << 20
 
 // allowedHosts is the dial allowlist. Release downloads redirect from
-// github.com to objects.githubusercontent.com, hence the third entry.
+// github.com to objects.githubusercontent.com, hence the third entry;
+// ghfast.top is the proxy host itself (see proxyBase).
 var allowedHosts = map[string]bool{
 	"api.github.com":                true,
 	"github.com":                    true,
 	"objects.githubusercontent.com": true,
+	"ghfast.top":                    true,
 }
 
 // newHTTPClient returns an http.Client whose Transport enforces the host
@@ -86,9 +98,47 @@ func AssetName() string {
 	return name
 }
 
-// fetchLatest queries the GitHub API for the latest release.
+// proxiedURL wraps a GitHub resource URL with the ghfast.top accelerator.
+//
+// 只有 http(s) 的 GitHub 域名会被包装（api.github.com、github.com 均代理）；
+// 已经带代理前缀、非 GitHub 域名或解析失败的 URL 原样返回，保证包装函数
+// 幂等且不吞掉本不该碰的地址。
+func proxiedURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	// 只代理 http(s) 的 GitHub 域名：其它 scheme（ftp 等）即使 host 相同也
+	// 不是 HTTP 下载路径，包装后会变成无效请求。
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return raw
+	}
+	if u.Host == "ghfast.top" {
+		return raw // already proxied
+	}
+	if u.Host != "api.github.com" && u.Host != "github.com" {
+		return raw
+	}
+	return proxyBase + raw
+}
+
+// fetchLatest queries the GitHub API for the latest release, trying the
+// accelerator first and falling back to a direct connection.
 func fetchLatest(ctx context.Context, hc *http.Client) (*Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase, nil)
+	rel, perr := fetchLatestVia(ctx, hc, proxiedURL(apiBase))
+	if perr == nil {
+		return rel, nil
+	}
+	rel, err := fetchLatestVia(ctx, hc, apiBase)
+	if err != nil {
+		return nil, fmt.Errorf("updater: 代理与直连均失败（代理: %v；直连: %w）", perr, err)
+	}
+	return rel, nil
+}
+
+// fetchLatestVia fetches the release from an explicit URL.
+func fetchLatestVia(ctx context.Context, hc *http.Client, url string) (*Release, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -125,9 +175,24 @@ func (r *Release) findAsset() *Asset {
 }
 
 // download streams the asset to dst (atomic capped copy), returning the byte
-// count and the sha256 of the payload. The host allowlist is enforced
-// per-dial by the shared client, so an off-allowlist redirect fails closed.
+// count and the sha256 of the payload. It tries the accelerator first and
+// falls back to the direct URL.
 func download(ctx context.Context, hc *http.Client, url, dst string) (int64, string, error) {
+	n, sum, perr := downloadVia(ctx, hc, proxiedURL(url), dst)
+	if perr == nil {
+		return n, sum, nil
+	}
+	n, sum, err := downloadVia(ctx, hc, url, dst)
+	if err != nil {
+		return 0, "", fmt.Errorf("updater: 代理与直连均失败（代理: %v；直连: %w）", perr, err)
+	}
+	return n, sum, nil
+}
+
+// downloadVia streams the asset from an explicit URL to dst. The host
+// allowlist is enforced per-dial by the shared client, so an off-allowlist
+// redirect fails closed — including redirects issued by the accelerator.
+func downloadVia(ctx context.Context, hc *http.Client, url, dst string) (int64, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, "", err

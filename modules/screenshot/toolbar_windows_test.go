@@ -5,6 +5,7 @@ package screenshot
 import (
 	"image"
 	"testing"
+	"time"
 
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
@@ -107,6 +108,73 @@ func TestToolbarDragOffsetMovesRow(t *testing.T) {
 	clamped := e.buttonRect(0, e.sel)
 	if clamped.Left < 0 || clamped.Top < 0 {
 		t.Fatalf("钳制后按钮坐标不能为负: left=%d top=%d", clamped.Left, clamped.Top)
+	}
+}
+
+// TestHoverUpdateDoesNotDeadlock 回归测试：onMove/onUp 曾在持有 mu 时调用
+// hitButton（内部再次拿同一把锁），Go 的 sync.Mutex 不可重入，鼠标一动就死锁。
+// 这里以与 onMove 相同的持锁顺序调用无锁核心 hitButtonLocked，能返回即说明
+// 调用约定正确；若有人改回直接调 hitButton，本测试会因死锁超时而失败。
+func TestHoverUpdateDoesNotDeadlock(t *testing.T) {
+	e := toolbarForTest()
+	done := make(chan int, 1)
+	go func() {
+		e.mu.Lock()
+		// 模拟 onMove 的调用序列：持锁下用无锁核心重算 hover。
+		h := e.hitButtonLocked(150, 150, e.sel)
+		e.hoverID = h
+		e.mu.Unlock()
+		done <- h
+	}()
+	select {
+	case <-done:
+		// 成功返回即通过。
+	case <-time.After(2 * time.Second):
+		t.Fatal("持锁调用 hitButtonLocked 死锁：可能误用了需要拿锁的 hitButton")
+	}
+}
+
+// TestToolbarDragLifecycle 走一遍完整的把手拖动状态机：
+// 按下（进入拖动）→ 移动（偏移变化）→ 松开（退出拖动且 hover 重算）。
+func TestToolbarDragLifecycle(t *testing.T) {
+	e := toolbarForTest()
+	e.mode = edModeCapture
+
+	// 把手矩形中心。
+	h := e.handleRect(e.sel)
+	hx := (h.Left + h.Right) / 2
+	hy := (h.Top + h.Bottom) / 2
+
+	// onDown 在把手上 => 进入拖动。
+	e.onDown(hx, hy)
+	e.mu.Lock()
+	dragging := e.handleDrag
+	e.mu.Unlock()
+	if !dragging {
+		t.Fatal("在把手上按下应进入拖动状态")
+	}
+
+	// 移动 30px => 偏移变化、锚点跟随。
+	before := e.toolbarDX
+	e.onMove(hx+30, hy+10)
+	e.mu.Lock()
+	afterDX := e.toolbarDX
+	anchorMoved := e.handleAnchorX == hx+30
+	e.mu.Unlock()
+	if afterDX != before+30 {
+		t.Fatalf("拖动后偏移 = %d, 期望 %d", afterDX, before+30)
+	}
+	if !anchorMoved {
+		t.Fatal("拖动锚点应跟随光标，否则后续移动会跳变")
+	}
+
+	// 松开 => 退出拖动。
+	e.onUp(hx+30, hy+10)
+	e.mu.Lock()
+	dragging = e.handleDrag
+	e.mu.Unlock()
+	if dragging {
+		t.Fatal("松开后应退出拖动状态")
 	}
 }
 

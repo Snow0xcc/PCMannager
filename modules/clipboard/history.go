@@ -1,7 +1,6 @@
 package clipboard
 
 import (
-	"bytes"
 	"sync"
 	"time"
 )
@@ -14,15 +13,22 @@ const (
 	KindText EntryKind = "text"
 	// KindImage is a PNG-encoded image clipboard entry.
 	KindImage EntryKind = "image"
+	// KindFile is a file-list (CF_HDROP) clipboard entry. Path holds the first
+	// dropped file's absolute path; the rest are intentionally dropped.
+	KindFile EntryKind = "file"
 )
 
 // Entry is a single clipboard item (Ditto-style history entry).
+//
+// BLOBs never live in memory: image and file entries only keep a cache-file
+// path (Path), so a full-screen screenshot costs one struct, not the pixels.
+// Entry.Path 为图片/文件类条目保存缓存文件的绝对路径；
+// Text 仍承载纯文本；Data 字段删除（保留会诱发全量比较与常驻内存）。
 type Entry struct {
-	ID   int
-	Kind EntryKind
-	Text string
-	// Data holds the raw PNG bytes for KindImage entries.
-	Data      []byte
+	ID        int
+	Kind      EntryKind
+	Text      string
+	Path      string // 图片/文件条目的本地缓存路径（元数据）
 	Size      int
 	Timestamp time.Time
 	Pinned    bool
@@ -35,6 +41,7 @@ type History struct {
 	seq      int
 	max      int
 	onChange func()
+	onDelete func(Entry)
 }
 
 // NewHistory creates a history bounded to max entries.
@@ -47,6 +54,11 @@ func NewHistory(max int) *History {
 
 // SetOnChange registers a callback fired whenever the history is modified.
 func (h *History) SetOnChange(f func()) { h.mu.Lock(); h.onChange = f; h.mu.Unlock() }
+
+// SetOnDelete registers a callback fired for every evicted or removed entry so
+// the caller can unlink its cache file (History stays filesystem agnostic).
+// Pinned entries are never deleted, hence never reported here.
+func (h *History) SetOnDelete(f func(Entry)) { h.mu.Lock(); h.onDelete = f; h.mu.Unlock() }
 
 // Resize changes the history bound, trimming immediately when it shrinks.
 func (h *History) Resize(max int) {
@@ -69,20 +81,29 @@ func (h *History) AddText(text string) Entry {
 	return h.add(Entry{Kind: KindText, Text: text})
 }
 
-// AddImage appends an image entry, dropping an identical neighbour at the head.
-func (h *History) AddImage(png []byte) Entry {
-	if len(png) == 0 {
+// AddImageFile appends an image entry whose PNG payload already lives on disk
+// at path; size is the file's byte length.
+func (h *History) AddImageFile(path string, size int) Entry {
+	if path == "" {
 		return Entry{}
 	}
-	return h.add(Entry{Kind: KindImage, Data: png})
+	return h.add(Entry{Kind: KindImage, Path: path, Size: size})
+}
+
+// AddFileEntry appends a file-list entry referencing the dropped file at path
+// (absolute, outside the cache dir, so eviction must not unlink it); Text
+// carries the file name.
+func (h *History) AddFileEntry(path, name string) Entry {
+	if path == "" {
+		return Entry{}
+	}
+	return h.add(Entry{Kind: KindFile, Path: path, Text: name})
 }
 
 // add appends an entry, de-duplicating against the most recent one.
 func (h *History) add(e Entry) Entry {
-	if e.Kind == KindImage {
-		e.Size = len(e.Data)
-	} else {
-		e.Size = len(e.Text)
+	if e.Kind == KindText {
+		e.Size = len(e.Text) // 文本体量小，就地派生；图片/文件大小由调用方随路径给出
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -110,8 +131,8 @@ func (h *History) add(e Entry) Entry {
 // trimLocked keeps the newest h.max entries, never evicting a pinned one.
 //
 // Pinned entries are immortal, so the budget for unpinned entries is what is
-// left after them; the oldest unpinned entries are the ones dropped. Caller
-// holds mu.
+// left after them; the oldest unpinned entries are the ones dropped. Evicted
+// entries are handed to the delete callback. Caller holds mu.
 func (h *History) trimLocked() []Entry {
 	pinned := 0
 	for _, e := range h.items {
@@ -127,6 +148,7 @@ func (h *History) trimLocked() []Entry {
 	// Walk from the newest backwards, taking every pinned entry plus up to
 	// `room` unpinned ones, then restore chronological order.
 	kept := make([]Entry, 0, h.max)
+	dropped := make([]Entry, 0, len(h.items))
 	for i := len(h.items) - 1; i >= 0; i-- {
 		e := h.items[i]
 		if e.Pinned {
@@ -136,11 +158,14 @@ func (h *History) trimLocked() []Entry {
 		if room > 0 {
 			room--
 			kept = append(kept, e)
+			continue
 		}
+		dropped = append(dropped, e)
 	}
 	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
 		kept[i], kept[j] = kept[j], kept[i]
 	}
+	h.fireDelete(dropped)
 	return kept
 }
 
@@ -152,13 +177,17 @@ func (h *History) PruneOlder(cutoff time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	kept := h.items[:0]
+	var dropped []Entry
 	for _, e := range h.items {
 		if e.Pinned || e.Timestamp.After(cutoff) {
 			kept = append(kept, e)
+		} else {
+			dropped = append(dropped, e)
 		}
 	}
 	if len(kept) != len(h.items) {
 		h.items = kept
+		h.fireDelete(dropped)
 		h.notifyLocked()
 	}
 }
@@ -192,24 +221,21 @@ func (h *History) Update(e Entry) {
 		if h.items[i].ID != e.ID {
 			continue
 		}
-		if e.Kind == KindImage {
-			e.Size = len(e.Data)
-		} else {
-			e.Size = len(e.Text)
-		}
+		// Size 由调用方负责（来自缓存文件或拖放文件），这里不再从内存字节推算。
 		h.items[i] = e
 		h.notifyLocked()
 		return
 	}
 }
 
-// Delete removes one entry by id.
+// Delete removes one entry by id and reports its cache file for cleanup.
 func (h *History) Delete(id int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i, e := range h.items {
 		if e.ID == id {
 			h.items = append(h.items[:i], h.items[i+1:]...)
+			h.fireDelete([]Entry{e})
 			h.notifyLocked()
 			return
 		}
@@ -221,13 +247,17 @@ func (h *History) DeleteExcept(keep map[int]bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	kept := h.items[:0]
+	var dropped []Entry
 	for _, e := range h.items {
 		if keep[e.ID] {
 			kept = append(kept, e)
+		} else {
+			dropped = append(dropped, e)
 		}
 	}
 	if len(kept) != len(h.items) {
 		h.items = kept
+		h.fireDelete(dropped)
 		h.notifyLocked()
 	}
 }
@@ -237,13 +267,31 @@ func (h *History) Clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	kept := h.items[:0]
+	var dropped []Entry
 	for _, e := range h.items {
 		if e.Pinned {
 			kept = append(kept, e)
+		} else {
+			dropped = append(dropped, e)
 		}
 	}
 	h.items = kept
+	h.fireDelete(dropped)
 	h.notifyLocked()
+}
+
+// fireDelete reports evicted entries to the onDelete callback outside the
+// mutex (it runs in its own goroutine, mirroring notifyLocked); caller holds
+// mu.
+func (h *History) fireDelete(dropped []Entry) {
+	if len(dropped) == 0 || h.onDelete == nil {
+		return
+	}
+	go func() {
+		for _, e := range dropped {
+			h.onDelete(e)
+		}
+	}()
 }
 
 // notifyLocked fires the change callback; caller holds mu.
@@ -254,12 +302,20 @@ func (h *History) notifyLocked() {
 }
 
 // sameEntry reports whether two entries carry identical payloads.
+//
+// Images dedupe by cache path + size, files by path: the bytes are never read
+// back into memory for comparison -- a full byte compare on every clipboard
+// event would stall the watch loop and was exactly the memory bloat this
+// storage model removes. Text still compares by full equality.
 func sameEntry(a, b Entry) bool {
 	if a.Kind != b.Kind {
 		return false
 	}
-	if a.Kind == KindImage {
-		return bytes.Equal(a.Data, b.Data)
+	switch a.Kind {
+	case KindImage:
+		return a.Path == b.Path && a.Size == b.Size
+	case KindFile:
+		return a.Path == b.Path
 	}
 	return a.Text == b.Text
 }

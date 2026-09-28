@@ -65,9 +65,9 @@ var upperWing = [][4]pt{
 
 // lowerWing is one side's lower wing: a smaller, rounder petal below.
 var lowerWing = [][4]pt{
-	{{x: 50, y: 52}, {x: 40, y: 60}, {x: 28, y: 74}, {x: 38, y: 84}},
-	{{x: 38, y: 84}, {x: 46, y: 92}, {x: 56, y: 80}, {x: 55, y: 62}},
-	{{x: 55, y: 62}, {x: 54, y: 56}, {x: 52, y: 53}, {x: 50, y: 52}},
+	{{x: 50, y: 52}, {x: 40, y: 60}, {x: 26, y: 72}, {x: 36, y: 84}},
+	{{x: 36, y: 84}, {x: 44, y: 94}, {x: 58, y: 82}, {x: 56, y: 62}},
+	{{x: 56, y: 62}, {x: 55, y: 56}, {x: 52, y: 53}, {x: 50, y: 52}},
 }
 
 // bodyPath is the slender fuselage: a narrow lens from head to tail.

@@ -3,10 +3,17 @@
 package screenshot
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"image"
+	"image/png"
+	"math"
 	"runtime"
 	"sync"
+	"time"
+
+	clip "golang.design/x/clipboard"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
 	"github.com/snow0xcc/pcmannager/internal/winui"
@@ -72,9 +79,71 @@ type pinnedWindow struct {
 	img image.Image
 	win *winui.Window
 
+	// zoom is the current scale factor, clamped to [pinZoomMin, pinZoomMax].
+	// Written only on the window's own thread (WM_MOUSEWHEEL), so no lock.
+	zoom float64
+	// wheelAcc accumulates raw wheel deltas until a full notch (±120) is
+	// reached; high-resolution wheels deliver smooth small deltas.
+	wheelAcc int
+
 	// released makes the slot accounting one-shot: the window's own teardown
 	// and the error path can both reach it.
 	released sync.Once
+}
+
+// Pin zoom bounds. 0.1 keeps a shrunken pin findable; 8× exhausts screen space
+// long before it exhausts memory.
+const (
+	pinZoomMin = 0.1
+	pinZoomMax = 8.0
+)
+
+// clampZoom keeps the scale factor inside the supported range.
+func clampZoom(z float64) float64 {
+	if z < pinZoomMin {
+		return pinZoomMin
+	}
+	if z > pinZoomMax {
+		return pinZoomMax
+	}
+	return z
+}
+
+// zoomAnchor maps a cursor position (in window/client coordinates) to the
+// image-space point that sits under it at the given zoom.
+//
+// Keeping this point fixed under the cursor while the window resizes is what
+// makes the zoom feel anchored to the pointer rather than to the top-left
+// corner: the pin's new top-left must move by ax*newZoom - cursorX.
+func zoomAnchor(cursorX, zoom float64) float64 {
+	if zoom <= 0 {
+		zoom = 1
+	}
+	return cursorX / zoom
+}
+
+// zoomedOrigin computes the pin's new top-left so that image-space point ax
+// stays under the cursor after scaling to newZoom.
+func zoomedOrigin(cursorScreenX int32, ax, newZoom float64) int32 {
+	return cursorScreenX - int32(ax*newZoom)
+}
+
+// wheelStep accumulates raw wheel deltas and reports whole notches.
+//
+// High-resolution wheels deliver deltas in small increments whose sum reaches
+// ±120 per physical notch; acting on every raw delta would zoom in jittery
+// sub-steps, so they are accumulated here.
+func wheelStep(acc, delta int) (newAcc, steps int) {
+	acc += delta
+	for acc >= 120 {
+		steps++
+		acc -= 120
+	}
+	for acc <= -120 {
+		steps--
+		acc += 120
+	}
+	return acc, steps
 }
 
 // release gives the pin's slot back exactly once.
@@ -182,6 +251,17 @@ func (p *pinnedWindow) proc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr)
 		// without reimplementing hit-testing and the drag loop.
 		winui.BeginDragWindow(hwnd)
 		return 0, true
+	case winui.WM_LBUTTONDBLCLK:
+		// 双击 = 复制到剪贴板 + 关闭（Snipaste 语义）。
+		// 顺序很重要：复制是同步操作，窗口销毁是异步 Post——先复制保证
+		// 剪贴板内容取自销毁前的窗口数据；复制失败不阻止关闭（用户还能
+		// 从历史里再取）。
+		p.copyToClipboard()
+		winui.PostMessage(hwnd, winui.WM_CLOSE, 0, 0)
+		return 0, true
+	case winui.WM_MOUSEWHEEL:
+		p.onWheel(hwnd, wParam, lParam)
+		return 0, true
 	case winui.WM_RBUTTONUP:
 		// Right click closes, matching the screenshot overlay's own gesture and
 		// leaving no decoration on a window whose only purpose is to show pixels.
@@ -207,6 +287,67 @@ func (p *pinnedWindow) proc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr)
 	return 0, false
 }
 
+// copyToClipboard pushes the pinned image onto the clipboard as PNG.
+//
+// 失败只记日志与面板提示：双击的主要意图仍是关闭，剪贴板写入失败不应把
+// 窗口留在屏幕上（用户右键/Esc 还能关，但双击失败后不关反而困惑）。
+func (p *pinnedWindow) copyToClipboard() {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, p.img); err != nil {
+		p.ctx.Logger.Error("贴图 PNG 编码失败", "module", moduleID, "err", err)
+		return
+	}
+	if err := clip.Init(); err != nil {
+		p.ctx.Logger.Error("贴图剪贴板不可用", "module", moduleID, "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := clip.Write(ctx, clip.FmtImage, buf.Bytes()); err != nil {
+		p.ctx.Logger.Warn("贴图复制到剪贴板失败", "module", moduleID, "err", err)
+		p.ctx.Bus.Notice(moduleID, "贴图复制失败，已仅关闭")
+		return
+	}
+	p.ctx.Logger.Info("贴图已复制到剪贴板并关闭", "module", moduleID, "bytes", buf.Len())
+}
+
+// onWheel handles zooming around the cursor position.
+//
+// lParam 是屏幕坐标（WS_POPUP 无边框，客户区原点 == 窗口原点，直接相减即得
+// 客户区坐标）；wParam 高 16 位是滚轮增量（正 = 向上/放大）。
+func (p *pinnedWindow) onWheel(hwnd winui.HWND, wParam, lParam uintptr) {
+	delta := int(int16(wParam >> 16))
+	var steps int
+	p.wheelAcc, steps = wheelStep(p.wheelAcc, delta)
+	if steps == 0 {
+		return
+	}
+
+	cur := winui.CursorPos()
+	wr := winui.WindowRect(hwnd)
+	// 客户区坐标（无边框窗口：screen - window 原点）。
+	cx := float64(cur.X - wr.Left)
+	cy := float64(cur.Y - wr.Top)
+
+	// 指针下的图像点（缩放前后都必须留在指针下）。
+	ax, ay := zoomAnchor(cx, p.zoom), zoomAnchor(cy, p.zoom)
+
+	p.zoom = clampZoom(p.zoom * math.Pow(1.2, float64(steps)))
+
+	newW := int32(float64(p.img.Bounds().Dx()) * p.zoom)
+	newH := int32(float64(p.img.Bounds().Dy()) * p.zoom)
+	if newW < 32 {
+		newW = 32
+	}
+	if newH < 32 {
+		newH = 32
+	}
+	// 让锚点保持在指针下：新原点 = 指针屏幕坐标 - 锚点在新尺寸下的偏移。
+	newLeft := zoomedOrigin(cur.X, ax, p.zoom)
+	newTop := zoomedOrigin(cur.Y, ay, p.zoom)
+	_ = winui.MoveWindow(hwnd, newLeft, newTop, newW, newH, true)
+}
+
 // paint renders the pinned image across the whole client area.
 func (p *pinnedWindow) paint(hwnd winui.HWND) {
 	c, ps := winui.BeginPaint(hwnd)
@@ -215,9 +356,8 @@ func (p *pinnedWindow) paint(hwnd winui.HWND) {
 	}
 	defer winui.EndPaint(hwnd, ps)
 
-	// The window is created at the image's size, so this is a 1:1 blit (Canvas.Image
-	// scales only if the two differ). Going through Canvas.Image rather than
-	// StretchDIBits is what keeps a large capture from being painted black: it
-	// hands the pixels to Windows in a DIB section.
+	// 缩放后窗口尺寸 ≠ 图像尺寸，Canvas.Image 自动走 HALFTONE StretchBlt
+	// 分支做平滑缩放；1:1 时仍是快速 BitBlt。经 Canvas.Image 而非
+	// StretchDIBits 是为了避免 Go 堆大缓冲静默失败（见 draw_windows.go）。
 	c.Image(winui.ClientRect(hwnd), p.img)
 }

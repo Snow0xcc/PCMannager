@@ -37,6 +37,7 @@ const (
 	optMaxHistory = "max_history"
 	optRecFPS     = "record_fps"
 	optScrollWait = "scroll_interval_ms"
+	optRecFormat  = "record_format"
 )
 
 // Option defaults, kept in sync with internal/config.Default().
@@ -49,6 +50,9 @@ const (
 	defaultRecFPS     = recDefaultFPS
 	// defaultScrollWait mirrors scrollInterval, in milliseconds.
 	defaultScrollWait = 320
+	// defaultRecFormat is "gif": it needs no external dependency. "mp4" is
+	// honoured only when ffmpeg is present (Options() 会标注禁用态)。
+	defaultRecFormat = "gif"
 )
 
 // Action ids surfaced in the preferences panel.
@@ -89,6 +93,10 @@ type Feature struct {
 	// that started it, because the user drives the scrolling after the region is
 	// chosen and the window is parked away.
 	scroll *scrollCapture
+
+	// mp4 is the in-flight MP4 recording（与 GIF 的 rec 互斥，同一时刻
+	// 只允许一个会话）。流式写盘，无帧缓冲。
+	mp4 *mp4Recorder
 }
 
 // NewFeature constructs the screenshot module.
@@ -125,7 +133,11 @@ func (f *Feature) Options() []core.Option {
 			Help: "超出后删除本次会话中最早保存的图片"},
 		{Key: optRecFPS, Label: "录屏帧率 (fps)", Kind: core.KindInt,
 			Default: defaultRecFPS, Min: recMinFPS, Max: recMaxFPS, Step: 1,
-			Help: "GIF 录屏帧率；越高越流畅，文件也越大"},
+			Help: "录屏帧率；越高越流畅，文件也越大"},
+		{Key: optRecFormat, Label: "录屏格式", Kind: core.KindSelect,
+			Default: defaultRecFormat,
+			Choices: recFormatChoices(),
+			Help:    recFormatHelp()},
 		{Key: optScrollWait, Label: "滚动截图采样间隔 (ms)", Kind: core.KindInt,
 			Default: defaultScrollWait, Min: 120, Max: 2000, Step: 20,
 			Help: "拼接两帧之间的等待时间；页面滚动较慢时调大可提高成功率"},
@@ -136,14 +148,48 @@ func (f *Feature) Options() []core.Option {
 func (f *Feature) Actions() []core.Action {
 	return []core.Action{
 		{ID: actionCapture, Label: "立即截图", Kind: core.ActionNormal,
-			Description: "截取主显示器并打开区域选择窗口"},
-		{ID: actionRecord, Label: "录屏 (GIF)", Kind: core.ActionNormal,
-			Description: "框选区域后录制为 GIF 动图"},
+			Description: "截取主显示器并打开区域选择窗口 (F1)"},
+		{ID: actionRecord, Label: f.recActionLabel(), Kind: core.ActionNormal,
+			Description: "框选区域后录制 (Alt+Shift+R)"},
 		{ID: actionScroller, Label: "滚动截图", Kind: core.ActionNormal,
-			Description: "框选滚动区域，拼接为一张长截图"},
+			Description: "框选滚动区域，拼接为一张长截图 (Ctrl+Shift+A)"},
 		{ID: actionOpenDir, Label: "打开保存目录", Kind: core.ActionOpen,
 			Description: "在文件管理器中打开截图保存目录"},
 	}
+}
+
+// recFormatChoices 构造格式下拉框。
+//
+// 功能矩阵的 UI 层表达：MP4 仅在检测到 ffmpeg 时出现在选项里——
+// MP4 独占扬声器/麦克风（GIF 无音频能力，选了也录不上），
+// 矩阵控制在选择层面一次性完成，避免“选了 GIF 又开麦克风”的无效组合。
+func recFormatChoices() []core.Choice {
+	choices := []core.Choice{
+		{Value: "gif", Label: "GIF 动图（无需外部依赖）"},
+	}
+	if ffmpegAvailable() {
+		choices = append(choices, core.Choice{
+			Value: "mp4",
+			Label: "MP4 视频（需要 ffmpeg，支持音频）",
+		})
+	}
+	return choices
+}
+
+// recFormatHelp 动态提示格式能力差异。
+func recFormatHelp() string {
+	if ffmpegAvailable() {
+		return "GIF：画面流；MP4：画面+扬声器/麦克风（需 ffmpeg）"
+	}
+	return "GIF：画面流；安装 ffmpeg 后可选 MP4（支持音频）"
+}
+
+// recActionLabel 随格式变化的动作文案。
+func (f *Feature) recActionLabel() string {
+	if f.recordingFormat() == "mp4" && ffmpegAvailable() {
+		return "录屏 (MP4)"
+	}
+	return "录屏 (GIF)"
 }
 
 // Init implements core.Module.
@@ -196,6 +242,9 @@ func (f *Feature) Stop() error {
 		}
 		if rec := f.activeRecorder(); rec != nil {
 			rec.discard()
+		}
+		if mp4 := f.activeMP4(); mp4 != nil {
+			mp4.abort()
 		}
 		done := make(chan struct{})
 		go func() { f.wg.Wait(); close(done) }()
@@ -310,6 +359,14 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		if !ok || n < recMinFPS || n > recMaxFPS {
 			return fmt.Errorf("screenshot: %s 需要 %d-%d 的整数", key, recMinFPS, recMaxFPS)
 		}
+	case optRecFormat:
+		s, _ := value.(string)
+		if s != "gif" && s != "mp4" {
+			return fmt.Errorf("screenshot: %s 只能是 gif 或 mp4", key)
+		}
+		if s == "mp4" && !ffmpegAvailable() {
+			return fmt.Errorf("screenshot: 未安装 ffmpeg，无法选择 MP4")
+		}
 	case optScrollWait:
 		n, ok := toInt(value)
 		if !ok || n < 120 || n > 2000 {
@@ -320,6 +377,34 @@ func (f *Feature) ApplyOption(key string, value any) error {
 	}
 	f.ctx.Bus.State(moduleID, f.State())
 	return nil
+}
+
+// ExtraHotkeys implements core.ExtraHotkeysProvider: the screenshot workflows
+// get their own shortcuts beyond the primary capture hotkey（主热键只触发截图，
+// 录屏与滚动截图各自独立唤起，与飞书键位一致）。
+//
+// 录屏动作内部读取 record_format 配置决定 GIF/MP4，热键本身不区分格式。
+func (f *Feature) ExtraHotkeys() []core.ExtraHotkey {
+	return []core.ExtraHotkey{
+		{Hotkey: "alt+shift+r", Label: "录屏", Fire: f.startRecordingHotkey},
+		{Hotkey: "ctrl+shift+a", Label: "滚动截图", Fire: f.startScrollHotkey},
+	}
+}
+
+// startRecordingHotkey 与 startScrollHotkey 是热键入口：走与面板动作相同的
+// openRegionEditor（claim/release 串行化），避免热键与面板动作并发开两个编辑器。
+func (f *Feature) startRecordingHotkey() error {
+	if f.ctx == nil {
+		return errNotReady
+	}
+	return f.openRegionEditor(edModeRecord)
+}
+
+func (f *Feature) startScrollHotkey() error {
+	if f.ctx == nil {
+		return errNotReady
+	}
+	return f.openRegionEditor(edModeScroll)
 }
 
 // RunAction executes a declared panel action.
@@ -399,6 +484,10 @@ func (f *Feature) captureAs(mode edMode) {
 // The region is in SCREEN coordinates (the editor window spans the display), and
 // beginRecording converts nothing: CaptureRect is a screen-space API.
 func (f *Feature) startRecording(region image.Rectangle) error {
+	if f.recordingFormat() == "mp4" && ffmpegAvailable() {
+		_, err := f.beginRecordingMP4(region, f.recordingFPS())
+		return err
+	}
 	_, err := f.beginRecording(region, f.recordingFPS())
 	return err
 }
@@ -422,7 +511,7 @@ const recWarnFrames = recMaxFrames - 3
 // page (or gave up).
 func (f *Feature) captureStatus() (string, bool) {
 	f.mu.Lock()
-	rec, sc := f.rec, f.scroll
+	rec, sc, mp4 := f.rec, f.scroll, f.mp4
 	f.mu.Unlock()
 
 	if rec != nil {
@@ -434,6 +523,14 @@ func (f *Feature) captureStatus() (string, bool) {
 		// Near the cap the sampling loop stops adding frames on its own, so the
 		// take must be collected here.
 		return fmt.Sprintf("录屏中 %d:%02d（%d 帧）", secs/60, secs%60, n), n >= recWarnFrames
+	}
+	if mp4 != nil {
+		if reason := mp4.stopReason(); reason != "" {
+			return reason, true
+		}
+		n := mp4.frameCount()
+		secs := int(float64(n) / float64(mp4.fps))
+		return fmt.Sprintf("MP4 录屏中 %d:%02d:%02d（%d 帧）", secs/3600, secs%3600/60, secs%60, n), false
 	}
 	if sc != nil {
 		if sc.stopRequested() {
@@ -455,8 +552,25 @@ func (f *Feature) captureStatus() (string, bool) {
 // call is a no-op.
 func (f *Feature) stopCapture() string {
 	f.mu.Lock()
-	rec, sc := f.rec, f.scroll
+	rec, sc, mp4 := f.rec, f.scroll, f.mp4
 	f.mu.Unlock()
+
+	if mp4 != nil {
+		path, err := mp4.stop()
+		if err != nil {
+			sharedOutcome.set("MP4 录屏失败："+err.Error(), "")
+			return "MP4 录屏失败：" + err.Error()
+		}
+		fi, _ := os.Stat(path)
+		sizeMB := 0.0
+		if fi != nil {
+			sizeMB = float64(fi.Size()) / (1024 * 1024)
+		}
+		text := fmt.Sprintf("MP4 已保存 %s（%d 帧，%.1f MB）",
+			filepath.Base(path), mp4.frameCount(), sizeMB)
+		sharedOutcome.set(text, path)
+		return text
+	}
 
 	if rec != nil {
 		data, err := rec.finish()
@@ -500,9 +614,12 @@ func (f *Feature) stopCapture() string {
 // abortCapture discards the in-flight capture without producing a file.
 func (f *Feature) abortCapture() {
 	f.mu.Lock()
-	rec, sc := f.rec, f.scroll
+	rec, sc, mp4 := f.rec, f.scroll, f.mp4
 	f.mu.Unlock()
 
+	if mp4 != nil {
+		mp4.abort()
+	}
 	if rec != nil {
 		rec.discard()
 		f.ctx.Bus.Notice(moduleID, "已丢弃本次录屏")

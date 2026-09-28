@@ -6,6 +6,7 @@ import (
 	"image"
 	"path/filepath"
 
+	"github.com/snow0xcc/pcmannager/internal/sysutil"
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
@@ -376,8 +377,11 @@ func (e *editorState) controlButtons() []ctrlButton {
 	}
 
 	buttons := []ctrlButton{}
-	if hooks.CopyResult != nil {
+	if state == ctrlResult && hooks.CopyResult != nil {
 		buttons = append(buttons, ctrlButton{"复制到剪贴板", func() { e.copyResult() }})
+	}
+	if state == ctrlResult {
+		buttons = append(buttons, ctrlButton{"编辑", func() { e.editResult() }})
 	}
 	buttons = append(buttons,
 		ctrlButton{"打开目录", func() { e.revealResult() }},
@@ -443,6 +447,23 @@ func (e *editorState) revealResult() {
 		hooks.Reveal(filepath.Dir(path))
 	}
 	e.setCtrlStatus("已打开目录：" + filepath.Dir(path))
+}
+
+// editResult opens the produced image in the system's default image editor
+// （画图等），满足滚动截图后置栏的“编辑”操作。
+func (e *editorState) editResult() {
+	e.mu.Lock()
+	path := e.ctrlResult
+	e.mu.Unlock()
+	if path == "" {
+		return
+	}
+	if err := sysutil.OpenURL(path); err != nil {
+		e.ctx.Logger.Warn("打开图片编辑器失败", "module", moduleID, "file", path, "err", err)
+		e.setCtrlStatus("编辑失败：" + err.Error())
+		return
+	}
+	e.setCtrlStatus("已用系统图片编辑器打开")
 }
 
 // setCtrlStatus updates the bar's readout text.

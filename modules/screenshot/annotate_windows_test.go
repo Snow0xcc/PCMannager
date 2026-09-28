@@ -4,10 +4,130 @@ package screenshot
 
 import (
 	"image"
+	"math"
 	"testing"
 
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
+
+// TestArrowKeepsTrueEndpoints 回归测试：从右下往左上画箭头时，From 必须保持
+// 为真实起点 (200,150)，不能被归一化成外接矩形左上角 (100,100)——
+// 那会反转线段方向，正是“箭头只能横竖画”的根因。
+func TestArrowKeepsTrueEndpoints(t *testing.T) {
+	e := &editorState{
+		tool: -1,
+		sel:  winui.Rect{Left: 0, Top: 0, Right: 400, Bottom: 300},
+	}
+	e.mu.Lock()
+	e.tool = int(annotArrow)
+	e.strokeColor = annotPalette[0]
+	e.strokeWidth = annotWidths[1]
+	e.mu.Unlock()
+
+	// 从 (200,150) 拖到 (100,100)（右下 → 左上）。
+	if !e.beginDraw(200, 150) {
+		t.Fatal("beginDraw 应成功")
+	}
+	e.onMove(150, 125)
+	e.onUp(100, 100)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.annots) != 1 {
+		t.Fatalf("应产生 1 条箭头, 实际 %d", len(e.annots))
+	}
+	a := e.annots[0]
+	if a.Kind != annotArrow {
+		t.Fatalf("Kind = %v, 期望 annotArrow", a.Kind)
+	}
+	if a.From.Left != 200 || a.From.Top != 150 {
+		t.Fatalf("箭头起点被篡改: From=(%d,%d), 期望 (200,150)", a.From.Left, a.From.Top)
+	}
+	if a.To.Left != 100 || a.To.Top != 100 {
+		t.Fatalf("箭头终点错误: To=(%d,%d), 期望 (100,100)", a.To.Left, a.To.Top)
+	}
+}
+
+// TestArrowRectStillNormalized 守护矩形/椭圆仍走归一化（箭头修复不得波及其它形状）。
+func TestArrowRectStillNormalized(t *testing.T) {
+	e := &editorState{
+		tool: -1,
+		sel:  winui.Rect{Left: 0, Top: 0, Right: 400, Bottom: 300},
+	}
+	e.mu.Lock()
+	e.tool = int(annotRect)
+	e.strokeColor = annotPalette[0]
+	e.strokeWidth = annotWidths[1]
+	e.mu.Unlock()
+
+	e.beginDraw(200, 150)
+	e.onUp(100, 100)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.annots) != 1 {
+		t.Fatalf("应产生 1 条矩形, 实际 %d", len(e.annots))
+	}
+	a := e.annots[0]
+	if a.From.Left != 100 || a.From.Top != 100 {
+		t.Fatalf("矩形 From 应归一化到左上角: (%d,%d)", a.From.Left, a.From.Top)
+	}
+}
+
+// TestArrowHeadBarbAnyAngle 守护箭头头部数学：从任意角度的线段计算倒刺端点，
+// 倒刺与箭尖的距离必须等于 head（长度守恒），且两根倒刺关于线段对称。
+func TestArrowHeadBarbAnyAngle(t *testing.T) {
+	const spread = 30 * math.Pi / 180
+	cases := []struct{ x1, y1, x2, y2 int32 }{
+		{0, 0, 100, 0},       // 横向
+		{0, 0, 0, 100},       // 纵向
+		{0, 0, 100, 100},     // 斜向 45°
+		{200, 150, 100, 100}, // 右下 → 左上（修复前会坏的方向）
+		{100, 200, 300, 50},  // 陡斜向
+	}
+	for _, c := range cases {
+		const head = 12.0
+		b1x, b1y := arrowHeadBarb(c.x1, c.y1, c.x2, c.y2, spread, head, 1)
+		b2x, b2y := arrowHeadBarb(c.x1, c.y1, c.x2, c.y2, spread, head, -1)
+
+		// 每根倒刺到箭尖的距离 = head（允许 1px 取整误差）。
+		d1 := math.Hypot(float64(b1x-c.x2), float64(b1y-c.y2))
+		d2 := math.Hypot(float64(b2x-c.x2), float64(b2y-c.y2))
+		if math.Abs(d1-head) > 1.01 || math.Abs(d2-head) > 1.01 {
+			t.Errorf("(%d,%d)→(%d,%d): 倒刺长 d1=%.2f d2=%.2f, 期望 %.1f",
+				c.x1, c.y1, c.x2, c.y2, d1, d2, head)
+		}
+
+		// 两根倒刺到箭尖的夹角应为 2*spread。角度差取最短弧
+		// （Atan2 返回 (-π,π]，直接相减会跨 π 跳变，如 5.202 ≡ -1.081）。
+		// 容差 0.1rad（≈5.7°）：GDI 画线只能整数端点，倒刺坐标经 int32
+		// 截断后短箭头的张角必有这个量级的取整误差，这是光栅化的物理下限
+		// 而非数学错误（数学公式由 barb 长度守恒断言单独验证）。
+		a1 := math.Atan2(float64(b1y-c.y2), float64(b1x-c.x2))
+		a2 := math.Atan2(float64(b2y-c.y2), float64(b2x-c.x2))
+		ang := math.Abs(a1 - a2)
+		if ang > math.Pi {
+			ang = 2*math.Pi - ang
+		}
+		if math.Abs(ang-2*spread) > 0.1 {
+			t.Errorf("(%d,%d)→(%d,%d): 张角 = %.3frad, 期望 %.3frad",
+				c.x1, c.y1, c.x2, c.y2, ang, 2*spread)
+		}
+	}
+}
+
+// TestLengthAtLeast 守护箭头的 Chebyshev 长度判定（纯垂直箭头宽为 0 也应通过）。
+func TestLengthAtLeast(t *testing.T) {
+	if !lengthAtLeast(10, 10, 10, 60, 4) {
+		t.Error("纯垂直 50px 应判定为有效箭头")
+	}
+	if !lengthAtLeast(60, 10, 10, 10, 4) {
+		t.Error("纯水平 50px 应判定为有效箭头")
+	}
+	if lengthAtLeast(10, 10, 12, 11, 4) {
+		t.Error("2px 位移应判定为过短")
+	}
+}
 
 // TestToolOfMapsButtons 守护工具按钮到标注类型的映射，以及非工具按钮返回 -1。
 func TestToolOfMapsButtons(t *testing.T) {

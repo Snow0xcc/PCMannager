@@ -28,12 +28,40 @@ type winTray struct {
 	commands map[uint32]string
 	added    bool
 	visible  bool
+
+	// ownerDraw holds the payloads behind colored (owner-drawn) menu items,
+	// keyed by the dwItemData value the system hands back in
+	// WM_MEASUREITEM/WM_DRAWITEM. odMu separates it from the tray lock so the
+	// draw path never contends with Show/Hide. Entries live only while the
+	// menu is open (see popupMenu).
+	odMu      sync.Mutex
+	ownerDraw map[uintptr]ownerDrawItem
+	odSeq     uintptr
 }
 
 // New creates a Windows tray icon bound to the given handler.
 func New(log *slog.Logger, handler Handler) Tray {
 	return &winTray{log: log, handler: handler, commands: map[uint32]string{}}
 }
+
+// odKeyWithFlags packs the owner-draw key into dwItemData.
+//
+// 菜单项还可能是禁用的：MF_GRAYED 与 MF_OWNERDRAW 可以共存（系统仍拒绝
+// 选择），但 DRAWITEMSTRUCT 不会告诉你它被禁用——所以把禁用位叠进 key 的
+// 高位（key 永远 < 2^31，最高位专用），绘制时还原出 ODS_GRAYED 语义。
+func odKeyWithFlags(key uintptr, disabled bool) uintptr {
+	if disabled {
+		return key | odDisabledBit
+	}
+	return key
+}
+
+// odDisabledBit marks a disabled owner-drawn item in dwItemData (top bit).
+const odDisabledBit = uintptr(1) << 31
+
+// mfOwnerDraw is AppendMenuW's MF_OWNERDRAW (0x10B = MF_STRING|MF_BYCOMMAND
+// is implied by the low bits); winui 尚未声明它.
+const mfOwnerDraw = 0x0000010B
 
 // SetMenu replaces the tray menu and refreshes the tooltip.
 func (t *winTray) SetMenu(m Menu) {
@@ -138,7 +166,7 @@ func (t *winTray) createWindowLocked() error {
 	return nil
 }
 
-// wndProc dispatches tray callbacks and menu commands.
+// wndProc dispatches tray callbacks, menu commands and owner-draw messages.
 func (t *winTray) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr) (uintptr, bool) {
 	switch msg {
 	case winui.WM_TRAYCALLBACK:
@@ -153,6 +181,29 @@ func (t *winTray) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr) (
 			}
 		}
 		return 0, true
+
+	case wmMeasureItem:
+		// lParam -> *MEASUREITEMSTRUCT; itemData is our owner-draw key.
+		if mis := lParamPtr[measureItemStruct](lParam); mis != nil {
+			t.handleMeasureItem(hwnd, mis)
+			return 1, true
+		}
+
+	case wmDrawItem:
+		// lParam -> *DRAWITEMSTRUCT; itemData is our owner-draw key (with the
+		// disabled bit folded in).
+		if dis := lParamPtr[drawItemStruct](lParam); dis != nil {
+			if dis.ItemData&odDisabledBit != 0 {
+				// 查表用裸 key；禁用态在绘制时单独还原。
+				plain := *dis
+				plain.ItemData &^= odDisabledBit
+				plain.ItemState |= odsGrayed
+				t.handleDrawItem(&plain)
+			} else {
+				t.handleDrawItem(dis)
+			}
+			return 1, true
+		}
 
 	case winui.WM_SETTINGCHANGE, winui.WM_DISPLAYCHANGE:
 		// The notification area may have been recreated; re-add the icon.
@@ -199,6 +250,25 @@ func (t *winTray) popupMenu() {
 			procAppendMenuW.Call(hMenu, winui.MF_SEPARATOR, 0, 0)
 			continue
 		}
+		if it.Color != "" {
+			// 标准 Win32 菜单不支持文字颜色，带颜色的项走 owner-draw：
+			// dwItemData 传堆上索引（winTray.ownerDraw 的 key），wndProc 在
+			// WM_MEASUREITEM/WM_DRAWITEM 里查回文字与颜色完成绘制。未知色值
+			// 回退默认文字色（此时退回普通 MF_STRING 项）。
+			color, ok := colorKeyToCOLORREF(it.Color)
+			if ok {
+				key := t.putOwnerDraw(it.Title, color)
+				flags := uintptr(mfOwnerDraw)
+				if it.Disabled {
+					key = odKeyWithFlags(key, true)
+					flags |= winui.MF_GRAYED // 系统层面拒绝选择；灰态由自绘呈现
+				}
+				procAppendMenuW.Call(hMenu, flags, uintptr(cmd), key)
+				commands[cmd] = it.ID
+				cmd++
+				continue
+			}
+		}
 		flags := uintptr(winui.MF_STRING)
 		if it.Disabled {
 			flags |= winui.MF_GRAYED
@@ -224,6 +294,8 @@ func (t *winTray) popupMenu() {
 	t.mu.Unlock()
 
 	if !hwnd.Valid() {
+		// 菜单没能展示，owner-draw 数据已无消费者，直接释放。
+		t.clearOwnerDraw()
 		return
 	}
 
@@ -238,6 +310,9 @@ func (t *winTray) popupMenu() {
 
 	// Standard workaround: post a null message so the menu dismisses cleanly.
 	winui.PostMessage(hwnd, 0, 0, 0)
+
+	// Menu is closed: owner-draw payloads are no longer reachable.
+	t.clearOwnerDraw()
 }
 
 // updateTooltip refreshes the hover text.
