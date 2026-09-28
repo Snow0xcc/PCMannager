@@ -525,8 +525,13 @@ func (p *panelState) onMouseMove(hwnd winui.HWND, x, y int32) {
 	}
 }
 
-// onRowMenu 弹右键菜单：命中磁贴时提供"固定到前方/取消固定"，空白处提供
-// "清空排行榜"。菜单是瞬态的，返回后立刻按选择行动。
+// onRowMenu 弹右键菜单，按目标类型动态呈现菜单项：
+//
+//	公共项：固定/取消固定、复制路径、打开位置
+//	应用/脚本（.exe/.bat/.cmd/.ps1/.lnk）：以管理员身份运行
+//	目录（folder）：在终端打开此处
+//
+// 菜单弹出坐标做边缘防溢出（菜单尺寸为估算值，靠近屏幕右/下边缘时向左/上翻）。
 func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 	idx := p.tileAt(x, y)
 	p.mu.Lock()
@@ -538,44 +543,117 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 	ranks := p.ranks
 	p.mu.Unlock()
 
-	var items []winui.MenuItem
+	// 构造菜单项与动作闭包，二者下标严格对应（分隔符不占动作位）。
+	type act struct {
+		text string
+		fn   func()
+	}
+	var actions []act
+	addSep := false
+	add := func(text string, fn func()) {
+		actions = append(actions, act{text: text, fn: fn})
+	}
+
 	if have {
 		pinned := false
 		if ranks != nil {
 			_, pinned = ranks.get(sel.key())
 		}
+		pinText := "固定到前方"
 		if pinned {
-			items = append(items, winui.MenuItem{Text: "取消固定到前方", Checked: true})
-		} else {
-			items = append(items, winui.MenuItem{Text: "固定到前方"})
+			pinText = "取消固定到前方"
 		}
-		items = append(items, winui.MenuItem{Separator: true})
-	}
-	items = append(items, winui.MenuItem{Text: "清空排行榜"})
+		add(pinText, func() {
+			if ranks != nil {
+				_, pinnedNow := ranks.get(sel.key())
+				ranks.setPin(sel.key(), !pinnedNow)
+				p.refreshRows()
+				winui.InvalidateRect(hwnd)
+			}
+		})
+		addSep = true
 
-	choice := winui.PopupMenu(hwnd, items)
-	switch {
-	case have && choice == 0:
-		if ranks != nil {
-			_, pinned := ranks.get(sel.key())
-			ranks.setPin(sel.key(), !pinned)
-			p.refreshRows()
-			winui.InvalidateRect(hwnd)
+		// 复制路径 / 打开位置 / 终端 / 管理员运行：仅对本地目标（app/file/folder）有意义。
+		switch sel.Kind {
+		case "app", "file", "folder":
+			add("复制文件路径", func() {
+				if err := winui.ClipboardText(sel.Path); err != nil {
+					p.ctx.Bus.Notice(moduleID, "复制路径失败："+err.Error())
+				}
+			})
+			add("打开文件位置", func() {
+				if err := sysutil.ShowInFolder(sel.Path); err != nil {
+					p.ctx.Bus.Notice(moduleID, "打开位置失败："+err.Error())
+				}
+			})
+			if isExecutablePath(sel.Path) {
+				add("以管理员身份运行", func() {
+					if err := sysutil.RunElevatedPath(sel.Path, nil); err != nil {
+						p.ctx.Bus.Notice(moduleID, "管理员运行失败："+err.Error())
+					}
+				})
+			}
+			if sel.Kind == "folder" {
+				add("在终端打开此处", func() {
+					if err := sysutil.OpenTerminalHere(sel.Path); err != nil {
+						p.ctx.Bus.Notice(moduleID, "打开终端失败："+err.Error())
+					}
+				})
+			}
 		}
-	case have && choice == 2:
-		if ranks != nil {
-			ranks.clear()
-			p.refreshRows()
-			winui.InvalidateRect(hwnd)
+	} else {
+		add("清空排行榜", func() {
+			if ranks != nil {
+				ranks.clear()
+				p.refreshRows()
+				winui.InvalidateRect(hwnd)
+			}
+		})
+	}
+
+	if len(actions) == 0 {
+		return
+	}
+
+	// 组装 winui.MenuItem（分隔符插在固定项之后，与 actions 下标错位）。
+	items := make([]winui.MenuItem, 0, len(actions)+1)
+	for i, a := range actions {
+		if addSep && i == 1 {
+			items = append(items, winui.MenuItem{Separator: true})
 		}
-	case !have && choice == 0:
-		if ranks != nil {
-			ranks.clear()
-			p.refreshRows()
-			winui.InvalidateRect(hwnd)
-		}
+		items = append(items, winui.MenuItem{Text: a.text})
+	}
+
+	// 屏幕坐标 + 边缘防溢出：菜单估算尺寸，靠近右/下边缘时向左/上翻。
+	sw, sh := winui.ScreenSize()
+	mx := x
+	my := y
+	if x+menuEstW > sw {
+		mx = x - menuEstW
+	}
+	if y+menuEstH > sh {
+		my = y - menuEstH
+	}
+	if mx < 0 {
+		mx = 0
+	}
+	if my < 0 {
+		my = 0
+	}
+
+	choice := winui.PopupMenu(hwnd, mx, my, items)
+	if choice >= 0 && choice < len(actions) {
+		p.hide()
+		actions[choice].fn()
 	}
 }
+
+// 菜单尺寸估算（防溢出的折叠阈值）。真实尺寸由系统绘制决定，这里给一个
+// 够用的上限：宽度 220px、每项 28px。
+const (
+	menuEstW = 220
+	menuEstH = 400
+)
 
 // execute runs the highlighted (or clicked) command and dismisses the panel.
 func (p *panelState) execute(hwnd winui.HWND) {

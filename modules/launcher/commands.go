@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
+	"github.com/snow0xcc/pcmannager/internal/sysutil"
 )
 
 // command is one searchable entry of the quick panel: a label (what the user
@@ -23,12 +24,15 @@ type command struct {
 	// generic module glyph.
 	Icon string
 	// Kind discriminates the payload: "action" runs a module action, "open"
-	// opens a module's UI, "url" opens a web address.
+	// opens a module's UI, "url" opens a web address, "app" launches a local
+	// application, "file" opens a document, "folder" opens a directory.
 	Kind string
 	// ModuleID/ActionID address a module action (Kind = action/open).
 	ModuleID, ActionID string
 	// URL is the address for Kind = url.
 	URL string
+	// Path is the filesystem target for Kind = app/file/folder.
+	Path string
 	// Priority is the developer-preset importance (buildCommands assigns it):
 	// it breaks ties within the same match level in the weighted ranking.
 	Priority int
@@ -93,7 +97,8 @@ func (c command) compositeScore(q string, openCount int, pinned bool) int {
 }
 
 // key 是命令在排行榜中的稳定标识：模块动作用 <module>/<action>，网页捷径用
-// url:<地址>，模块入口用 <module>。跨进程重启后依然一致，使用量/置顶才能持久化。
+// url:<地址>，模块入口用 <module>，本地应用/文件/文件夹用 path:<路径>。跨进程
+// 重启后依然一致，使用量/置顶才能持久化。
 func (c command) key() string {
 	switch c.Kind {
 	case "action":
@@ -102,6 +107,8 @@ func (c command) key() string {
 		return c.ModuleID
 	case "url":
 		return "url:" + c.URL
+	case "app", "file", "folder":
+		return "path:" + c.Path
 	}
 	return c.Label
 }
@@ -153,6 +160,10 @@ func buildCommands(ctx *core.Context) []command {
 			Priority: 4,
 		})
 	}
+
+	// 本地应用（开始菜单 .lnk）。扫描失败/为空不致命——面板仍靠模块动作与
+	// 网页捷径工作，这里只是把启动器做成真正的"应用启动器"。
+	out = append(out, appEntries()...)
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	// 空查询的默认列表把「打开 Xxx」模块入口排在动作前面：磁贴一行只有
@@ -235,6 +246,10 @@ func (f *Feature) run(c command) error {
 			}
 			return f.guarded(c.ModuleID, func() error { return r.RunAction(c.ActionID, nil) })
 		}
+	case "app", "file", "folder":
+		// 本地应用/文件/文件夹统一经 sysutil.OpenURL（ShellExecute/xdg-open）：
+		// .lnk 快捷方式同样能直接启动，无需先解析其目标。
+		return sysutil.OpenURL(c.Path)
 	default:
 		return fmt.Errorf("launcher: 未知命令类型 %s", c.Kind)
 	}

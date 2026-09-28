@@ -10,4 +10,4 @@ type MenuItem struct {
 }
 
 // PopupMenu 非 Windows 下恒返回 -1（无选择），调用方按"取消"处理。
-func PopupMenu(owner HWND, items []MenuItem) int { return -1 }
+func PopupMenu(owner HWND, x, y int32, items []MenuItem) int { return -1 }

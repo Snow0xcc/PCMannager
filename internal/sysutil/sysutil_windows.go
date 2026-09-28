@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -131,6 +132,77 @@ func RunElevated(command string) error {
 			return fmt.Errorf("提权执行失败: %w", err2)
 		}
 		return fmt.Errorf("提权执行失败 (代码 %d)", r)
+	}
+	return nil
+}
+
+// RunElevatedPath 以管理员权限启动任意可执行文件/脚本/快捷方式（runas 动词
+// 触发 UAC）。这是"以管理员身份运行"右键项的实现，不经过 cmd 包装，因此
+// 参数不含 shell 解释——目标是路径，参数可选。
+func RunElevatedPath(path string, args []string) error {
+	verb, _ := syscall.UTF16PtrFromString("runas")
+	file, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	var paramsPtr *uint16
+	if len(args) > 0 {
+		joined := ""
+		for _, a := range args {
+			joined += " " + quote(a)
+		}
+		paramsPtr, _ = syscall.UTF16PtrFromString(strings.TrimSpace(joined))
+	}
+	r, _, err2 := procShellExecuteW.Call(0,
+		uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)),
+		uintptr(unsafe.Pointer(paramsPtr)), 0, swShowNormal)
+	if r <= 32 {
+		if err2 != nil && err2 != syscall.Errno(0) {
+			return fmt.Errorf("以管理员身份运行失败: %w", err2)
+		}
+		return fmt.Errorf("以管理员身份运行失败 (代码 %d)，可能被用户取消", r)
+	}
+	return nil
+}
+
+// ShowInFolder 在系统文件管理器中定位并高亮选中文件（打开其所在目录并选中）。
+func ShowInFolder(path string) error {
+	file, err := syscall.UTF16PtrFromString("explorer.exe")
+	if err != nil {
+		return err
+	}
+	params, err := syscall.UTF16PtrFromString("/select," + path)
+	if err != nil {
+		return err
+	}
+	r, _, err2 := procShellExecuteW.Call(0, 0,
+		uintptr(unsafe.Pointer(file)), uintptr(unsafe.Pointer(params)), 0, swShowNormal)
+	if r <= 32 {
+		if err2 != nil && err2 != syscall.Errno(0) {
+			return fmt.Errorf("定位文件失败: %w", err2)
+		}
+		return fmt.Errorf("定位文件失败 (代码 %d)", r)
+	}
+	return nil
+}
+
+// OpenTerminalHere 在指定目录唤起系统终端（Windows 下为 PowerShell；目录为空
+// 时用当前工作目录）。
+func OpenTerminalHere(dir string) error {
+	verb, _ := syscall.UTF16PtrFromString("open")
+	cmd, _ := syscall.UTF16PtrFromString("powershell.exe")
+	var dirPtr *uint16
+	if dir != "" {
+		dirPtr, _ = syscall.UTF16PtrFromString(dir)
+	}
+	r, _, err := procShellExecuteW.Call(0,
+		uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(cmd)), 0,
+		uintptr(unsafe.Pointer(dirPtr)), swShowNormal)
+	if r <= 32 {
+		if err != nil && err != syscall.Errno(0) {
+			return fmt.Errorf("在终端打开失败: %w", err)
+		}
+		return fmt.Errorf("在终端打开失败 (代码 %d)", r)
 	}
 	return nil
 }

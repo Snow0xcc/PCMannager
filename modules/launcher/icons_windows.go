@@ -96,6 +96,36 @@ func drawTileIcon(c *winui.Canvas, box winui.Rect, glyph string, color uint32) {
 			{X: cx, Y: cy},
 		}, color)
 
+	case "app":
+		// 本地应用：通用"窗口"图标（四角方块 + 中央横杠）。
+		c.StrokeRect(b, color, sw)
+		c.Line(b.Left, b.Top+b.Height()/4, b.Right, b.Top+b.Height()/4, color, sw)
+		c.Line(cx, b.Top+b.Height()/4, cx, b.Bottom, color, sw)
+
+	case "file":
+		// 文档：折角文件。
+		c.StrokePolyline([]winui.POINT{
+			{X: b.Left, Y: b.Top},
+			{X: b.Right - b.Width()/4, Y: b.Top},
+			{X: b.Right, Y: b.Top + b.Height()/4},
+			{X: b.Right, Y: b.Bottom},
+			{X: b.Left, Y: b.Bottom},
+			{X: b.Left, Y: b.Top},
+		}, color, sw)
+		c.Line(b.Right-b.Width()/4, b.Top, b.Right-b.Width()/4, b.Top+b.Height()/4, color, sw)
+		c.Line(b.Right-b.Width()/4, b.Top+b.Height()/4, b.Right, b.Top+b.Height()/4, color, sw)
+
+	case "folder":
+		// 文件夹：梯形盖子 + 矩形身体。
+		c.StrokePolyline([]winui.POINT{
+			{X: b.Left, Y: b.Top + b.Height()/4},
+			{X: b.Left + b.Width()/4, Y: b.Top},
+			{X: b.Right - b.Width()/4, Y: b.Top},
+			{X: b.Right - b.Width()/4, Y: b.Top + b.Height()/4},
+			{X: b.Right, Y: b.Top + b.Height()/4},
+		}, color, sw)
+		c.StrokeRect(winui.Rect{Left: b.Left, Top: b.Top + b.Height()/4, Right: b.Right, Bottom: b.Bottom}, color, sw)
+
 	case "module":
 		fallthrough
 	default:

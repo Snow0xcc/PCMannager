@@ -149,3 +149,48 @@ func openClipboard() error {
 	}
 	return fmt.Errorf("winui: 打开剪贴板失败（可能被其它进程占用，已重试 %d 次）: %w", clipboardRetries, lastErr)
 }
+
+// ClipboardText puts a plain-text string onto the clipboard as CF_UNICODETEXT.
+//
+// 这是"复制文件路径/复制文本"类操作的落点。与 ClipboardFileDrop 不同，它
+// 不需要 DROPFILES 头，只需一块含 NUL 结尾的 UTF-16 文本。
+func ClipboardText(s string) error {
+	u, err := syscall.UTF16FromString(s)
+	if err != nil {
+		return fmt.Errorf("winui: 文本转 UTF-16 失败: %w", err)
+	}
+	total := len(u) * 2
+
+	hMem, _, callErr := procGlobalAlloc.Call(GMEM_MOVEABLE|GMEM_ZEROINIT, uintptr(total))
+	if hMem == 0 {
+		return fmt.Errorf("winui: GlobalAlloc 分配剪贴板内存失败: %w", callErr)
+	}
+	ptr, _, _ := procGlobalLock.Call(hMem)
+	if ptr == 0 {
+		procGlobalFree.Call(hMem)
+		return fmt.Errorf("winui: GlobalLock 锁定剪贴板内存失败")
+	}
+	buf := make([]byte, total)
+	for i, c := range u {
+		buf[i*2] = byte(c)
+		buf[i*2+1] = byte(c >> 8)
+	}
+	copyToAddress(ptr, buf)
+	procGlobalUnlock.Call(hMem)
+
+	if err := openClipboard(); err != nil {
+		procGlobalFree.Call(hMem)
+		return err
+	}
+	defer procCloseClipboard.Call()
+
+	if r, _, callErr := procEmptyClipboard.Call(); r == 0 {
+		procGlobalFree.Call(hMem)
+		return fmt.Errorf("winui: EmptyClipboard 失败: %w", callErr)
+	}
+	if r, _, callErr := procSetClipboardData.Call(CF_UNICODETEXT, hMem); r == 0 {
+		procGlobalFree.Call(hMem)
+		return fmt.Errorf("winui: SetClipboardData(CF_UNICODETEXT) 失败: %w", callErr)
+	}
+	return nil
+}

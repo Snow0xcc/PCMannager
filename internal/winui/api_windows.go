@@ -206,6 +206,10 @@ const (
 	// DROPFILES 开头的 UTF-16 路径列表；聊天客户端据此把粘贴当成发送附件。
 	CF_HDROP = 15
 
+	// CF_UNICODETEXT 是纯文本剪贴板格式（值为 13），内容是一串以 NUL 结尾的
+	// UTF-16 文本。"复制文件路径"这类操作写入它，而不是 CF_HDROP。
+	CF_UNICODETEXT = 13
+
 	// 剪贴板载荷必须用可移动全局内存：SetClipboardData 接管的是一块可被系统
 	// 移动的 HGLOBAL，GMEM_MOVEABLE 是它的硬性要求；GMEM_ZEROINIT 则保证
 	// DROPFILES 头里用不到的字段（如 pt/fNC）是干净的 0，避免写入垃圾坐标。
