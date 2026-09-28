@@ -12,17 +12,16 @@ import (
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
-// 面板几何（设备像素）。uTools 式图标网格：磁贴横向排列、自动换行，
-// 面板宽度只随列数伸缩，不再把整屏占满。
+// 面板几何（设备像素）。uTools/dtools 式图标面板：
+// 候选磁贴**单行横向排列**，面板宽度固定为屏幕 3/5，超出部分不换行而是
+// 裁剪显示，用户向右滚动查看后续候选——不再把整屏占满，也不会因条目多而
+// 叠成多行。
 //
 // panelScale 是全局放大系数：把面板整体（磁贴、间距、内边距、搜索框）
 // 同比例放大 4 倍，更醒目易读。唯一不随它缩放的是搜索结果图标的 glyph
 // 尺寸（iconGlyphSide）——保持原来的绝对值，避免矢量图标被放大后线条
 // 过粗、观感臃肿。
 const (
-	// 网格参数（int32，几何计算全程无类型转换）。
-	// 列数不再固定，按屏幕宽度动态计算（见 gridColsFor）；
-	// 磁贴/间距/内边距/搜索框统一乘 panelScale 放大。
 	panelScale int32 = 4 // 整体放大倍数
 
 	gridTileW int32 = 96 * panelScale // 磁贴宽（放大后 384）
@@ -33,47 +32,47 @@ const (
 
 	panelEditH int32 = 48 * panelScale // 顶部搜索框高度
 
-	// iconGlyphSide 是搜索结果图标的固定绘制边长，不随 panelScale 放大。
+	// iconGlyphSide 是搜索图标的固定绘制边长，不随 panelScale 放大。
 	// 它是原 84px 磁贴下 "84/2-6" 得到的 36px，保持这一绝对值，
 	// 让放大后的面板仍用精致的小图标。
 	iconGlyphSide int32 = 36
 
-	// 面板字号（点），随 panelScale 放大；由 fontSize() 读取。
+	// 面板字号（点），随 panelScale 放大。
 	panelFontPt = 12 * panelScale
 )
 
 // 颜色（COLORREF 0x00BBGGRR）。深/浅两套，按系统主题（winui.DarkModeEnabled）
 // 在 paint 时选择；不再是写死的深色。
 var (
-	// dark 深色主题（默认）。
 	darkBg     = uint32(0x00221F1B) // 深底（RGB 27,31,34）
 	darkEditBg = uint32(0x00302A26)
 	darkText   = uint32(0x00F0F0F0)
 	darkMuted  = uint32(0x00909090)
 	darkAccent = uint32(0x00B85A2A) // 高亮选中（RGB 42,90,184）
 	darkRowSel = uint32(0x00402F1F)
+	darkPin    = uint32(0x002FA7F2) // 置顶角标（蓝）
 
-	// light 浅色主题。
 	lightBg     = uint32(0x00F8F8FA) // 浅底（RGB 250,248,248）
 	lightEditBg = uint32(0x00ECEDF0)
 	lightText   = uint32(0x00222B3A)
 	lightMuted  = uint32(0x00909AA8)
-	lightAccent = uint32(0x00B85A2A) // 选中蓝（RGB 42,90,184）
+	lightAccent = uint32(0x00B85A2A)
 	lightRowSel = uint32(0x00E3EDFC)
+	lightPin    = uint32(0x002FA7F2) // 置顶角标（蓝）
 )
 
 // panelTheme 是当前生效的一套配色。
 type panelTheme struct {
-	bg, editBg, text, muted, accent, rowSel uint32
+	bg, editBg, text, muted, accent, rowSel, pin uint32
 }
 
 // currentTheme 按系统明暗选择配色。每次 paint 时读取，面板弹出即跟随
-// 当前系统主题（无需监听 WM_SETTINGCHANGE，瞬态窗口在弹出时会重新读到）。
+// 当前系统主题。
 func currentTheme() panelTheme {
 	if winui.DarkModeEnabled() {
-		return panelTheme{darkBg, darkEditBg, darkText, darkMuted, darkAccent, darkRowSel}
+		return panelTheme{darkBg, darkEditBg, darkText, darkMuted, darkAccent, darkRowSel, darkPin}
 	}
-	return panelTheme{lightBg, lightEditBg, lightText, lightMuted, lightAccent, lightRowSel}
+	return panelTheme{lightBg, lightEditBg, lightText, lightMuted, lightAccent, lightRowSel, lightPin}
 }
 
 // 面板消息。
@@ -83,6 +82,8 @@ const (
 	lnWmLButtonDown = 0x0201
 	lnWmActivate    = 0x0006
 	lnWmMouseMove   = 0x0200
+	lnWmMouseWheel  = 0x020A
+	lnWmRButtonDown = 0x0204
 
 	lnVkReturn = 0x0D
 	lnVkEscape = 0x1B
@@ -106,10 +107,13 @@ type panelState struct {
 
 	// query/sel/rows 是窗口线程拥有的 UI 状态（消息循环独占访问），
 	// 但 present()/hide() 从调用方 goroutine 进来，故仍用 mu 保护。
-	query string
-	sel   int
-	rows  []command
-	max   int
+	query   string
+	sel     int
+	rows    []command
+	max     int
+	ranks   *rankStore
+	offsetX int32 // 横向滚动偏移（像素），越界时 clamp
+	wheel   int   // 滚轮增量累加器
 
 	font   uintptr
 	fontMx sync.Mutex
@@ -129,10 +133,7 @@ func (p *panelState) isVisible() bool {
 }
 
 // present pops the panel with the current command table.
-//
-// The window is created inside the locked goroutine on first call; subsequent
-// calls merely re-show it (and refresh the query).
-func (p *panelState) present(cmds []command, max int) {
+func (p *panelState) present(cmds []command, max int, ranks *rankStore) {
 	p.mu.Lock()
 	closed := p.closed
 	p.mu.Unlock()
@@ -147,10 +148,8 @@ func (p *panelState) present(cmds []command, max int) {
 	if first {
 		ready := make(chan error, 1)
 		go func() {
-			// 窗口属于创建它的线程；为整个生命周期锁住线程（消息只能被
-			// 所属线程取到，DestroyWindow 亦然），与项目其它窗口一致。
 			runtime.LockOSThread()
-			p.run(cmds, max, ready)
+			p.run(cmds, max, ranks, ready)
 		}()
 		select {
 		case err := <-ready:
@@ -165,12 +164,12 @@ func (p *panelState) present(cmds []command, max int) {
 	}
 
 	p.mu.Lock()
-	// 首次显示：空查询先按默认排序截断出候选，并选中首行——
-	// 面板一弹出来就有高亮的第一个可执行项（dtools 式），而不是空列表。
-	p.rows = search(cmds, "", max)
+	p.rows = search(cmds, "", max, ranks)
 	p.max = max
+	p.ranks = ranks
 	p.query = ""
 	p.sel = 0
+	p.offsetX = 0
 	p.visible = true
 	win := p.win
 	p.mu.Unlock()
@@ -202,17 +201,14 @@ func (p *panelState) close() {
 	win := p.win
 	p.mu.Unlock()
 	if win != nil {
-		// PostMessage 跨线程安全；WM_CLOSE 在窗口线程里 Destroy。
 		winui.PostMessage(win.HWND(), winui.WM_CLOSE, 0, 0)
 	}
 }
 
 // run creates the window and pumps messages for the panel's whole life.
-func (p *panelState) run(cmds []command, max int, ready chan<- error) {
+func (p *panelState) run(cmds []command, max int, ranks *rankStore, ready chan<- error) {
 	winui.SetDPIAware()
 
-	// 无边框 + 置顶 + 工具窗（不进任务栏/Alt+Tab——面板是瞬态的）。
-	// WS_EX_NOACTIVATE 绝不能加：面板必须能抢焦点接收键盘输入。
 	win, err := winui.NewWindow("GoBoxLauncher", winui.WS_POPUP,
 		winui.WS_EX_TOPMOST|winui.WS_EX_TOOLWINDOW, winui.Invalid)
 	if err != nil {
@@ -223,17 +219,17 @@ func (p *panelState) run(cmds []command, max int, ready chan<- error) {
 
 	p.mu.Lock()
 	p.win = win
-	p.rows = search(cmds, "", max)
+	p.rows = search(cmds, "", max, ranks)
 	p.max = max
+	p.ranks = ranks
 	p.font = winui.NewFont("Microsoft YaHei", panelFontPt, winui.FW_NORMAL)
 	p.mu.Unlock()
 
-	p.centerAndSize(len(search(cmds, "", max)))
+	p.centerAndSize(len(search(cmds, "", max, ranks)))
 	ready <- nil
 
 	winui.MessageLoop(nil)
 
-	// 循环退出（WM_DESTROY）：释放字体并清引用。
 	p.mu.Lock()
 	if p.font != 0 {
 		winui.DeleteObject(p.font)
@@ -244,40 +240,49 @@ func (p *panelState) run(cmds []command, max int, ready chan<- error) {
 	p.mu.Unlock()
 }
 
-// gridMetrics 由磁贴总数与屏幕宽度算出面板的像素宽高与行列数。
-//
-// 列数不再是固定的 gridCols，而是「屏幕横向 3/5 能容纳多少个放大后的磁贴」。
-// 这样面板总宽恒定占屏宽 60%，磁贴保持放大后的可读尺寸，多余条目自动换行
-// 加高——既不小到看不清，也不会把整屏占满。
-func gridMetrics(n int, screenW int32) (cols, rows, w, h int32) {
+// panelSize 由候选数与屏幕宽度算出面板的像素宽高。单行布局：高度恒定
+// （搜索框 + 一行磁贴），宽度固定为屏幕 3/5。
+func panelSize(n int, screenW int32) (w, h int32) {
 	if n < 1 {
 		n = 1
 	}
-	cols = gridColsFor(n, screenW)
-	rows = (int32(n) + cols - 1) / cols
-	w = gridPadX*2 + cols*gridTileW + (cols-1)*gridGap
-	h = gridPadY*2 + panelEditH + rows*gridTileH + (rows-1)*gridGap
+	w = screenW * 3 / 5
+	h = gridPadY*2 + panelEditH + gridTileH
 	return
 }
 
-// gridColsFor 计算给定条目数下每行的磁贴列数（以屏幕宽度为界）。
-func gridColsFor(n int, screenW int32) int32 {
-	// 面板最大宽度：屏幕的 3/5。
-	maxW := screenW * 3 / 5
-	cols := (maxW - gridPadX*2 + gridGap) / (gridTileW + gridGap)
-	if cols < 1 {
-		cols = 1
+// contentWidth 返回全部磁贴铺开后的内容总宽（含两侧内边距）。
+func contentWidth(n int) int32 {
+	return gridPadX*2 + int32(n)*gridTileW + (int32(n)-1)*gridGap
+}
+
+// maxOffsetX 返回横向滚动上限（内容超出面板的部分）。内容不足一屏时为 0。
+func (p *panelState) maxOffsetX() int32 {
+	p.mu.Lock()
+	n := len(p.rows)
+	p.mu.Unlock()
+	sw, _ := winui.ScreenSize()
+	w, _ := panelSize(n, sw)
+	extra := contentWidth(n) - w
+	if extra < 0 {
+		extra = 0
 	}
-	if int32(n) < cols {
-		cols = int32(n)
+	return extra
+}
+
+// clampOffset 把横向偏移限制在 [0, maxOffset] 内。
+func (p *panelState) clampOffset() {
+	m := p.maxOffsetX()
+	if p.offsetX < 0 {
+		p.offsetX = 0
 	}
-	return cols
+	if p.offsetX > m {
+		p.offsetX = m
+	}
 }
 
 // centerAndSize positions the panel centred horizontally and slightly above
-// the vertical centre of the primary display (the dtools/Spotlight feel:
-// the eye's focal point sits in the upper third, not the exact middle).
-// 宽高随磁贴行列数伸缩，屏幕不会被一整列占满。
+// the vertical centre of the primary display.
 func (p *panelState) centerAndSize(n int) {
 	p.mu.Lock()
 	max := p.max
@@ -290,14 +295,12 @@ func (p *panelState) centerAndSize(n int) {
 	}
 
 	sw, sh := winui.ScreenSize()
-	_, _, pw, ph := gridMetrics(n, sw)
+	pw, ph := panelSize(n, sw)
 
-	// 水平居中：左右对称。
 	x := (sw - pw) / 2
 	if x < 0 {
 		x = 0
 	}
-	// 垂直：以屏幕中心为基准，上移 18% 的屏幕高度，落在视觉黄金区。
 	y := (sh-ph)/2 - sh*18/100
 	if y < 0 {
 		y = 0
@@ -321,8 +324,6 @@ func (p *panelState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr
 	case winui.WM_ERASEBKGND:
 		return 1, true
 	case lnWmActivate:
-		// 失焦自动隐藏：wParam 低字为 WA_INACTIVE(0) 时面板失去前台。
-		// 这是"弹出即抢焦点、点别处即消失"体验的另一半。
 		if int16(wParam&0xFFFF) == 0 {
 			p.hide()
 			return 0, true
@@ -337,8 +338,14 @@ func (p *panelState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr
 	case lnWmLButtonDown:
 		p.onRowClick(hwnd, int32(int16(lParam&0xFFFF)), int32(int16(lParam>>16)))
 		return 0, true
+	case lnWmRButtonDown:
+		p.onRowMenu(hwnd, int32(int16(lParam&0xFFFF)), int32(int16(lParam>>16)))
+		return 0, true
 	case lnWmMouseMove:
 		p.onMouseMove(hwnd, int32(int16(lParam&0xFFFF)), int32(int16(lParam>>16)))
+		return 0, true
+	case lnWmMouseWheel:
+		p.onWheel(hwnd, wParam)
 		return 0, true
 	case winui.WM_CLOSE, winui.WM_DESTROY:
 		p.mu.Lock()
@@ -353,20 +360,13 @@ func (p *panelState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr
 }
 
 // onKey handles navigation keys; printable input arrives via WM_CHAR.
-// 二维网格：左右前后移动，上下跨列（uTools 同款键位）。
-// 上下移动的步长 = 当前列数（按屏幕宽度动态计算）。
+// 单行布局：左右前后移动，上下无操作。
 func (p *panelState) onKey(hwnd winui.HWND, vk int) {
 	switch vk {
 	case lnVkEscape:
 		p.hide()
 	case lnVkReturn:
 		p.execute(hwnd)
-	case lnVkDown:
-		p.moveSel(int(p.currentCols()))
-		winui.InvalidateRect(hwnd)
-	case lnVkUp:
-		p.moveSel(-int(p.currentCols()))
-		winui.InvalidateRect(hwnd)
 	case lnVkRight:
 		p.moveSel(1)
 		winui.InvalidateRect(hwnd)
@@ -376,18 +376,37 @@ func (p *panelState) onKey(hwnd winui.HWND, vk int) {
 	}
 }
 
-// currentCols 返回当前候选列表的列数（与 centerAndSize/paint 一致）。
-func (p *panelState) currentCols() int32 {
+// onWheel 把鼠标滚轮映射为横向滚动：向上滚（delta>0）看左侧，向下滚看右侧。
+// 高分辨率滚轮的细小增量累加后按整格（WHEEL_DELTA）折算成磁贴列宽。
+func (p *panelState) onWheel(hwnd winui.HWND, wParam uintptr) {
+	delta := int(winui.GET_WHEEL_DELTA_WPARAM(wParam))
+	step := int(gridTileW + gridGap)
+
 	p.mu.Lock()
-	n := len(p.rows)
+	p.wheel += delta
+	// 每累积 120（一物理格）横向移动一个磁贴宽度。
+	for p.wheel >= 120 {
+		p.offsetX -= int32(step)
+		p.wheel -= 120
+	}
+	for p.wheel <= -120 {
+		p.offsetX += int32(step)
+		p.wheel += 120
+	}
+	changed := false
+	before := p.offsetX
+	p.clampOffset()
+	changed = before != p.offsetX
 	p.mu.Unlock()
-	sw, _ := winui.ScreenSize()
-	return gridColsFor(n, sw)
+
+	if changed {
+		winui.InvalidateRect(hwnd)
+	}
 }
 
 // onChar appends/backspaces the query and refreshes candidates.
 func (p *panelState) onChar(hwnd winui.HWND, r rune) {
-	if r == lnVkBack { // WM_CHAR 的退格是 0x08
+	if r == lnVkBack {
 		p.mu.Lock()
 		q := []rune(p.query)
 		if len(q) > 0 {
@@ -437,11 +456,14 @@ func (p *panelState) refreshRows() {
 	p.mu.Lock()
 	q := p.query
 	max := p.max
+	ranks := p.ranks
 	p.mu.Unlock()
 
-	rows := search(cmds, q, max)
+	rows := search(cmds, q, max, ranks)
 	p.mu.Lock()
 	p.rows = rows
+	p.offsetX = 0
+	p.wheel = 0
 	if p.sel >= len(rows) {
 		p.sel = len(rows) - 1
 	}
@@ -452,40 +474,37 @@ func (p *panelState) refreshRows() {
 	p.centerAndSize(len(rows))
 }
 
-// tileAt 把客户区坐标映射到磁贴下标（未命中返回 -1）。
+// tileAt 把客户区坐标映射到磁贴下标（未命中返回 -1）。考虑横向滚动偏移：
+// 磁贴 i 的客户区左边缘 = gridPadX - offsetX + i*(gridTileW+gridGap)。
 func (p *panelState) tileAt(x, y int32) int {
 	p.mu.Lock()
 	n := len(p.rows)
+	offsetX := p.offsetX
 	p.mu.Unlock()
 	if n == 0 {
 		return -1
 	}
-	sw, _ := winui.ScreenSize()
-	cols := gridColsFor(n, sw)
-	// 先判断行带：磁贴在搜索框下方的网格区。
-	rowTop0 := gridPadY + panelEditH
-	if y < rowTop0 {
+	rowTop := gridPadY + panelEditH
+	if y < rowTop || y >= rowTop+gridTileH {
 		return -1
 	}
-	row := (y - rowTop0) / (gridTileH + gridGap)
-	col := (x - gridPadX) / (gridTileW + gridGap)
-	if col < 0 || col >= cols || x < gridPadX {
+	if x < gridPadX {
 		return -1
 	}
-	// 行内偏移：磁贴之间是 gap，落进 gap 算未命中。
-	cellX := x - gridPadX - col*(gridTileW+gridGap)
-	cellY := y - rowTop0 - row*(gridTileH+gridGap)
-	if cellX >= gridTileW || cellY >= gridTileH {
+	cell := x - gridPadX + offsetX
+	col := cell / (gridTileW + gridGap)
+	if col < 0 || int(col) >= n {
 		return -1
 	}
-	idx := int(row*cols + col)
-	if idx >= n {
+	// 落进磁贴之间的 gap 算未命中。
+	cellX := cell - col*(gridTileW+gridGap)
+	if cellX >= gridTileW {
 		return -1
 	}
-	return idx
+	return int(col)
 }
 
-// onMouseMove 让悬停磁贴跟随高亮（dtools 式的鼠标/键盘双轨选择）。
+// onMouseMove 让悬停磁贴跟随高亮。
 func (p *panelState) onMouseMove(hwnd winui.HWND, x, y int32) {
 	idx := p.tileAt(x, y)
 	if idx < 0 {
@@ -497,6 +516,58 @@ func (p *panelState) onMouseMove(hwnd winui.HWND, x, y int32) {
 	p.mu.Unlock()
 	if changed {
 		winui.InvalidateRect(hwnd)
+	}
+}
+
+// onRowMenu 弹右键菜单：命中磁贴时提供"固定到前方/取消固定"，空白处提供
+// "清空排行榜"。菜单是瞬态的，返回后立刻按选择行动。
+func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
+	idx := p.tileAt(x, y)
+	p.mu.Lock()
+	var sel command
+	have := idx >= 0 && idx < len(p.rows)
+	if have {
+		sel = p.rows[idx]
+	}
+	ranks := p.ranks
+	p.mu.Unlock()
+
+	var items []winui.MenuItem
+	if have {
+		pinned := false
+		if ranks != nil {
+			_, pinned = ranks.get(sel.key())
+		}
+		if pinned {
+			items = append(items, winui.MenuItem{Text: "取消固定到前方", Checked: true})
+		} else {
+			items = append(items, winui.MenuItem{Text: "固定到前方"})
+		}
+		items = append(items, winui.MenuItem{Separator: true})
+	}
+	items = append(items, winui.MenuItem{Text: "清空排行榜"})
+
+	choice := winui.PopupMenu(hwnd, items)
+	switch {
+	case have && choice == 0:
+		if ranks != nil {
+			_, pinned := ranks.get(sel.key())
+			ranks.setPin(sel.key(), !pinned)
+			p.refreshRows()
+			winui.InvalidateRect(hwnd)
+		}
+	case have && choice == 2:
+		if ranks != nil {
+			ranks.clear()
+			p.refreshRows()
+			winui.InvalidateRect(hwnd)
+		}
+	case !have && choice == 0:
+		if ranks != nil {
+			ranks.clear()
+			p.refreshRows()
+			winui.InvalidateRect(hwnd)
+		}
 	}
 }
 
@@ -512,6 +583,7 @@ func (p *panelState) execute(hwnd winui.HWND) {
 	}
 	c := rows[sel]
 	p.hide()
+	p.feat.markUsed(c)
 	go func() {
 		if err := p.feat.run(c); err != nil {
 			p.ctx.Logger.Warn("快捷面板执行失败", "module", moduleID,
@@ -533,17 +605,7 @@ func (p *panelState) onRowClick(hwnd winui.HWND, x, y int32) {
 	p.execute(hwnd)
 }
 
-// tileRect returns the client rectangle of the i-th candidate tile in grid
-// coordinates (row-major).
-func tileRect(i, cols int32) winui.Rect {
-	col := i % cols
-	row := i / cols
-	left := gridPadX + col*(gridTileW+gridGap)
-	top := gridPadY + panelEditH + row*(gridTileH+gridGap)
-	return winui.Rect{Left: left, Top: top, Right: left + gridTileW, Bottom: top + gridTileH}
-}
-
-// paint renders the query box and the tile grid.
+// paint renders the query box and the single-row tile strip.
 func (p *panelState) paint(hwnd winui.HWND) {
 	c, ps := winui.BeginPaint(hwnd)
 	if c.DC() == 0 {
@@ -559,29 +621,35 @@ func (p *panelState) paint(hwnd winui.HWND) {
 	rows := append([]command(nil), p.rows...)
 	sel := p.sel
 	font := p.font
+	offsetX := p.offsetX
+	ranks := p.ranks
 	p.mu.Unlock()
 
 	c.Fill(rect, theme.bg)
 
-	// 查询框。空查询画灰色占位符；磁贴列表永远要画。
+	// 查询框。
 	editRect := winui.Rect{Left: gridPadX, Top: 6, Right: rect.Right - gridPadX, Bottom: panelEditH - 4}
 	c.Fill(editRect, theme.editBg)
 	restore := c.SelectFont(font)
 	if query == "" {
-		c.DrawText("搜索命令或网址…", winui.Rect(editRect).Inset(8), theme.muted,
+		c.DrawText("搜索命令或网址…", editRect.Inset(8), theme.muted,
 			winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 	} else {
-		c.DrawText(query, winui.Rect(editRect).Inset(8), theme.text,
+		c.DrawText(query, editRect.Inset(8), theme.text,
 			winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 	}
 	restore()
 
-	// 磁贴网格：横向排列、自动换行。每个磁贴 = 图标 + 标签。
-	// 列数按屏幕宽度动态计算（与 centerAndSize 一致）。
-	sw, _ := winui.ScreenSize()
-	cols := gridColsFor(len(rows), sw)
+	// 单行磁贴条：横向排列，超出可视区的部分被裁剪（不绘制），滚轮横向滚动。
+	rowTop := gridPadY + panelEditH
+	// 可视右边界（面板宽）。
+	viewRight := rect.Right
 	for i, r := range rows {
-		tr := tileRect(int32(i), cols)
+		left := gridPadX - offsetX + int32(i)*(gridTileW+gridGap)
+		if left+gridTileW <= gridPadX || left >= viewRight {
+			continue // 完全在可视区外
+		}
+		tr := winui.Rect{Left: left, Top: rowTop, Right: left + gridTileW, Bottom: rowTop + gridTileH}
 		fill := theme.bg
 		if i == sel {
 			fill = theme.rowSel
@@ -592,7 +660,6 @@ func (p *panelState) paint(hwnd winui.HWND) {
 		}
 
 		// 图标区：固定 glyph 边长（iconGlyphSide），不随 panelScale 放大。
-		// 位置仍随放大后的磁贴居中，保证图标居中观感。
 		iconBox := winui.Rect{
 			Left:   tr.Left + (tr.Width()-iconGlyphSide)/2,
 			Top:    tr.Top + (tr.Height()*2/5 - iconGlyphSide/2),
@@ -601,11 +668,19 @@ func (p *panelState) paint(hwnd winui.HWND) {
 		}
 		drawTileIcon(c, iconBox, r.Icon, theme.text)
 
-		// 标签：图标下方单行，超长截断。字号随 panelScale 放大。
+		// 标签：图标下方单行，超长截断。
 		restore2 := c.SelectFont(font)
 		c.DrawText(r.Label, winui.Rect{Left: tr.Left + 8, Top: tr.Top + tr.Height()*2/3, Right: tr.Right - 8, Bottom: tr.Bottom - 8},
 			theme.text, winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX|winui.DT_END_ELLIPSIS)
 		restore2()
+
+		// 置顶角标（右上角）：固定到前方的候选带图钉标识。
+		if ranks != nil {
+			if _, pinned := ranks.get(r.key()); pinned {
+				badge := winui.Rect{Left: tr.Right - 16, Top: tr.Top + 4, Right: tr.Right - 4, Bottom: tr.Top + 16}
+				drawPinBadge(c, badge, theme.pin)
+			}
+		}
 	}
 }
 

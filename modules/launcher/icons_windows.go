@@ -136,3 +136,19 @@ func fillCircle(c *winui.Canvas, cx, cy, rad int32, color uint32) {
 	}
 	c.FillPolygon(pts, color)
 }
+
+// drawPinBadge 画"固定到前方"的置顶角标：一个实心圆 + 向下短线（图钉意象）。
+// 画在磁贴右上角，用于区分被置顶的候选。
+func drawPinBadge(c *winui.Canvas, box winui.Rect, color uint32) {
+	if c == nil || box.Width() <= 4 || box.Height() <= 4 {
+		return
+	}
+	cx := (box.Left + box.Right) / 2
+	cy := (box.Top + box.Bottom) / 2
+	rad := box.Width() / 3
+	if rad < 1 {
+		rad = 1
+	}
+	fillCircle(c, cx, cy-rad/2, rad, color)
+	c.Line(cx, cy+rad/2, cx, box.Bottom, color, 1)
+}

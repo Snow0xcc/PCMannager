@@ -53,6 +53,8 @@ type Feature struct {
 	panel *panelState
 	// commands is the searchable action table (rebuilt on Start).
 	commands []command
+	// ranks 持久化候选的打开次数与置顶标记，驱动搜索排序与右键"固定到前方"。
+	ranks *rankStore
 }
 
 // NewFeature constructs the launcher module.
@@ -88,6 +90,8 @@ func (f *Feature) Actions() []core.Action {
 	return []core.Action{
 		{ID: "open_panel", Label: "打开快捷面板", Kind: core.ActionOpen,
 			Description: "立即弹出快捷面板（等同按下热键）"},
+		{ID: "clear_ranks", Label: "清空候选排行榜", Kind: core.ActionNormal,
+			Description: "重置所有候选的打开次数与置顶标记"},
 	}
 }
 
@@ -114,6 +118,8 @@ func (f *Feature) Start() error {
 	f.mu.Lock()
 	if !f.running {
 		f.commands = buildCommands(f.ctx)
+		f.ranks = newRankStore(f.ctx.DataDir)
+		f.ranks.load()
 	}
 	f.running = true
 	f.mu.Unlock()
@@ -196,8 +202,28 @@ func (f *Feature) showPanel() error {
 		f.panel = p
 		f.mu.Unlock()
 	}
-	p.present(cmds, max)
+	p.present(cmds, max, f.ranks)
 	return nil
+}
+
+// markUsed 累加一次命令的使用计数，供 execute 成功后调用以影响后续排序。
+func (f *Feature) markUsed(c command) {
+	f.mu.Lock()
+	r := f.ranks
+	f.mu.Unlock()
+	if r != nil {
+		r.bump(c.key())
+	}
+}
+
+// setCommandPin 设置/取消一条命令的"固定到前方"标记。
+func (f *Feature) setCommandPin(c command, on bool) {
+	f.mu.Lock()
+	r := f.ranks
+	f.mu.Unlock()
+	if r != nil {
+		r.setPin(c.key(), on)
+	}
 }
 
 // RunAction executes a declared panel action.
@@ -205,6 +231,14 @@ func (f *Feature) RunAction(id string, params map[string]string) error {
 	switch id {
 	case "open_panel":
 		return f.OpenUI()
+	case "clear_ranks":
+		f.mu.Lock()
+		r := f.ranks
+		f.mu.Unlock()
+		if r != nil {
+			r.clear()
+		}
+		return nil
 	}
 	return fmt.Errorf("launcher: 未知动作 %s", id)
 }

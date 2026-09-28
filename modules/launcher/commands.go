@@ -47,6 +47,20 @@ func (c command) score(q string) int {
 	return -1
 }
 
+// key 是命令在排行榜中的稳定标识：模块动作用 <module>/<action>，网页捷径用
+// url:<地址>，模块入口用 <module>。跨进程重启后依然一致，使用量/置顶才能持久化。
+func (c command) key() string {
+	switch c.Kind {
+	case "action":
+		return c.ModuleID + "/" + c.ActionID
+	case "open":
+		return c.ModuleID
+	case "url":
+		return "url:" + c.URL
+	}
+	return c.Label
+}
+
 // buildCommands assembles the searchable table from live modules plus a set of
 // built-in web shortcuts.
 //
@@ -201,26 +215,38 @@ func (f *Feature) guarded(id string, fn func() error) (err error) {
 }
 
 // search returns the commands matching q, best first, capped at max.
-func search(cmds []command, q string, max int) []command {
+//
+// 排序优先级：置顶（固定到前方）永远最前，其次打开次数降序，最后才是文本
+// 匹配度（前缀 > 包含 > 提示命中）。空查询同样按此排序，只是不做匹配过滤。
+func search(cmds []command, q string, max int, ranks *rankStore) []command {
 	q = strings.ToLower(strings.TrimSpace(q))
-	if q == "" {
-		// 空查询给前 max 条（已按字母序），面板一弹出来就有可选项。
-		if len(cmds) > max {
-			return append([]command(nil), cmds[:max]...)
-		}
-		return append([]command(nil), cmds...)
-	}
+
 	type scored struct {
-		c command
-		s int
+		c    command
+		s    int
+		pin  bool
+		uses int
 	}
 	var hits []scored
 	for _, c := range cmds {
-		if s := c.score(q); s >= 0 {
-			hits = append(hits, scored{c, s})
+		if q != "" && c.score(q) < 0 {
+			continue
 		}
+		uses, pin := 0, false
+		if ranks != nil {
+			uses, pin = ranks.get(c.key())
+		}
+		hits = append(hits, scored{c: c, s: c.score(q), pin: pin, uses: uses})
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].s < hits[j].s })
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].pin != hits[j].pin {
+			return hits[i].pin
+		}
+		if hits[i].uses != hits[j].uses {
+			return hits[i].uses > hits[j].uses
+		}
+		return hits[i].s < hits[j].s
+	})
 	if len(hits) > max {
 		hits = hits[:max]
 	}
