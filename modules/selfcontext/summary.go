@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+// vlmTimeout 是单次视觉解析请求的上限。本地 LM Studio 首次加载模型可能慢，
+// 给足 60s；超时的那次采样直接跳过（下个周期再来）。定义在无 build tag 的
+// 本文件里，因为 summary.go（跨平台）也用它——若放在 screen_windows.go 的
+// windows 分支里，非 Windows 交叉编译会 undefined。
+const vlmTimeout = 60 * time.Second
+
 // recordSummary performs the screen-capture → VLM → summary pipeline for one
 // sample and attaches the result to the matching entry.
 //

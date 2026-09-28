@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/kbinani/screenshot"
 )
@@ -25,10 +24,6 @@ const (
 
 	// screenJPEGQuality 与画面可辨认度的平衡点；再低会出现可见块效应。
 	screenJPEGQuality = 62
-
-	// vlmTimeout 是单次视觉解析请求的上限。本地 LM Studio 首次加载模型可能
-	// 慢，给足 60s；超时的那次采样直接跳过（下个周期再来）。
-	vlmTimeout = 60 * time.Second
 
 	// vlmPrompt 要求模型输出一句话场景描述。提示词刻意要求"不引用屏幕上的
 	// 个人敏感字样"，这是隐私边界的一部分（与 optPauseOnLock 同一立场）。
