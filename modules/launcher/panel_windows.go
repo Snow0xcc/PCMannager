@@ -14,25 +14,67 @@ import (
 
 // 面板几何（设备像素）。uTools 式图标网格：磁贴横向排列、自动换行，
 // 面板宽度只随列数伸缩，不再把整屏占满。
+//
+// panelScale 是全局放大系数：把面板整体（磁贴、间距、内边距、搜索框）
+// 同比例放大 4 倍，更醒目易读。唯一不随它缩放的是搜索结果图标的 glyph
+// 尺寸（iconGlyphSide）——保持原来的绝对值，避免矢量图标被放大后线条
+// 过粗、观感臃肿。
 const (
-	// 网格参数。gridCols 用 int32 使网格几何计算全程无类型转换。
-	gridCols  int32 = 5  // 每行磁贴数（uTools 默认 5 列）
-	gridTileW int32 = 96 // 磁贴宽
-	gridTileH int32 = 84 // 磁贴高（图标 48 + 标签）
-	gridGap   int32 = 8  // 磁贴间距
-	gridPadX  int32 = 16 // 面板左右内边距
-	gridPadY  int32 = 10 // 面板上下内边距
+	// 网格参数（int32，几何计算全程无类型转换）。
+	// 列数不再固定，按屏幕宽度动态计算（见 gridColsFor）；
+	// 磁贴/间距/内边距/搜索框统一乘 panelScale 放大。
+	panelScale int32 = 4 // 整体放大倍数
 
-	panelEditH int32 = 48 // 顶部搜索框高度
+	gridTileW int32 = 96 * panelScale // 磁贴宽（放大后 384）
+	gridTileH int32 = 84 * panelScale // 磁贴高（放大后 336）
+	gridGap   int32 = 8 * panelScale  // 磁贴间距
+	gridPadX  int32 = 16 * panelScale // 面板左右内边距
+	gridPadY  int32 = 10 * panelScale // 面板上下内边距
 
-	// 颜色（COLORREF 0x00BBGGRR）。
-	panelBg     = 0x00221F1B // 深底（RGB 27,31,34）
-	panelEditBg = 0x00302A26
-	panelText   = 0x00F0F0F0
-	panelMuted  = 0x00909090
-	panelAccent = 0x00B85A2A // 高亮选中（RGB 42,90,184）
-	panelRowSel = 0x00402F1F
+	panelEditH int32 = 48 * panelScale // 顶部搜索框高度
+
+	// iconGlyphSide 是搜索结果图标的固定绘制边长，不随 panelScale 放大。
+	// 它是原 84px 磁贴下 "84/2-6" 得到的 36px，保持这一绝对值，
+	// 让放大后的面板仍用精致的小图标。
+	iconGlyphSide int32 = 36
+
+	// 面板字号（点），随 panelScale 放大；由 fontSize() 读取。
+	panelFontPt = 12 * panelScale
 )
+
+// 颜色（COLORREF 0x00BBGGRR）。深/浅两套，按系统主题（winui.DarkModeEnabled）
+// 在 paint 时选择；不再是写死的深色。
+var (
+	// dark 深色主题（默认）。
+	darkBg     = uint32(0x00221F1B) // 深底（RGB 27,31,34）
+	darkEditBg = uint32(0x00302A26)
+	darkText   = uint32(0x00F0F0F0)
+	darkMuted  = uint32(0x00909090)
+	darkAccent = uint32(0x00B85A2A) // 高亮选中（RGB 42,90,184）
+	darkRowSel = uint32(0x00402F1F)
+
+	// light 浅色主题。
+	lightBg     = uint32(0x00F8F8FA) // 浅底（RGB 250,248,248）
+	lightEditBg = uint32(0x00ECEDF0)
+	lightText   = uint32(0x00222B3A)
+	lightMuted  = uint32(0x00909AA8)
+	lightAccent = uint32(0x00B85A2A) // 选中蓝（RGB 42,90,184）
+	lightRowSel = uint32(0x00E3EDFC)
+)
+
+// panelTheme 是当前生效的一套配色。
+type panelTheme struct {
+	bg, editBg, text, muted, accent, rowSel uint32
+}
+
+// currentTheme 按系统明暗选择配色。每次 paint 时读取，面板弹出即跟随
+// 当前系统主题（无需监听 WM_SETTINGCHANGE，瞬态窗口在弹出时会重新读到）。
+func currentTheme() panelTheme {
+	if winui.DarkModeEnabled() {
+		return panelTheme{darkBg, darkEditBg, darkText, darkMuted, darkAccent, darkRowSel}
+	}
+	return panelTheme{lightBg, lightEditBg, lightText, lightMuted, lightAccent, lightRowSel}
+}
 
 // 面板消息。
 const (
@@ -183,7 +225,7 @@ func (p *panelState) run(cmds []command, max int, ready chan<- error) {
 	p.win = win
 	p.rows = search(cmds, "", max)
 	p.max = max
-	p.font = winui.NewFont("Microsoft YaHei", 12, winui.FW_NORMAL)
+	p.font = winui.NewFont("Microsoft YaHei", panelFontPt, winui.FW_NORMAL)
 	p.mu.Unlock()
 
 	p.centerAndSize(len(search(cmds, "", max)))
@@ -202,19 +244,34 @@ func (p *panelState) run(cmds []command, max int, ready chan<- error) {
 	p.mu.Unlock()
 }
 
-// gridMetrics 由磁贴总数算出面板的像素宽高与行列数。
-func gridMetrics(n int) (cols, rows, w, h int32) {
+// gridMetrics 由磁贴总数与屏幕宽度算出面板的像素宽高与行列数。
+//
+// 列数不再是固定的 gridCols，而是「屏幕横向 3/5 能容纳多少个放大后的磁贴」。
+// 这样面板总宽恒定占屏宽 60%，磁贴保持放大后的可读尺寸，多余条目自动换行
+// 加高——既不小到看不清，也不会把整屏占满。
+func gridMetrics(n int, screenW int32) (cols, rows, w, h int32) {
 	if n < 1 {
 		n = 1
 	}
-	cols = gridCols
-	if int32(n) < cols {
-		cols = int32(n)
-	}
+	cols = gridColsFor(n, screenW)
 	rows = (int32(n) + cols - 1) / cols
 	w = gridPadX*2 + cols*gridTileW + (cols-1)*gridGap
 	h = gridPadY*2 + panelEditH + rows*gridTileH + (rows-1)*gridGap
 	return
+}
+
+// gridColsFor 计算给定条目数下每行的磁贴列数（以屏幕宽度为界）。
+func gridColsFor(n int, screenW int32) int32 {
+	// 面板最大宽度：屏幕的 3/5。
+	maxW := screenW * 3 / 5
+	cols := (maxW - gridPadX*2 + gridGap) / (gridTileW + gridGap)
+	if cols < 1 {
+		cols = 1
+	}
+	if int32(n) < cols {
+		cols = int32(n)
+	}
+	return cols
 }
 
 // centerAndSize positions the panel centred horizontally and slightly above
@@ -231,9 +288,10 @@ func (p *panelState) centerAndSize(n int) {
 	if n < 1 {
 		n = 1
 	}
-	_, _, pw, ph := gridMetrics(n)
 
 	sw, sh := winui.ScreenSize()
+	_, _, pw, ph := gridMetrics(n, sw)
+
 	// 水平居中：左右对称。
 	x := (sw - pw) / 2
 	if x < 0 {
@@ -296,6 +354,7 @@ func (p *panelState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr
 
 // onKey handles navigation keys; printable input arrives via WM_CHAR.
 // 二维网格：左右前后移动，上下跨列（uTools 同款键位）。
+// 上下移动的步长 = 当前列数（按屏幕宽度动态计算）。
 func (p *panelState) onKey(hwnd winui.HWND, vk int) {
 	switch vk {
 	case lnVkEscape:
@@ -303,10 +362,10 @@ func (p *panelState) onKey(hwnd winui.HWND, vk int) {
 	case lnVkReturn:
 		p.execute(hwnd)
 	case lnVkDown:
-		p.moveSel(int(gridCols))
+		p.moveSel(int(p.currentCols()))
 		winui.InvalidateRect(hwnd)
 	case lnVkUp:
-		p.moveSel(-int(gridCols))
+		p.moveSel(-int(p.currentCols()))
 		winui.InvalidateRect(hwnd)
 	case lnVkRight:
 		p.moveSel(1)
@@ -315,6 +374,15 @@ func (p *panelState) onKey(hwnd winui.HWND, vk int) {
 		p.moveSel(-1)
 		winui.InvalidateRect(hwnd)
 	}
+}
+
+// currentCols 返回当前候选列表的列数（与 centerAndSize/paint 一致）。
+func (p *panelState) currentCols() int32 {
+	p.mu.Lock()
+	n := len(p.rows)
+	p.mu.Unlock()
+	sw, _ := winui.ScreenSize()
+	return gridColsFor(n, sw)
 }
 
 // onChar appends/backspaces the query and refreshes candidates.
@@ -392,10 +460,8 @@ func (p *panelState) tileAt(x, y int32) int {
 	if n == 0 {
 		return -1
 	}
-	cols := gridCols
-	if int32(n) < cols {
-		cols = int32(n)
-	}
+	sw, _ := winui.ScreenSize()
+	cols := gridColsFor(n, sw)
 	// 先判断行带：磁贴在搜索框下方的网格区。
 	rowTop0 := gridPadY + panelEditH
 	if y < rowTop0 {
@@ -485,6 +551,8 @@ func (p *panelState) paint(hwnd winui.HWND) {
 	}
 	defer winui.EndPaint(hwnd, ps)
 
+	theme := currentTheme()
+
 	rect := winui.ClientRect(hwnd)
 	p.mu.Lock()
 	query := p.query
@@ -493,57 +561,50 @@ func (p *panelState) paint(hwnd winui.HWND) {
 	font := p.font
 	p.mu.Unlock()
 
-	c.Fill(rect, panelBg)
+	c.Fill(rect, theme.bg)
 
 	// 查询框。空查询画灰色占位符；磁贴列表永远要画。
 	editRect := winui.Rect{Left: gridPadX, Top: 6, Right: rect.Right - gridPadX, Bottom: panelEditH - 4}
-	c.Fill(editRect, panelEditBg)
+	c.Fill(editRect, theme.editBg)
 	restore := c.SelectFont(font)
 	if query == "" {
-		c.DrawText("搜索命令或网址…", winui.Rect(editRect).Inset(8), panelMuted,
+		c.DrawText("搜索命令或网址…", winui.Rect(editRect).Inset(8), theme.muted,
 			winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 	} else {
-		c.DrawText(query, winui.Rect(editRect).Inset(8), panelText,
+		c.DrawText(query, winui.Rect(editRect).Inset(8), theme.text,
 			winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
 	}
 	restore()
 
 	// 磁贴网格：横向排列、自动换行。每个磁贴 = 图标 + 标签。
-	cols := gridCols
-	if int32(len(rows)) < cols {
-		cols = int32(len(rows))
-	}
-	if cols < 1 {
-		cols = 1
-	}
+	// 列数按屏幕宽度动态计算（与 centerAndSize 一致）。
+	sw, _ := winui.ScreenSize()
+	cols := gridColsFor(len(rows), sw)
 	for i, r := range rows {
 		tr := tileRect(int32(i), cols)
-		fill := uint32(panelBg)
+		fill := theme.bg
 		if i == sel {
-			fill = panelRowSel
+			fill = theme.rowSel
 		}
 		c.Fill(tr, fill)
 		if i == sel {
-			c.StrokeRect(tr, panelAccent, 1)
+			c.StrokeRect(tr, theme.accent, 1)
 		}
 
-		// 图标区：tile 上半部居中的方框。
-		iconSide := gridTileH/2 - 6
-		if iconSide > gridTileW-16 {
-			iconSide = gridTileW - 16
-		}
+		// 图标区：固定 glyph 边长（iconGlyphSide），不随 panelScale 放大。
+		// 位置仍随放大后的磁贴居中，保证图标居中观感。
 		iconBox := winui.Rect{
-			Left:   tr.Left + (tr.Width()-iconSide)/2,
-			Top:    tr.Top + 8,
-			Right:  tr.Left + (tr.Width()+iconSide)/2,
-			Bottom: tr.Top + 8 + iconSide,
+			Left:   tr.Left + (tr.Width()-iconGlyphSide)/2,
+			Top:    tr.Top + (tr.Height()*2/5 - iconGlyphSide/2),
+			Right:  tr.Left + (tr.Width()+iconGlyphSide)/2,
+			Bottom: tr.Top + (tr.Height()*2/5 - iconGlyphSide/2) + iconGlyphSide,
 		}
-		drawTileIcon(c, iconBox, r.Icon, panelText)
+		drawTileIcon(c, iconBox, r.Icon, theme.text)
 
-		// 标签：图标下方单行，超长截断。
+		// 标签：图标下方单行，超长截断。字号随 panelScale 放大。
 		restore2 := c.SelectFont(font)
-		c.DrawText(r.Label, winui.Rect{Left: tr.Left + 4, Top: iconBox.Bottom + 2, Right: tr.Right - 4, Bottom: tr.Bottom - 2},
-			panelText, winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX|winui.DT_END_ELLIPSIS)
+		c.DrawText(r.Label, winui.Rect{Left: tr.Left + 8, Top: tr.Top + tr.Height()*2/3, Right: tr.Right - 8, Bottom: tr.Bottom - 8},
+			theme.text, winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX|winui.DT_END_ELLIPSIS)
 		restore2()
 	}
 }

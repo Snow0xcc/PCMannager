@@ -90,39 +90,42 @@ func TestBuildCommandsSkipsDangerous(t *testing.T) {
 	}
 }
 
-// TestGridMetrics 守护网格几何：条目数决定列数（上限 5）与行数，
-// 面板宽度随列数伸缩，而不是固定整屏。
+// TestGridMetrics 守护网格几何：列数按屏幕宽度动态计算（3/5 屏宽），
+// 面板宽度不随条目数固定，而是受限在屏宽 60% 内。
 func TestGridMetrics(t *testing.T) {
+	// 屏幕 2240 宽：3/5 = 1344，磁贴 384 + 间距 32，
+	// 列数 = (1344 - 128 + 32) / (384+32) = 1248/416 = 3 列。
+	const screenW = int32(2240)
+
 	// 1 条 → 1 列 1 行。
-	cols, rows, w, _ := gridMetrics(1)
+	cols, rows, w, _ := gridMetrics(1, screenW)
 	if cols != 1 || rows != 1 {
 		t.Fatalf("gridMetrics(1) = cols=%d rows=%d, 期望 1/1", cols, rows)
 	}
-	// 5 条 → 5 列 1 行。
-	cols, rows, _, _ = gridMetrics(5)
-	if cols != 5 || rows != 1 {
-		t.Fatalf("gridMetrics(5) = cols=%d rows=%d, 期望 5/1", cols, rows)
+	// 3 条 → 3 列 1 行。
+	cols, rows, _, _ = gridMetrics(3, screenW)
+	if cols != 3 || rows != 1 {
+		t.Fatalf("gridMetrics(3) = cols=%d rows=%d, 期望 3/1", cols, rows)
 	}
-	// 6 条 → 5 列 2 行（自动换行）。
-	cols, rows, _, _ = gridMetrics(6)
-	if cols != 5 || rows != 2 {
-		t.Fatalf("gridMetrics(6) = cols=%d rows=%d, 期望 5/2", cols, rows)
+	// 4 条 → 3 列 2 行（自动换行）。
+	cols, rows, _, _ = gridMetrics(4, screenW)
+	if cols != 3 || rows != 2 {
+		t.Fatalf("gridMetrics(4) = cols=%d rows=%d, 期望 3/2", cols, rows)
 	}
-	// 宽度随列数伸缩：5 列的宽度应大于 1 列。
-	_, _, w1, _ := gridMetrics(1)
-	_, _, w5, h6 := gridMetrics(6)
-	if w5 <= w1 {
-		t.Fatalf("5 列宽 %d 应大于 1 列宽 %d", w5, w1)
+	// 面板宽度不得超过屏幕 3/5。
+	_, _, wFull, _ := gridMetrics(9, screenW)
+	if wFull > screenW*3/5 {
+		t.Fatalf("面板宽 %d 超过屏宽 3/5 (%d)", wFull, screenW*3/5)
 	}
-	if h6 <= 0 || w <= 0 {
-		t.Fatalf("尺寸不能非正: w=%d h=%d", w, h6)
+	if w <= 0 {
+		t.Fatalf("尺寸不能非正: w=%d", w)
 	}
 }
 
 // TestTileRectLayout 守护磁贴横向排列：同行相邻磁贴有间距，
-// 第 5 个磁贴换到第 2 行。
+// 超过列数自动换到下一行。
 func TestTileRectLayout(t *testing.T) {
-	const cols = 5
+	const cols = 3
 	t0 := tileRect(0, cols)
 	t1 := tileRect(1, cols)
 	// 同行相邻：t1.Left = t0.Left + tileW + gap。
@@ -132,12 +135,12 @@ func TestTileRectLayout(t *testing.T) {
 	if t1.Top != t0.Top {
 		t.Fatal("同行磁贴应同高")
 	}
-	// 换行：第 5 个磁贴应在第二行。
-	t5 := tileRect(5, cols)
-	if t5.Top != t0.Top+gridTileH+gridGap {
-		t.Fatalf("第 5 个磁贴应换行: top=%d 期望 %d", t5.Top, t0.Top+gridTileH+gridGap)
+	// 换行：第 3 个磁贴应在第二行。
+	t3 := tileRect(3, cols)
+	if t3.Top != t0.Top+gridTileH+gridGap {
+		t.Fatalf("第 3 个磁贴应换行: top=%d 期望 %d", t3.Top, t0.Top+gridTileH+gridGap)
 	}
-	if t5.Left != t0.Left {
+	if t3.Left != t0.Left {
 		t.Fatal("换行后第一列应左对齐")
 	}
 }
