@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
+	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/wailsapp/wails/v2 v2.10.2
 	golang.design/x/clipboard v0.9.0

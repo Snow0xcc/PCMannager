@@ -730,14 +730,32 @@ func (p *panelState) togglePinAt(idx int) {
 
 // editAliases 弹出模态输入框让用户编辑候选的别名/拼音首字母缩写。
 // 多个别名用逗号或空格分隔；清空并确定即删除全部别名。
+// 预填值 = 现有别名 + 自动生成的拼音首字母缩写（用户可增删，最终以确认
+// 内容为准——这样用户既能享受自动缩写，也能改掉多音字误转）。
 // 调用点在窗口线程（右键菜单回调），InputDialog 的嵌套消息循环因此安全。
 func (p *panelState) editAliases(c command) {
 	ranks := p.ranks
 	if ranks == nil || p.win == nil {
 		return
 	}
-	current := strings.Join(ranks.getAliases(c.key()), ", ")
-	value, ok := winui.InputDialog(p.win.HWND(), "编辑关键字", c.Label+" 的搜索关键字（逗号分隔，可用拼音缩写）:", current)
+	saved := ranks.getAliases(c.key())
+	suggest := pinyinAbbr(c.Label)
+	// 预填：现有别名在前，自动缩写去重后附在后面。
+	pre := append([]string(nil), saved...)
+	if suggest != "" {
+		dup := false
+		for _, a := range saved {
+			if strings.EqualFold(a, suggest) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			pre = append(pre, suggest)
+		}
+	}
+
+	value, ok := winui.InputDialog(p.win.HWND(), "编辑关键字", c.Label+" 的搜索关键字（逗号分隔，可用拼音缩写）:", strings.Join(pre, ", "))
 	if !ok {
 		return
 	}
