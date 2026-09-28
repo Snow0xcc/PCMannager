@@ -2,38 +2,80 @@ package updater
 
 import (
 	"encoding/base64"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestProxiedURL 覆盖各 URL 形态：GitHub 域名包装、非 GitHub 原样、空串
-// 原样、已代理幂等、带路径与 query 的完整 URL。
-func TestProxiedURL(t *testing.T) {
+// TestMirrorURL 覆盖各 URL 形态：GitHub 域名包装、非 GitHub 原样、空前缀
+// 直连、空串原样、已代理幂等、带路径与 query 的完整 URL。
+func TestMirrorURL(t *testing.T) {
+	const proxy = "https://ghfast.top/"
 	cases := []struct {
-		in   string
-		want string
+		in     string
+		prefix string
+		want   string
 	}{
 		// api.github.com / github.com 都要包代理。
-		{apiBase, proxyBase + apiBase},
+		{apiBase, proxy, proxy + apiBase},
 		{"https://github.com/Snow0xcc/PCMannager/releases/download/v1.2.3/pcmannager-windows-amd64.exe",
-			proxyBase + "https://github.com/Snow0xcc/PCMannager/releases/download/v1.2.3/pcmannager-windows-amd64.exe"},
-		// 带用户信息/端口的 URL 由 url.Parse 正常处理后仍能包装。
-		{"https://api.github.com/repos/x/y?per_page=1", proxyBase + "https://api.github.com/repos/x/y?per_page=1"},
+			proxy, proxy + "https://github.com/Snow0xcc/PCMannager/releases/download/v1.2.3/pcmannager-windows-amd64.exe"},
+		// 带 query 的完整 URL。
+		{"https://api.github.com/repos/x/y?per_page=1", proxy, proxy + "https://api.github.com/repos/x/y?per_page=1"},
+		// 空前缀 = 直连兜底，原样返回。
+		{apiBase, "", apiBase},
 		// 非 GitHub 域名不碰。
-		{"https://example.com/foo", "https://example.com/foo"},
-		{"https://evilgithub.com/x", "https://evilgithub.com/x"},
-		{"ftp://github.com/x", "ftp://github.com/x"},
+		{"https://example.com/foo", proxy, "https://example.com/foo"},
+		{"https://evilgithub.com/x", proxy, "https://evilgithub.com/x"},
+		{"ftp://github.com/x", proxy, "ftp://github.com/x"},
 		// 空串与垃圾输入原样返回（url.Parse 失败或无 host）。
-		{"", ""},
-		{"not a url", "not a url"},
-		{"/relative/path", "/relative/path"},
-		// 已代理的 URL 再次包装必须幂等。
-		{proxyBase + apiBase, proxyBase + apiBase},
+		{"", proxy, ""},
+		{"not a url", proxy, "not a url"},
+		{"/relative/path", proxy, "/relative/path"},
+		// 已带任一镜像前缀的 URL 再包装必须幂等。
+		{proxy + apiBase, proxy, proxy + apiBase},
+		{"https://ghproxy.net/" + apiBase, proxy, "https://ghproxy.net/" + apiBase},
 	}
 	for _, c := range cases {
-		if got := proxiedURL(c.in); got != c.want {
-			t.Errorf("proxiedURL(%q) = %q, 期望 %q", c.in, got, c.want)
+		if got := mirrorURL(c.in, c.prefix); got != c.want {
+			t.Errorf("mirrorURL(%q, %q) = %q, 期望 %q", c.in, c.prefix, got, c.want)
+		}
+	}
+}
+
+// TestCandidateURLs 验证候选列表数量等于镜像池大小，且末位为直连 URL。
+func TestCandidateURLs(t *testing.T) {
+	got := candidateURLs(apiBase)
+	if len(got) != len(mirrors) {
+		t.Fatalf("candidateURLs 数量 %d != mirrors 数量 %d", len(got), len(mirrors))
+	}
+	if got[len(got)-1] != apiBase {
+		t.Fatalf("末位应为直连 %q, got %q", apiBase, got[len(got)-1])
+	}
+	for i, m := range mirrors {
+		if m == "" {
+			continue
+		}
+		if !strings.HasPrefix(got[i], m) {
+			t.Errorf("第 %d 项 %q 应带镜像前缀 %q", i, got[i], m)
+		}
+	}
+}
+
+// TestMirrorHostsAllowed 验证 mirrors 里所有 host 都进了白名单，改镜像池时
+// 无需手改 allowedHosts。
+func TestMirrorHostsAllowed(t *testing.T) {
+	for _, m := range mirrors {
+		if m == "" {
+			continue
+		}
+		u, err := url.Parse(m)
+		if err != nil || u.Host == "" {
+			t.Fatalf("镜像 %q 无法解析出 host", m)
+		}
+		if !allowedHosts[u.Host] {
+			t.Errorf("镜像 host %q 未加入白名单", u.Host)
 		}
 	}
 }
