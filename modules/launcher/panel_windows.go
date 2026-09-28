@@ -39,6 +39,10 @@ const (
 
 	// 面板字号（点），随 panelScale 放大。
 	panelFontPt = 12 * panelScale
+
+	// pinBadgeSide 是右上角图钉热区/绘制边长，不随 panelScale 放大（保持
+	// 精致的小角标）。
+	pinBadgeSide int32 = 14
 )
 
 // 颜色（COLORREF 0x00BBGGRR）。深/浅两套，按系统主题（winui.DarkModeEnabled）
@@ -50,7 +54,8 @@ var (
 	darkMuted  = uint32(0x00909090)
 	darkAccent = uint32(0x00B85A2A) // 高亮选中（RGB 42,90,184）
 	darkRowSel = uint32(0x00402F1F)
-	darkPin    = uint32(0x002FA7F2) // 置顶角标（蓝）
+	darkPin    = uint32(0x003CA9E5) // 置顶图钉（金色 #E5A93C）
+	darkPinOff = uint32(0x00606060) // 未置顶图钉（暗淡，悬停可点）
 
 	lightBg     = uint32(0x00F8F8FA) // 浅底（RGB 250,248,248）
 	lightEditBg = uint32(0x00ECEDF0)
@@ -58,21 +63,22 @@ var (
 	lightMuted  = uint32(0x00909AA8)
 	lightAccent = uint32(0x00B85A2A)
 	lightRowSel = uint32(0x00E3EDFC)
-	lightPin    = uint32(0x002FA7F2) // 置顶角标（蓝）
+	lightPin    = uint32(0x003CA9E5) // 置顶图钉（金色 #E5A93C）
+	lightPinOff = uint32(0x00B0B8C0) // 未置顶图钉（暗淡）
 )
 
 // panelTheme 是当前生效的一套配色。
 type panelTheme struct {
-	bg, editBg, text, muted, accent, rowSel, pin uint32
+	bg, editBg, text, muted, accent, rowSel, pin, pinOff uint32
 }
 
 // currentTheme 按系统明暗选择配色。每次 paint 时读取，面板弹出即跟随
 // 当前系统主题。
 func currentTheme() panelTheme {
 	if winui.DarkModeEnabled() {
-		return panelTheme{darkBg, darkEditBg, darkText, darkMuted, darkAccent, darkRowSel, darkPin}
+		return panelTheme{darkBg, darkEditBg, darkText, darkMuted, darkAccent, darkRowSel, darkPin, darkPinOff}
 	}
-	return panelTheme{lightBg, lightEditBg, lightText, lightMuted, lightAccent, lightRowSel, lightPin}
+	return panelTheme{lightBg, lightEditBg, lightText, lightMuted, lightAccent, lightRowSel, lightPin, lightPinOff}
 }
 
 // 面板消息。
@@ -593,16 +599,53 @@ func (p *panelState) execute(hwnd winui.HWND) {
 	}()
 }
 
-// onRowClick selects and runs a clicked tile.
+// onRowClick selects and runs a clicked tile. 先判右上角图钉热区：点击图钉
+// 切换置顶而不执行命令（对标 uTools 的 pin-icon 点击），否则选中并执行。
 func (p *panelState) onRowClick(hwnd winui.HWND, x, y int32) {
 	idx := p.tileAt(x, y)
 	if idx < 0 {
+		return
+	}
+	if p.pinHotAt(idx, x, y) {
+		p.togglePinAt(idx)
 		return
 	}
 	p.mu.Lock()
 	p.sel = idx
 	p.mu.Unlock()
 	p.execute(hwnd)
+}
+
+// pinHotAt 判断 (x,y) 是否落在磁贴 idx 的右上角图钉热区（一个 pinBadgeSide
+// 见方的区域，与 paint 绘制位置一致）。
+func (p *panelState) pinHotAt(idx int, x, y int32) bool {
+	p.mu.Lock()
+	offsetX := p.offsetX
+	p.mu.Unlock()
+	left := gridPadX - offsetX + int32(idx)*(gridTileW+gridGap)
+	rowTop := gridPadY + panelEditH
+	// 热区：磁贴右上角 pinBadgeSide×pinBadgeSide。
+	hx := left + gridTileW - pinBadgeSide - 2
+	hy := rowTop + 2
+	return x >= hx && x <= left+gridTileW-2 && y >= hy && y <= hy+pinBadgeSide
+}
+
+// togglePinAt 切换磁贴 idx 的置顶状态并刷新。
+func (p *panelState) togglePinAt(idx int) {
+	p.mu.Lock()
+	if idx < 0 || idx >= len(p.rows) {
+		p.mu.Unlock()
+		return
+	}
+	c := p.rows[idx]
+	ranks := p.ranks
+	p.mu.Unlock()
+	if ranks == nil {
+		return
+	}
+	_, pinned := ranks.get(c.key())
+	ranks.setPin(c.key(), !pinned)
+	p.refreshRows()
 }
 
 // paint renders the query box and the single-row tile strip.
@@ -674,13 +717,17 @@ func (p *panelState) paint(hwnd winui.HWND) {
 			theme.text, winui.DT_CENTER|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX|winui.DT_END_ELLIPSIS)
 		restore2()
 
-		// 置顶角标（右上角）：固定到前方的候选带图钉标识。
+		// 置顶图钉（右上角，常驻）：未置顶暗淡、置顶金色；左键点击热区可切换。
+		pinColor := theme.pinOff
+		pinned := false
 		if ranks != nil {
-			if _, pinned := ranks.get(r.key()); pinned {
-				badge := winui.Rect{Left: tr.Right - 16, Top: tr.Top + 4, Right: tr.Right - 4, Bottom: tr.Top + 16}
-				drawPinBadge(c, badge, theme.pin)
-			}
+			_, pinned = ranks.get(r.key())
 		}
+		if pinned {
+			pinColor = theme.pin
+		}
+		badge := winui.Rect{Left: tr.Right - pinBadgeSide - 2, Top: tr.Top + 2, Right: tr.Right - 2, Bottom: tr.Top + 2 + pinBadgeSide}
+		drawPinBadge(c, badge, pinColor)
 	}
 }
 

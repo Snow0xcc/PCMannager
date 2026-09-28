@@ -29,22 +29,67 @@ type command struct {
 	ModuleID, ActionID string
 	// URL is the address for Kind = url.
 	URL string
+	// Priority is the developer-preset importance (buildCommands assigns it):
+	// it breaks ties within the same match level in the weighted ranking.
+	Priority int
 }
 
-// score rates how well a command matches the query: prefix beats substring
-// beats no match (-1). The ranking is deliberately simple — the table is
-// a few dozen entries, so a fuzzy index would be architecture theatre.
-func (c command) score(q string) int {
+// 评分权重（uTools 式多因子加权，量级隔离保证低维因子永远翻不了高维因子）：
+//
+//	Score = isPinned*10^6 + matchScore*10^3 + priority*10 + openCount*2
+//
+// 置顶具有绝对统治力；文本匹配度次之；开发者预设优先级与打开频次只在同
+// 匹配度内部起作用。全整数运算，int 为 64 位，无溢出风险。
+const (
+	rankPinWeight   = 1_000_000
+	rankMatchWeight = 1_000
+	rankPrioWeight  = 10
+	rankUseWeight   = 2
+
+	matchExact   = 100 // 标题全等
+	matchPrefix  = 50  // 标题前缀
+	matchContain = 20  // 标题包含
+	matchHint    = 10  // 副标题命中
+	matchNone    = 1   // 空查询：全员同分，交给 priority/openCount 排序
+)
+
+// matchScore rates how well a command matches the query: exact beats prefix
+// beats substring beats hint hit; no match is -1. An empty query gives every
+// command the same base score so the default list is ordered by priority and
+// usage alone.
+func (c command) matchScore(q string) int {
+	if q == "" {
+		return matchNone
+	}
 	label := strings.ToLower(c.Label)
 	switch {
+	case label == q:
+		return matchExact
 	case strings.HasPrefix(label, q):
-		return 0
+		return matchPrefix
 	case strings.Contains(label, q):
-		return 1
+		return matchContain
 	case strings.Contains(strings.ToLower(c.Hint), q):
-		return 2
+		return matchHint
 	}
 	return -1
+}
+
+// compositeScore folds the four ranking factors into one comparable score.
+// Non-matching commands return -1 even when pinned (置顶只在“匹配”的前提下
+// 统治排序，不会让无关项混进搜索结果).
+func (c command) compositeScore(q string, openCount int, pinned bool) int {
+	m := c.matchScore(q)
+	if m < 0 {
+		return -1
+	}
+	s := m * rankMatchWeight
+	if pinned {
+		s += rankPinWeight
+	}
+	s += c.Priority * rankPrioWeight
+	s += openCount * rankUseWeight
+	return s
 }
 
 // key 是命令在排行榜中的稳定标识：模块动作用 <module>/<action>，网页捷径用
@@ -79,6 +124,7 @@ func buildCommands(ctx *core.Context) []command {
 			out = append(out, command{
 				Label: "打开 " + name, Hint: name + " · 界面",
 				Icon: iconForModule(m.ID()), Kind: "open", ModuleID: m.ID(),
+				Priority: 5, // 界面入口是首屏最该一眼认出的项
 			})
 			for _, a := range m.Actions() {
 				if a.Kind == core.ActionDanger {
@@ -93,6 +139,7 @@ func buildCommands(ctx *core.Context) []command {
 				out = append(out, command{
 					Label: label, Hint: name + " · 动作",
 					Icon: "bolt", Kind: "action", ModuleID: m.ID(), ActionID: a.ID,
+					Priority: 3,
 				})
 			}
 		}
@@ -103,6 +150,7 @@ func buildCommands(ctx *core.Context) []command {
 		out = append(out, command{
 			Label: w.name, Hint: "网页 · " + w.url,
 			Icon: "web", Kind: "url", URL: w.url,
+			Priority: 4,
 		})
 	}
 
@@ -216,36 +264,32 @@ func (f *Feature) guarded(id string, fn func() error) (err error) {
 
 // search returns the commands matching q, best first, capped at max.
 //
-// 排序优先级：置顶（固定到前方）永远最前，其次打开次数降序，最后才是文本
-// 匹配度（前缀 > 包含 > 提示命中）。空查询同样按此排序，只是不做匹配过滤。
+// 排序用多因子加权公式（见 compositeScore）：置顶 10^6 绝对统治，其次文本
+// 匹配度 10^3，再次开发者预设优先级 10，最后打开次数 2。空查询同样按此
+// 排序，只是不做匹配过滤。
 func search(cmds []command, q string, max int, ranks *rankStore) []command {
 	q = strings.ToLower(strings.TrimSpace(q))
 
 	type scored struct {
-		c    command
-		s    int
-		pin  bool
-		uses int
+		c command
+		s int
 	}
 	var hits []scored
 	for _, c := range cmds {
-		if q != "" && c.score(q) < 0 {
-			continue
-		}
 		uses, pin := 0, false
 		if ranks != nil {
 			uses, pin = ranks.get(c.key())
 		}
-		hits = append(hits, scored{c: c, s: c.score(q), pin: pin, uses: uses})
+		if s := c.compositeScore(q, uses, pin); s >= 0 {
+			hits = append(hits, scored{c: c, s: s})
+		}
 	}
 	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].pin != hits[j].pin {
-			return hits[i].pin
+		if hits[i].s != hits[j].s {
+			return hits[i].s > hits[j].s
 		}
-		if hits[i].uses != hits[j].uses {
-			return hits[i].uses > hits[j].uses
-		}
-		return hits[i].s < hits[j].s
+		// 同分稳定：保持 buildCommands 的稳定预排序（模块入口在前、字母序）。
+		return false
 	})
 	if len(hits) > max {
 		hits = hits[:max]
