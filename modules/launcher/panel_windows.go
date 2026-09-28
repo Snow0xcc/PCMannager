@@ -4,7 +4,6 @@ package launcher
 
 import (
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,8 +31,8 @@ const (
 
 // 面板消息。
 const (
-	lnWmKeyDown  = 0x0100
-	lnWmChar     = 0x0102
+	lnWmKeyDown     = 0x0100
+	lnWmChar        = 0x0102
 	lnWmLButtonDown = 0x0201
 	lnWmActivate    = 0x0006
 	lnWmMouseMove   = 0x0200
@@ -117,7 +116,9 @@ func (p *panelState) present(cmds []command, max int) {
 	}
 
 	p.mu.Lock()
-	p.rows = cmds
+	// 首次显示：空查询先按默认排序截断出候选，并选中首行——
+	// 面板一弹出来就有高亮的第一个可执行项（dtools 式），而不是空列表。
+	p.rows = search(cmds, "", max)
 	p.max = max
 	p.query = ""
 	p.sel = 0
@@ -126,7 +127,7 @@ func (p *panelState) present(cmds []command, max int) {
 	p.mu.Unlock()
 
 	if win != nil {
-		p.centerAndSize(len(cmds))
+		p.centerAndSize(len(p.rows))
 		win.Show()
 		winui.SetForegroundWindow(win.HWND())
 		winui.InvalidateRect(win.HWND())
@@ -173,12 +174,12 @@ func (p *panelState) run(cmds []command, max int, ready chan<- error) {
 
 	p.mu.Lock()
 	p.win = win
-	p.rows = cmds
+	p.rows = search(cmds, "", max)
 	p.max = max
 	p.font = winui.NewFont("Microsoft YaHei", 12, winui.FW_NORMAL)
 	p.mu.Unlock()
 
-	p.centerAndSize(len(cmds))
+	p.centerAndSize(len(search(cmds, "", max)))
 	ready <- nil
 
 	winui.MessageLoop(nil)
@@ -194,8 +195,10 @@ func (p *panelState) run(cmds []command, max int, ready chan<- error) {
 	p.mu.Unlock()
 }
 
-// centerAndSize positions the panel top-centre of the primary display.
-// 高度随候选行数变化（空查询也有默认候选）。
+// centerAndSize positions the panel centred horizontally and slightly above
+// the vertical centre of the primary display (the dtools/Spotlight feel:
+// the eye's focal point sits in the upper third, not the exact middle).
+// 高度随候选行数变化；空查询也有默认候选。
 func (p *panelState) centerAndSize(rows int) {
 	p.mu.Lock()
 	max := p.max
@@ -208,11 +211,17 @@ func (p *panelState) centerAndSize(rows int) {
 	}
 	h := panelEditH + rows*panelRowH + 8
 
-	sw, _ := winui.ScreenSize()
+	sw, sh := winui.ScreenSize()
+	// 水平居中：左右对称。
 	x := (sw - panelW) / 2
-	const y = 180 // 屏幕上部 1/4 处，符合肌肉记忆
 	if x < 0 {
 		x = 0
+	}
+	// 垂直：以屏幕中心为基准，上移 18% 的屏幕高度，落在视觉黄金区。
+	// 用屏幕中心减去面板高的一半，再整体抬升——既垂直对称又不贴死中央。
+	y := (sh-int32(h))/2 - sh*18/100
+	if y < 0 {
+		y = 0
 	}
 	p.mu.Lock()
 	win := p.win
@@ -248,6 +257,9 @@ func (p *panelState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr
 		return 0, true
 	case lnWmLButtonDown:
 		p.onRowClick(hwnd, int32(int16(lParam>>16)))
+		return 0, true
+	case lnWmMouseMove:
+		p.onMouseMove(hwnd, int32(int16(lParam>>16)))
 		return 0, true
 	case winui.WM_CLOSE, winui.WM_DESTROY:
 		p.mu.Lock()
@@ -319,13 +331,6 @@ func (p *panelState) moveSel(d int) {
 
 // refreshRows re-runs the search against the live command table.
 func (p *panelState) refreshRows() {
-	p.mu.Lock()
-	q := p.query
-	max := p.max
-	p.mu.Unlock()
-	_ = q
-	_ = max
-
 	if p.feat == nil {
 		return
 	}
@@ -333,7 +338,12 @@ func (p *panelState) refreshRows() {
 	cmds := p.feat.commands
 	p.feat.mu.Unlock()
 
-	rows := search(cmds, p.queryText(), max)
+	p.mu.Lock()
+	q := p.query
+	max := p.max
+	p.mu.Unlock()
+
+	rows := search(cmds, q, max)
 	p.mu.Lock()
 	p.rows = rows
 	if p.sel >= len(rows) {
@@ -346,11 +356,17 @@ func (p *panelState) refreshRows() {
 	p.centerAndSize(len(rows))
 }
 
-// queryText reads the current query.
-func (p *panelState) queryText() string {
+// onMouseMove 让悬停行跟随高亮（dtools 式的鼠标/键盘双轨选择）。
+func (p *panelState) onMouseMove(hwnd winui.HWND, y int32) {
+	idx := int((y - panelEditH - 4) / panelRowH)
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.query
+	if idx >= 0 && idx < len(p.rows) && idx != p.sel {
+		p.sel = idx
+		p.mu.Unlock()
+		winui.InvalidateRect(hwnd)
+		return
+	}
+	p.mu.Unlock()
 }
 
 // execute runs the highlighted (or clicked) command and dismisses the panel.
@@ -410,21 +426,19 @@ func (p *panelState) paint(hwnd winui.HWND) {
 	p.mu.Unlock()
 
 	c.Fill(rect, panelBg)
-	// 查询框。
+
+	// 查询框。空查询时画灰色占位符；候选列表永远要画（此前空查询时提前
+	// return 导致列表不渲染，是面板“弹出来却是空白”的根因）。
 	editRect := winui.Rect{Left: panelPadX, Top: 6, Right: rect.Right - panelPadX, Bottom: panelEditH - 4}
 	c.Fill(editRect, panelEditBg)
-	text := query
-	if text == "" {
-		text = "搜索命令或网址…"
-		if strings.Contains(text, "…") {
-			c.DrawText(text, winui.Rect(editRect).Inset(8), panelMuted,
-				winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
-			return
-		}
-	}
 	restore := c.SelectFont(font)
-	c.DrawText(text, winui.Rect(editRect).Inset(8), panelText,
-		winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
+	if query == "" {
+		c.DrawText("搜索命令或网址…", winui.Rect(editRect).Inset(8), panelMuted,
+			winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
+	} else {
+		c.DrawText(query, winui.Rect(editRect).Inset(8), panelText,
+			winui.DT_LEFT|winui.DT_VCENTER|winui.DT_SINGLELINE|winui.DT_NOPREFIX)
+	}
 	restore()
 
 	// 候选行。

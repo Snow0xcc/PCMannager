@@ -626,7 +626,7 @@ function renderModulePage(root, m) {
   // 校验仍统一走 transport.call("validate", value)：返回 "" 表示合法，非空为原因。
   const hk = el('<div class="row"><label>全局热键</label><div class="grow">' +
     '<label class="field">' + icon("keyboard") +
-    '<input type="text" id="m-hotkey" placeholder="例如 ctrl+alt+f1" autocomplete="off">' +
+    	'<input type="text" id="m-hotkey" placeholder="按组合键或输入，如 ctrl+alt+f1" autocomplete="off">' +
     '</label></div>' +
     '<span id="m-hkstate"></span>' +
     '<button class="btn" id="m-hksave">' + icon("check") + '保存</button>' +
@@ -675,8 +675,98 @@ function renderModulePage(root, m) {
     hkInput.value = "";
     saveHotkey("", "已解除热键绑定");
   };
+
+  // ---- 按住即录：聚焦输入框后，直接按下组合键即可捕获热键，
+  // 无需手动敲 "ctrl+alt+f1" 再点保存。 ----
+  //
+  // 交互约定：
+  //   - 聚焦后第一次按下组合键即进入“录制中”态（输入框显示实时的键位）。
+  //   - 按下完整组合（修饰键 + 一个主键）后自动保存并退出录制。
+  //   - 单独按 Esc 取消录制；Backspace/Delete 清空并解绑（直接保存空）。
+  //   - 若按了纯修饰键未松手，不触发保存，等待主键。
+  //   - 仍可手动输入文本（录制只在 keydown 捕获时拦截，正常输入不受影响）。
+  let recording = false;
+
+  // codeToKeyName 把 KeyboardEvent.code 映射到 core.ParseHotkey 认识的键名。
+  function codeToKeyName(code) {
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();      // KeyA→a
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);                  // Digit1→1
+    if (/^F([0-9]+)$/.test(code)) return "f" + code.slice(1).toLowerCase(); // F1→f1
+    const map = {
+      Space: "space", Enter: "enter", Escape: "esc", Tab: "tab",
+      Backspace: "backspace", Delete: "delete", Insert: "insert",
+      Home: "home", End: "end", PageUp: "pageup", PageDown: "pagedown",
+      ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+      Numpad0: "num0", Numpad1: "num1", Numpad2: "num2", Numpad3: "num3",
+      Numpad4: "num4", Numpad5: "num5", Numpad6: "num6", Numpad7: "num7",
+      Numpad8: "num8", Numpad9: "num9",
+      Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+      Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",",
+      Period: ".", Slash: "/", Backquote: "`",
+    };
+    return map[code] || "";
+  }
+
+  hkInput.addEventListener("keydown", (ev) => {
+    // 仅当输入框聚焦且按下了至少一个修饰键时才拦截（避免干扰正常文字输入）。
+    const hasMod = ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey;
+    const keyName = codeToKeyName(ev.code);
+
+    // Esc：取消录制，回到原有值。
+    if (ev.code === "Escape" && !hasMod) {
+      recording = false;
+      hkInput.value = m.hotkey || "";
+      paintErr(""); paintBadge();
+      return;
+    }
+    // Backspace/Delete（无修饰）：清空并解绑。
+    if ((ev.code === "Backspace" || ev.code === "Delete") && !hasMod) {
+      ev.preventDefault();
+      hkInput.value = "";
+      recording = false;
+      paintErr(""); paintBadge();
+      saveHotkey("", "已解除热键绑定");
+      return;
+    }
+
+    // 有修饰键的按键按下：进入录制态，拼接组合。
+    if (hasMod) {
+      ev.preventDefault();
+      const mods = [];
+      if (ev.ctrlKey) mods.push("ctrl");
+      if (ev.altKey) mods.push("alt");
+      if (ev.shiftKey) mods.push("shift");
+      if (ev.metaKey) mods.push("win");
+
+      // 纯修饰键：只记录“录制中”，等主键。
+      const isModKey = ["Control", "Alt", "Shift", "Meta"].includes(ev.key);
+      if (isModKey) {
+        recording = true;
+        hkInput.value = mods.join("+") + "+";
+        paintErr("按下主键完成组合…");
+        return;
+      }
+
+      if (!keyName) return; // 未映射的键忽略
+      recording = false;
+      const combo = mods.join("+") + "+" + keyName;
+      hkInput.value = combo;
+      paintErr("");
+      saveHotkey(combo, "热键已保存：" + combo);
+    }
+  });
+
+  // 松手清理“录制中”的中间态（若用户只按了修饰键又松开，不清空已绑定值）。
+  hkInput.addEventListener("keyup", () => {
+    if (recording) {
+      recording = false;
+      hkInput.value = m.hotkey || "";
+      paintErr("");
+      paintBadge();
+    }
+  });
   card.appendChild(hk);
-  card.appendChild(el('<div class="hint">语法：mod+mod+key，例如 ctrl+alt+f1；留空表示不绑定。</div>'));
+  card.appendChild(el('<div class="hint">点输入框后直接按下组合键即可自动保存；Esc 取消、Backspace 解绑；也可手动输入 ctrl+alt+f1 再点保存。</div>'));
 
   (m.options || []).forEach(o => card.appendChild(renderOption(m, o)));
 
