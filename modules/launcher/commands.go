@@ -19,6 +19,9 @@ type command struct {
 	Label string
 	// Hint is the secondary text, e.g. "剪贴板历史 · 动作".
 	Hint string
+	// Icon is a glyph key for the tile (see icons_windows.go); empty means the
+	// generic module glyph.
+	Icon string
 	// Kind discriminates the payload: "action" runs a module action, "open"
 	// opens a module's UI, "url" opens a web address.
 	Kind string
@@ -61,7 +64,7 @@ func buildCommands(ctx *core.Context) []command {
 			}
 			out = append(out, command{
 				Label: "打开 " + name, Hint: name + " · 界面",
-				Kind: "open", ModuleID: m.ID(),
+				Icon: iconForModule(m.ID()), Kind: "open", ModuleID: m.ID(),
 			})
 			for _, a := range m.Actions() {
 				if a.Kind == core.ActionDanger {
@@ -75,7 +78,7 @@ func buildCommands(ctx *core.Context) []command {
 				}
 				out = append(out, command{
 					Label: label, Hint: name + " · 动作",
-					Kind: "action", ModuleID: m.ID(), ActionID: a.ID,
+					Icon: "bolt", Kind: "action", ModuleID: m.ID(), ActionID: a.ID,
 				})
 			}
 		}
@@ -85,15 +88,46 @@ func buildCommands(ctx *core.Context) []command {
 	for _, w := range webShortcuts {
 		out = append(out, command{
 			Label: w.name, Hint: "网页 · " + w.url,
-			Kind: "url", URL: w.url,
+			Icon: "web", Kind: "url", URL: w.url,
 		})
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	// 空查询的默认列表把「打开 Xxx」模块入口排在动作前面：磁贴一行只有
+	// 5 个，首屏应该是一眼能认出的功能入口，而不是几十个安装动作。
+	sort.SliceStable(out, func(i, j int) bool {
+		pi, pj := out[i].Kind == "open", out[j].Kind == "open"
+		if pi != pj {
+			return pi
+		}
+		return false
+	})
 	return out
 }
 
-// webShortcut is a built-in one-key web entry.
+// iconForModule maps a module id to a glyph key so each module's entry gets a
+// recognisable tile instead of a wall of identical boxes.
+func iconForModule(id string) string {
+	switch id {
+	case "screenshot":
+		return "camera"
+	case "clipboard":
+		return "clipboard"
+	case "taskbar":
+		return "monitor"
+	case "repair":
+		return "wrench"
+	case "updater":
+		return "download"
+	case "launcher":
+		return "search"
+	case "selfcontext":
+		return "history"
+	default:
+		return "module"
+	}
+}
+
 type webShortcut struct{ name, url string }
 
 // webShortcuts are the built-ins; keeping the list tiny and obvious.
