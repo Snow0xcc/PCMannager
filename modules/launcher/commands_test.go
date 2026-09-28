@@ -89,25 +89,54 @@ func TestCommandKey(t *testing.T) {
 	}
 }
 
-// TestCommandMatchScore 守护匹配分级：全等 > 前缀 > 包含 > 提示命中。
+// TestCommandMatchScore 守护匹配分级：全等 > 别名全等 > 前缀 > 别名前缀 >
+// 包含 > 提示命中；别名参与匹配但同级弱于 Label 本身。
 func TestCommandMatchScore(t *testing.T) {
 	prefix := command{Label: "打开面板", Hint: "界面"}
 	sub := command{Label: "一键打开", Hint: "界面"}
 
-	if prefix.matchScore("打开面板") != matchExact {
-		t.Fatalf("全等应 matchExact, 实际 %d", prefix.matchScore("打开面板"))
+	if prefix.matchScore("打开面板", nil) != matchExact {
+		t.Fatalf("全等应 matchExact, 实际 %d", prefix.matchScore("打开面板", nil))
 	}
-	if prefix.matchScore("打开") != matchPrefix {
-		t.Fatalf("前缀应 matchPrefix, 实际 %d", prefix.matchScore("打开"))
+	if prefix.matchScore("打开", nil) != matchPrefix {
+		t.Fatalf("前缀应 matchPrefix, 实际 %d", prefix.matchScore("打开", nil))
 	}
-	if sub.matchScore("打开") != matchContain {
-		t.Fatalf("包含应 matchContain, 实际 %d", sub.matchScore("打开"))
+	if sub.matchScore("打开", nil) != matchContain {
+		t.Fatalf("包含应 matchContain, 实际 %d", sub.matchScore("打开", nil))
 	}
-	if prefix.matchScore("xyz") != -1 {
+	if prefix.matchScore("xyz", nil) != -1 {
 		t.Fatal("无命中应为 -1")
 	}
-	if prefix.matchScore("") != matchNone {
-		t.Fatalf("空查询应 matchNone, 实际 %d", prefix.matchScore(""))
+	if prefix.matchScore("", nil) != matchNone {
+		t.Fatalf("空查询应 matchNone, 实际 %d", prefix.matchScore("", nil))
+	}
+}
+
+// TestMatchScoreAliases 守护别名匹配：全等/前缀/包含三级，均弱于 Label 同级。
+func TestMatchScoreAliases(t *testing.T) {
+	c := command{Label: "记事本"}
+	aliases := []string{"jsb", "notepad"}
+
+	if got := c.matchScore("jsb", aliases); got != matchAliasExact {
+		t.Fatalf("别名全等应 matchAliasExact, 实际 %d", got)
+	}
+	if got := c.matchScore("js", aliases); got != matchAliasPrefix {
+		t.Fatalf("别名前缀应 matchAliasPrefix, 实际 %d", got)
+	}
+	if got := c.matchScore("tep", aliases); got != matchHint {
+		t.Fatalf("别名包含应 matchHint, 实际 %d", got)
+	}
+	// 别名全等（用户显式输入完整别名，意图明确）强于 Label 普通前缀，
+	// 但弱于 Label 全等。
+	if c.matchScore("记事本", aliases) <= c.matchScore("jsb", aliases) {
+		t.Fatal("Label 全等应强于别名全等")
+	}
+	if c.matchScore("jsb", aliases) <= c.matchScore("记", aliases) {
+		t.Fatal("别名全等应强于 Label 普通前缀")
+	}
+	// 空别名/空白别名安全。
+	if got := c.matchScore("jsb", []string{"", "  "}); got != -1 {
+		t.Fatalf("空白别名不应命中, 实际 %d", got)
 	}
 }
 
@@ -119,27 +148,31 @@ func TestCompositeScore(t *testing.T) {
 	// 置顶项即使匹配度更低、优先级更低，也远高于未置顶的高匹配项。
 	pinned := command{Label: "百度", Priority: 1}
 	unpinned := command{Label: "打开剪贴板历史", Priority: 5}
-	if pinned.compositeScore("百", 0, true) <= unpinned.compositeScore("打开剪贴板历史", 100, false) {
+	if pinned.compositeScore("百", 0, true, nil) <= unpinned.compositeScore("打开剪贴板历史", 100, false, nil) {
 		t.Fatal("置顶项应压倒一切未置顶项")
 	}
 
 	// 单调性：打开次数越大得分越高；优先级越高得分越高。
 	c2 := command{Label: "百度", Priority: 5}
-	if c2.compositeScore("", 10, false) <= c2.compositeScore("", 0, false) {
+	if c2.compositeScore("", 10, false, nil) <= c2.compositeScore("", 0, false, nil) {
 		t.Fatal("打开次数增加应提升得分")
 	}
 	c3 := command{Label: "百度", Priority: 9}
-	if c3.compositeScore("", 0, false) <= c2.compositeScore("", 0, false) {
+	if c3.compositeScore("", 0, false, nil) <= c2.compositeScore("", 0, false, nil) {
 		t.Fatal("优先级提高应提升得分")
 	}
 
 	// 基础分值形态：空查询下 = 1*1000 + 5*10 + 0*2。
-	if got := c.compositeScore("", 0, false); got != 1000+50 {
+	if got := c.compositeScore("", 0, false, nil); got != 1000+50 {
 		t.Fatalf("基础分值 = %d, 期望 %d", got, 1000+50)
 	}
 	// 不匹配恒为 -1（即使置顶也不混入）。
-	if got := c.compositeScore("zzz", 0, true); got != -1 {
+	if got := c.compositeScore("zzz", 0, true, nil); got != -1 {
 		t.Fatalf("不匹配应为 -1, 实际 %d", got)
+	}
+	// 别名命中也要参与加权：别名全等 60*1000。
+	if got := c.compositeScore("bd", 0, false, []string{"bd"}); got != matchAliasExact*1000+50 {
+		t.Fatalf("别名全等分值 = %d, 期望 %d", got, matchAliasExact*1000+50)
 	}
 }
 

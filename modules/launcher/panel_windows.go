@@ -4,6 +4,7 @@ package launcher
 
 import (
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -557,7 +558,7 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 	if have {
 		pinned := false
 		if ranks != nil {
-			_, pinned = ranks.get(sel.key())
+			_, pinned, _ = ranks.get(sel.key())
 		}
 		pinText := "固定到前方"
 		if pinned {
@@ -565,7 +566,7 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 		}
 		add(pinText, func() {
 			if ranks != nil {
-				_, pinnedNow := ranks.get(sel.key())
+				_, pinnedNow, _ := ranks.get(sel.key())
 				ranks.setPin(sel.key(), !pinnedNow)
 				p.refreshRows()
 				winui.InvalidateRect(hwnd)
@@ -576,6 +577,7 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 		// 复制路径 / 打开位置 / 终端 / 管理员运行：仅对本地目标（app/file/folder）有意义。
 		switch sel.Kind {
 		case "app", "file", "folder":
+			add("编辑关键字...", func() { p.editAliases(sel) })
 			add("复制文件路径", func() {
 				if err := winui.ClipboardText(sel.Path); err != nil {
 					p.ctx.Bus.Notice(moduleID, "复制路径失败："+err.Error())
@@ -721,8 +723,35 @@ func (p *panelState) togglePinAt(idx int) {
 	if ranks == nil {
 		return
 	}
-	_, pinned := ranks.get(c.key())
+	_, pinned, _ := ranks.get(c.key())
 	ranks.setPin(c.key(), !pinned)
+	p.refreshRows()
+}
+
+// editAliases 弹出模态输入框让用户编辑候选的别名/拼音首字母缩写。
+// 多个别名用逗号或空格分隔；清空并确定即删除全部别名。
+// 调用点在窗口线程（右键菜单回调），InputDialog 的嵌套消息循环因此安全。
+func (p *panelState) editAliases(c command) {
+	ranks := p.ranks
+	if ranks == nil || p.win == nil {
+		return
+	}
+	current := strings.Join(ranks.getAliases(c.key()), ", ")
+	value, ok := winui.InputDialog(p.win.HWND(), "编辑关键字", c.Label+" 的搜索关键字（逗号分隔，可用拼音缩写）:", current)
+	if !ok {
+		return
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '，' || r == ' ' || r == '\t'
+	})
+	var aliases []string
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			aliases = append(aliases, f)
+		}
+	}
+	ranks.setAliases(c.key(), aliases)
 	p.refreshRows()
 }
 
@@ -799,7 +828,7 @@ func (p *panelState) paint(hwnd winui.HWND) {
 		pinColor := theme.pinOff
 		pinned := false
 		if ranks != nil {
-			_, pinned = ranks.get(r.key())
+			_, pinned, _ = ranks.get(r.key())
 		}
 		if pinned {
 			pinColor = theme.pin

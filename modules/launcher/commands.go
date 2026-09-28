@@ -55,13 +55,20 @@ const (
 	matchContain = 20  // 标题包含
 	matchHint    = 10  // 副标题命中
 	matchNone    = 1   // 空查询：全员同分，交给 priority/openCount 排序
+
+	matchAliasExact  = 60 // 别名全等（用户显式起的名字）
+	matchAliasPrefix = 40 // 别名前缀（拼音缩写的主要用法）
 )
 
 // matchScore rates how well a command matches the query: exact beats prefix
 // beats substring beats hint hit; no match is -1. An empty query gives every
 // command the same base score so the default list is ordered by priority and
 // usage alone.
-func (c command) matchScore(q string) int {
+//
+// aliases 是用户手动添加的别名/拼音首字母缩写（如给"记事本"加 "jsb"）：
+// 与 Label 同等参与匹配，但同级命中弱于 Label 本身（别名包含只给 matchHint，
+// 避免别名喧宾夺主）。
+func (c command) matchScore(q string, aliases []string) int {
 	if q == "" {
 		return matchNone
 	}
@@ -76,14 +83,29 @@ func (c command) matchScore(q string) int {
 	case strings.Contains(strings.ToLower(c.Hint), q):
 		return matchHint
 	}
+	// 别名匹配：全等/前缀是独立强度（用户显式起的名字），包含则弱于提示。
+	for _, a := range aliases {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" {
+			continue
+		}
+		switch {
+		case a == q:
+			return matchAliasExact
+		case strings.HasPrefix(a, q):
+			return matchAliasPrefix
+		case strings.Contains(a, q):
+			return matchHint
+		}
+	}
 	return -1
 }
 
 // compositeScore folds the four ranking factors into one comparable score.
 // Non-matching commands return -1 even when pinned (置顶只在“匹配”的前提下
 // 统治排序，不会让无关项混进搜索结果).
-func (c command) compositeScore(q string, openCount int, pinned bool) int {
-	m := c.matchScore(q)
+func (c command) compositeScore(q string, openCount int, pinned bool, aliases []string) int {
+	m := c.matchScore(q, aliases)
 	if m < 0 {
 		return -1
 	}
@@ -291,11 +313,11 @@ func search(cmds []command, q string, max int, ranks *rankStore) []command {
 	}
 	var hits []scored
 	for _, c := range cmds {
-		uses, pin := 0, false
+		uses, pin, aliases := 0, false, []string(nil)
 		if ranks != nil {
-			uses, pin = ranks.get(c.key())
+			uses, pin, aliases = ranks.get(c.key())
 		}
-		if s := c.compositeScore(q, uses, pin); s >= 0 {
+		if s := c.compositeScore(q, uses, pin, aliases); s >= 0 {
 			hits = append(hits, scored{c: c, s: s})
 		}
 	}

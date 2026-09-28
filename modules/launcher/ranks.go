@@ -8,11 +8,14 @@ import (
 	"sync"
 )
 
-// rankEntry 是一条候选命令的累积使用量与置顶标记。
+// rankEntry 是一条候选命令的累积使用量、置顶标记与用户别名。
+// Aliases 允许用户给候选添加别名/拼音首字母缩写（如给"记事本"加 "jsb"），
+// 搜索时与 Label 同等参与匹配。旧版 JSON 无此字段，反序列化后为零值，兼容。
 type rankEntry struct {
-	Key    string `json:"key"`
-	Count  int    `json:"count"`
-	Pinned bool   `json:"pinned,omitempty"`
+	Key     string   `json:"key"`
+	Count   int      `json:"count"`
+	Pinned  bool     `json:"pinned,omitempty"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // rankStore 持久化候选命令的打开次数与"固定到前方"标记，用于搜索排序：
@@ -58,17 +61,49 @@ func (s *rankStore) load() {
 	}
 }
 
-// get 返回某命令的打开次数与置顶标记。
-func (s *rankStore) get(key string) (int, bool) {
+// get 返回某命令的打开次数、置顶标记与别名列表。
+func (s *rankStore) get(key string) (count int, pinned bool, aliases []string) {
 	if s == nil {
-		return 0, false
+		return 0, false, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e, ok := s.entries[key]; ok {
-		return e.Count, e.Pinned
+		return e.Count, e.Pinned, e.Aliases
 	}
-	return 0, false
+	return 0, false, nil
+}
+
+// getAliases 返回某命令的别名列表（搜索匹配用）。
+func (s *rankStore) getAliases(key string) []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[key]; ok {
+		return e.Aliases
+	}
+	return nil
+}
+
+// setAliases 覆盖某命令的别名列表并落盘。空列表清除别名。
+func (s *rankStore) setAliases(key string, aliases []string) {
+	if s == nil || key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[key]
+	if !ok {
+		if len(aliases) == 0 {
+			return // 无既有条目且无别名，无需创建
+		}
+		e = &rankEntry{Key: key}
+		s.entries[key] = e
+	}
+	e.Aliases = aliases
+	s.saveLocked()
 }
 
 // bump 累加一次打开计数并落盘。
@@ -87,8 +122,7 @@ func (s *rankStore) bump(key string) {
 	s.saveLocked()
 }
 
-// setPin 设置/取消"固定到前方"并落盘。
-// clear 清空排行榜（打开次数与置顶）并落盘。
+// clear 清空排行榜（打开次数、置顶与别名）并落盘。
 func (s *rankStore) clear() {
 	if s == nil {
 		return
@@ -99,6 +133,7 @@ func (s *rankStore) clear() {
 	s.saveLocked()
 }
 
+// setPin 设置/取消"固定到前方"并落盘。
 func (s *rankStore) setPin(key string, on bool) {
 	if s == nil || key == "" {
 		return
