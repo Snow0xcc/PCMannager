@@ -40,21 +40,41 @@ jobs:
       - name: compute next patch tag
         id: versioning
         run: |
-          set -euo pipefail
-          git fetch --tags --force
+        		  set -euo pipefail
+        		  git fetch --tags --force
 
-          # 取最高 semver 规范的 tag（v<数字>.<数字>.<数字>）
-          LATEST_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1 || true)"
+		  # 基准 tag 分两级取：
+		  #   1) 正式的 vX.Y.Z（纯数字三段）——优先；
+		  #   2) 没有正式版时，退回预发布 tag（如 v0.1.0-rc1），取其数字三段
+		  #      作为基准，这样首个自动 tag 是 v0.1.1 而不是倒退成 v0.0.1。
+		  #
+		  # 关键：git tag -l 的 glob 里 [0-9]* 会连 "-rc1" 一起匹配进来，后面
+		  # cut -f3 得到 "0-rc1"，$((PATCH + 1)) 展开成 $((0-rc1 + 1))，在 set -u
+		  # 下报 "rc1: unbound variable" 并让整个 job 失败——这正是本 job 首次
+		  # 运行红掉的原因。故一律用 sed 抽出前导数字三段，并逐段做纯数字校验。
+		  ALL_TAGS="$(git tag -l 'v*' --sort=-v:refname || true)"
 
-          if [ -z "$LATEST_TAG" ]; then
-            NEW_TAG="v0.0.1"
-          else
-            VERSION="${LATEST_TAG#v}"
-            MAJOR="$(echo "$VERSION" | cut -d. -f1)"
-            MINOR="$(echo "$VERSION" | cut -d. -f2)"
-            PATCH="$(echo "$VERSION" | cut -d. -f3)"
-            NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
-          fi
+		  LATEST_TAG="$(echo "$ALL_TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+		  if [ -z "$LATEST_TAG" ]; then
+		    # 无正式版：取任一 vX.Y.Z<后缀> 的数字三段（sed 只留前导数字）。
+		    LATEST_TAG="$(echo "$ALL_TAGS" |
+		      sed -n 's/^v\([0-9]*\)\.\([0-9]*\)\.\([0-9]*\).*/v\1.\2.\3/p' | head -n 1 || true)"
+		  fi
+
+		  if [ -z "$LATEST_TAG" ]; then
+		    NEW_TAG="v0.0.1"
+		  else
+		    VERSION="${LATEST_TAG#v}"
+		    MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+		    MINOR="$(echo "$VERSION" | cut -d. -f2)"
+		    PATCH="$(echo "$VERSION" | cut -d. -f3)"
+		    # 三重校验：三段都必须是纯数字才敢进算术运算（脏 tag 一律走兜底，
+		    # 宁可版本号保守也不能让流水线挂掉）。
+		    case "$MAJOR" in ''|*[!0-9]*) MAJOR=0 ;; esac
+		    case "$MINOR" in ''|*[!0-9]*) MINOR=0 ;; esac
+		    case "$PATCH" in ''|*[!0-9]*) PATCH=0 ;; esac
+		    NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+		  fi
 
           # 若该 tag 已存在（罕见：手动打过），跳过，避免覆盖已有发布。
           if git rev-parse -q --verify "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
