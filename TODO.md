@@ -214,7 +214,7 @@ go vet ./...
 - [x] **5. 托盘接线** ✅ 已落地：`App` 新增 `tray` 字段，`StartTray()` 创建图标并
       `refreshTrayMenu()` 动态生成菜单（打开面板 / 模块开关勾选 / 打开各模块窗口 / 开机自启 / 退出）。
       菜单在启停模块、改设置、面板就绪后自动刷新；`Shutdown` 先销毁图标再停模块。
-      Windows 端 `App.Run()` 跑 `winui.MessageLoop`（托盘回调依赖消息泵），非 Windows 退化为等待 ctx。
+      Windows 端 `App.Run()` 跑 `winui.MessageLoop`（托盘回调依赖消息泵），macOS 端在主线程泵 CFRunLoop（`app_darwin.go`），Linux 由托盘内部 goroutine 处理 D-Bus 事件；托盘三平台实现见 `tray_{windows,darwin,linux,other}.go`（Linux 尚未真机验证）。
 - [x] **6. 开机自启** ✅ 已落地：`sysutil.SetAutostart/IsAutostart` 原本已实现（Windows 写
       `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`），
       此前**无人调用**。现由 `App.applyAutostart()` 统一承接，三条路径均已接线：

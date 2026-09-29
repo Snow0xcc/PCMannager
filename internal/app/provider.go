@@ -7,6 +7,7 @@ import (
 	"github.com/snow0xcc/pcmannager/internal/config"
 	"github.com/snow0xcc/pcmannager/internal/core"
 	"github.com/snow0xcc/pcmannager/internal/server"
+	"github.com/snow0xcc/pcmannager/internal/tray"
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
@@ -170,7 +171,15 @@ func (p panelProvider) PatchAppConfig(patch server.AppConfigPatch) error {
 }
 
 // Capabilities describes the platform features available in this build.
-func (p panelProvider) Capabilities() any { return winui.Capabilities() }
+//
+// tray_icon 由 tray.Supported() 给出而不是 winui 的平台表：winui 不能 import
+// tray（反向成环），而 macOS/Linux 现在都有真实托盘实现，写死成 false 会让
+// 面板误报"此平台没有托盘"。
+func (p panelProvider) Capabilities() any {
+	caps := winui.Capabilities()
+	caps.TrayIcon = tray.Supported()
+	return caps
+}
 
 // ValidateHotkey checks a hotkey string, returning a reason when invalid.
 func (p panelProvider) ValidateHotkey(hotkey string) error {

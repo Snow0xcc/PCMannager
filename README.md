@@ -52,7 +52,7 @@ bash scripts/build.sh linux amd64 dist/pcmannager && ./dist/pcmannager
 PCMANNAGER_CONFIG=/tmp/pcm-conf ./dist/pcmannager
 ```
 
-启动后 Windows 出现托盘图标；首选项面板监听 `127.0.0.1`（端口取自 `app.server_port`，`0` 表示由 OS 分配），启动日志会打印面板 URL。
+启动后 Windows 通知区 / macOS 菜单栏出现托盘图标（Linux 需会话里有 StatusNotifierWatcher）；首选项面板监听 `127.0.0.1`（端口取自 `app.server_port`，`0` 表示由 OS 分配），启动日志会打印面板 URL。
 
 ## 构建、测试与检查
 
@@ -134,7 +134,21 @@ REST 接口：
 
 ## 托盘与开机自启
 
-**托盘**：Windows 用 `Shell_NotifyIconW`（`internal/tray` + `internal/winui`），菜单动态生成（打开面板 / 模块开关勾选 / 打开各模块窗口 / 开机自启 / 退出），关闭窗口只回托盘不退出进程。非 Windows 下托盘降级为 no-op，首选项面板取而代之。
+**托盘**：三个平台各有实现，菜单统一由 `internal/app` 动态生成（打开面板 / 模块开关勾选 / 打开各模块窗口 / 开机自启 / 退出），关闭窗口只回托盘不退出进程。
+
+| 平台 | 实现 | 位置 |
+| :--- | :--- | :--- |
+| Windows | `Shell_NotifyIconW` + 自研 `internal/winui`（彩色菜单项走 owner-draw） | `internal/tray/tray_windows.go` |
+| macOS | AppKit `NSStatusBar`（菜单栏 status item + NSMenu），经 **purego** 的 Objective-C runtime 调用，**不引入 cgo** | `internal/tray/tray_darwin.go` |
+| Linux | `StatusNotifierItem` + `com.canonical.dbusmenu`（纯 Go D-Bus，godbus） | `internal/tray/tray_linux.go` |
+| 其它 | no-op，面板就是控制面 | `internal/tray/tray_other.go` |
+
+两条平台约束：
+
+- **macOS 的 AppKit 只能在主线程动**：`main_darwin.go` 用 `init()` 把主 goroutine 锁在主线程，`app_darwin.go` 的 `Run()` 在主线程泵 CFRunLoop（否则图标能显示但菜单点了没反应），所有托盘操作经 `onMain` 派发回主线程。
+- **AppKit / Foundation 要显式 `dlopen`**：纯 Go 二进制不链接这两个框架，不加载时 `objc_getClass` 直接返回 0（曾一度靠某个依赖顺带载入才可用，已改为确定加载）。
+
+面板 `GET /api/state` 的 `capabilities.tray_icon` 由 `tray.Supported()` 给出（构建是否**带托盘实现**），它与「当前是否真显示得出来」是两回事：Linux 没有 D-Bus 会话或没有 watcher、macOS 没有菜单栏会话时 `Show()` 会返回错误并记日志，此时仍以面板为控制面。
 
 **开机自启**：`sysutil.SetAutostart/IsAutostart` 已实现，并在三条路径接线——启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单开关、面板 `PATCH /api/app`。Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`；**macOS 的 launchd 方案尚未实现**。
 
@@ -185,7 +199,8 @@ git push origin v1.0.0
 - **录屏仅支持 GIF**：纯 Go 无成熟 H.264 编码器，项目约束零 cgo + 无 ffmpeg，因此 MP4、音频、摄像头、麦克风均未实现（GIF 帧缓冲上限 1200 帧，约 2 分钟 @10fps）。
 - **滚动截图自动滚动会注入真实滚轮事件**并把光标移到选区中心，属“控制用户电脑”的行为；纯色背景/重复内容可能因条带多处匹配而拼接失败（会平滑停止并保留已拼部分）。
 - **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存；`modules/taskbar` 包名 `statusbar`、`modules/repair` 包名 `pcrepair` 与目录名不一致。
-- **托盘图标不可配置**：托盘已用 `internal/logo` 程序化渲染品牌蝴蝶（`logo.Render` → `winui.IconFromRGBA`），不再回退 shell 通用图标；但没有配置项可换成自定义图标路径。
+- **托盘图标不可配置**：三平台托盘都用 `internal/logo` 程序化渲染的品牌蝴蝶（Windows 经 `winui.IconFromRGBA` 转 HICON，macOS/Linux 转 NSImage / IconPixmap），不再回退系统通用图标；但没有配置项可换成自定义图标路径。
+- **Linux 托盘未做真机验证**：StatusNotifierItem + dbusmenu 仅通过交叉编译与单测（菜单树、点击事件映射、图标字节序），未在真实桌面环境（GNOME/KDE）上验证显示与交互。
 - **测试覆盖缺口**：`internal/tray`、`internal/winui`、`modules/preferences` 尚无测试文件。
 
 完整待办与优先级见 [`TODO.md`](TODO.md)，变更历史见 [`CHANGELOG.md`](CHANGELOG.md)，模块开发前请读 [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md)。

@@ -40,6 +40,8 @@ type winTray struct {
 }
 
 // New creates a Windows tray icon bound to the given handler.
+// Supported 在 Windows 上为 true：本包用 Shell_NotifyIcon 实现了通知区图标。
+func Supported() bool { return true }
 func New(log *slog.Logger, handler Handler) Tray {
 	return &winTray{log: log, handler: handler, commands: map[uint32]string{}}
 }

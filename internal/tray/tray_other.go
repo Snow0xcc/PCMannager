@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin && !linux
 
 package tray
 
@@ -9,11 +9,13 @@ import (
 
 // noopTray keeps GoBox runnable on platforms without a native tray.
 //
-// GoBox's tray is a Windows Shell_NotifyIcon implementation; other platforms
-// compile and run the framework but surface menu actions through the panel.
+// macOS 有 NSStatusBar 实现、Linux 有 StatusNotifierItem 实现；其余平台
+// 仍然编译运行框架，菜单动作走首选项面板。
 type noopTray struct{}
 
 // New returns a tray that reports the feature as unavailable.
+// Supported 在没有原生托盘实现的平台上为 false（面板是那些平台的控制面）。
+func Supported() bool                    { return false }
 func New(_ *slog.Logger, _ Handler) Tray { return &noopTray{} }
 
 func (t *noopTray) SetMenu(Menu)  {}
