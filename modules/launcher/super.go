@@ -104,6 +104,29 @@ func (s *superStore) remove(key string) {
 	s.saveLocked()
 }
 
+// resolveKeys 把固定 key 列表反查为活命令（展示时按 key 顺序还原；消失的
+// key 静默跳过）。
+//
+// 放在平台无关文件：反查只依赖 f.commands 这张内存表，与 Win32 无关，跨平台
+// 行为必须一致。早期误放在 super_windows.go 并在非 Windows 侧给 nil 桩，
+// 会让依赖它的测试在 Linux runner 上失败（CI 正是因此红掉）。
+func (f *Feature) resolveKeys(keys []string) []command {
+	f.mu.Lock()
+	cmds := f.commands
+	f.mu.Unlock()
+	byKey := make(map[string]command, len(cmds))
+	for _, c := range cmds {
+		byKey[c.key()] = c
+	}
+	out := make([]command, 0, len(keys))
+	for _, k := range keys {
+		if c, ok := byKey[k]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // saveLocked 在持锁前提下落盘。
 func (s *superStore) saveLocked() {
 	if s.path == "" {

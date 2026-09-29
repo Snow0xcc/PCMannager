@@ -19,9 +19,6 @@ func (p *superPanelState) present([]string) {}
 func (p *superPanelState) hide()            {}
 func (p *superPanelState) close()           {}
 
-// resolveKeys 非 Windows 下同样需要反查语义存在（供 Feature 使用），返回空表。
-func (f *Feature) resolveKeys(keys []string) []command { return nil }
-
 // ToggleSuper 非 Windows 提示不可用（超级面板是原生窗口能力）。
 func (f *Feature) ToggleSuper() error {
 	return fmt.Errorf("launcher: 超级面板仅 Windows 支持")

@@ -96,24 +96,6 @@ func (p *superPanelState) present(keys []string) {
 	}
 }
 
-// resolveKeys 把固定 key 列表反查为活命令（供 present 与测试共用）。
-func (f *Feature) resolveKeys(keys []string) []command {
-	f.mu.Lock()
-	cmds := f.commands
-	f.mu.Unlock()
-	byKey := make(map[string]command, len(cmds))
-	for _, c := range cmds {
-		byKey[c.key()] = c
-	}
-	out := make([]command, 0, len(keys))
-	for _, k := range keys {
-		if c, ok := byKey[k]; ok {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 func (p *superPanelState) hide() {
 	p.mu.Lock()
 	p.visible = false
