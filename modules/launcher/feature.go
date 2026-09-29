@@ -51,10 +51,14 @@ type Feature struct {
 	running bool
 	// panel is the native window layer; nil off Windows.
 	panel *panelState
+	// super 是超级面板窗口层；非 Windows 为 nil。
+	super *superPanelState
 	// commands is the searchable action table (rebuilt on Start).
 	commands []command
 	// ranks 持久化候选的打开次数与置顶标记，驱动搜索排序与右键"固定到前方"。
 	ranks *rankStore
+	// superStore 持久化超级面板的固定项 key 列表。
+	superStore *superStore
 }
 
 // NewFeature constructs the launcher module.
@@ -90,8 +94,18 @@ func (f *Feature) Actions() []core.Action {
 	return []core.Action{
 		{ID: "open_panel", Label: "打开快捷面板", Kind: core.ActionOpen,
 			Description: "立即弹出快捷面板（等同按下热键）"},
+		{ID: "open_super_panel", Label: "打开超级面板", Kind: core.ActionOpen,
+			Description: "弹出悬浮磁贴池（固定的高频命令一键执行）"},
 		{ID: "clear_ranks", Label: "清空候选排行榜", Kind: core.ActionNormal,
 			Description: "重置所有候选的打开次数与置顶标记"},
+	}
+}
+
+// ExtraHotkeys implements core.ExtraHotkeysProvider: the super panel has its
+// own global hotkey (independent of the search panel's primary hotkey).
+func (f *Feature) ExtraHotkeys() []core.ExtraHotkey {
+	return []core.ExtraHotkey{
+		{Hotkey: "alt+p", Label: "超级面板", Fire: f.ToggleSuper},
 	}
 }
 
@@ -120,6 +134,8 @@ func (f *Feature) Start() error {
 		f.commands = buildCommands(f.ctx)
 		f.ranks = newRankStore(f.ctx.DataDir)
 		f.ranks.load()
+		f.superStore = newSuperStore(f.ctx.DataDir)
+		f.superStore.load()
 	}
 	f.running = true
 	f.mu.Unlock()
@@ -137,10 +153,14 @@ func (f *Feature) Stop() error {
 	wasRunning := f.running
 	f.running = false
 	p := f.panel
+	s := f.super
 	f.mu.Unlock()
 
 	if wasRunning && p != nil {
 		p.close()
+	}
+	if wasRunning && s != nil {
+		s.close()
 	}
 	if wasRunning && f.ctx != nil {
 		f.ctx.Logger.Info("快捷面板已停止", "module", moduleID)
@@ -226,11 +246,63 @@ func (f *Feature) setCommandPin(c command, on bool) {
 	}
 }
 
+// superKeys 返回超级面板的固定 key 列表（展示顺序）。
+func (f *Feature) superKeys() []string {
+	f.mu.Lock()
+	s := f.superStore
+	f.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	return s.list()
+}
+
+// addSuper 把命令固定进超级面板并落盘。
+func (f *Feature) addSuper(c command) {
+	f.mu.Lock()
+	s := f.superStore
+	f.mu.Unlock()
+	if s == nil {
+		return
+	}
+	s.add(c.key())
+	if f.ctx != nil {
+		f.ctx.Bus.Log(moduleID, "info", "已固定到超级面板："+c.Label)
+	}
+}
+
+// removeSuper 把命令移出超级面板并落盘。
+func (f *Feature) removeSuper(c command) {
+	f.mu.Lock()
+	s := f.superStore
+	f.mu.Unlock()
+	if s == nil {
+		return
+	}
+	s.remove(c.key())
+}
+
+// clearSuper 清空超级面板并落盘。
+func (f *Feature) clearSuper() {
+	f.mu.Lock()
+	s := f.superStore
+	f.mu.Unlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.keys = nil
+	s.saveLocked()
+	s.mu.Unlock()
+}
+
 // RunAction executes a declared panel action.
 func (f *Feature) RunAction(id string, params map[string]string) error {
 	switch id {
 	case "open_panel":
 		return f.OpenUI()
+	case "open_super_panel":
+		return f.ToggleSuper()
 	case "clear_ranks":
 		f.mu.Lock()
 		r := f.ranks

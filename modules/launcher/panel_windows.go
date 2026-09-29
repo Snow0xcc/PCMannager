@@ -324,6 +324,10 @@ func (p *panelState) centerAndSize(n int) {
 
 // wndProc dispatches panel messages.
 func (p *panelState) wndProc(hwnd winui.HWND, msg uint32, wParam, lParam uintptr) (uintptr, bool) {
+	// owner-draw 菜单消息（右键菜单带图标项）交给 winui 分发。
+	if res, handled := winui.DispatchOwnerDraw(msg, wParam, lParam); handled {
+		return res, true
+	}
 	switch msg {
 	case winui.WM_PAINT:
 		p.paint(hwnd)
@@ -547,12 +551,13 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 	// 构造菜单项与动作闭包，二者下标严格对应（分隔符不占动作位）。
 	type act struct {
 		text string
+		icon func(c *winui.Canvas, box winui.Rect, color uint32)
 		fn   func()
 	}
 	var actions []act
 	addSep := false
-	add := func(text string, fn func()) {
-		actions = append(actions, act{text: text, fn: fn})
+	add := func(text string, icon func(c *winui.Canvas, box winui.Rect, color uint32), fn func()) {
+		actions = append(actions, act{text: text, icon: icon, fn: fn})
 	}
 
 	if have {
@@ -561,10 +566,11 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 			_, pinned, _ = ranks.get(sel.key())
 		}
 		pinText := "固定到前方"
+		pinIcon := menuIconPin
 		if pinned {
 			pinText = "取消固定到前方"
 		}
-		add(pinText, func() {
+		add(pinText, pinIcon, func() {
 			if ranks != nil {
 				_, pinnedNow, _ := ranks.get(sel.key())
 				ranks.setPin(sel.key(), !pinnedNow)
@@ -577,26 +583,27 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 		// 复制路径 / 打开位置 / 终端 / 管理员运行：仅对本地目标（app/file/folder）有意义。
 		switch sel.Kind {
 		case "app", "file", "folder":
-			add("编辑关键字...", func() { p.editAliases(sel) })
-			add("复制文件路径", func() {
+			add("编辑关键字...", menuIconEdit, func() { p.editAliases(sel) })
+			add("固定到超级面板", menuIconSuper, func() { p.feat.addSuper(sel) })
+			add("复制文件路径", menuIconCopy, func() {
 				if err := winui.ClipboardText(sel.Path); err != nil {
 					p.ctx.Bus.Notice(moduleID, "复制路径失败："+err.Error())
 				}
 			})
-			add("打开文件位置", func() {
+			add("打开文件位置", menuIconFolderOpen, func() {
 				if err := sysutil.ShowInFolder(sel.Path); err != nil {
 					p.ctx.Bus.Notice(moduleID, "打开位置失败："+err.Error())
 				}
 			})
 			if isExecutablePath(sel.Path) {
-				add("以管理员身份运行", func() {
+				add("以管理员身份运行", menuIconShield, func() {
 					if err := sysutil.RunElevatedPath(sel.Path, nil); err != nil {
 						p.ctx.Bus.Notice(moduleID, "管理员运行失败："+err.Error())
 					}
 				})
 			}
 			if sel.Kind == "folder" {
-				add("在终端打开此处", func() {
+				add("在终端打开此处", menuIconTerminal, func() {
 					if err := sysutil.OpenTerminalHere(sel.Path); err != nil {
 						p.ctx.Bus.Notice(moduleID, "打开终端失败："+err.Error())
 					}
@@ -604,7 +611,7 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 			}
 		}
 	} else {
-		add("清空排行榜", func() {
+		add("清空排行榜", menuIconTrash, func() {
 			if ranks != nil {
 				ranks.clear()
 				p.refreshRows()
@@ -623,7 +630,7 @@ func (p *panelState) onRowMenu(hwnd winui.HWND, x, y int32) {
 		if addSep && i == 1 {
 			items = append(items, winui.MenuItem{Separator: true})
 		}
-		items = append(items, winui.MenuItem{Text: a.text})
+		items = append(items, winui.MenuItem{Text: a.text, Icon: a.icon})
 	}
 
 	// 屏幕坐标 + 边缘防溢出：菜单估算尺寸，靠近右/下边缘时向左/上翻。
