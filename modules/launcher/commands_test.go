@@ -210,32 +210,7 @@ func TestBuildCommandsSkipsDangerous(t *testing.T) {
 	}
 }
 
-// TestPanelSize 守护单行布局几何：面板宽度固定为屏幕 3/5，高度恒定（搜索框
-// + 一行磁贴），不随条目数增加而变高。
-func TestPanelSize(t *testing.T) {
-	const screenW = int32(2240)
-	w, h := panelSize(1, screenW)
-	if w != screenW*3/5 {
-		t.Fatalf("面板宽 %d 应为屏宽 3/5 (%d)", w, screenW*3/5)
-	}
-	if h != gridPadY*2+panelEditH+gridTileH {
-		t.Fatalf("面板高 %d 应为恒定单行高 %d", h, gridPadY*2+panelEditH+gridTileH)
-	}
-	// 条目再多，宽高也不变（内容靠横向滚动）。
-	w2, h2 := panelSize(20, screenW)
-	if w2 != w || h2 != h {
-		t.Fatalf("面板尺寸不应随条目数变化: (%d,%d) vs (%d,%d)", w2, h2, w, h)
-	}
-}
-
-// TestContentWidth 守护内容总宽计算：N 个磁贴 + 间距 + 内边距。
-func TestContentWidth(t *testing.T) {
-	c1 := contentWidth(1)
-	if c1 != gridPadX*2+gridTileW {
-		t.Fatalf("contentWidth(1)=%d, 期望 %d", c1, gridPadX*2+gridTileW)
-	}
-	c3 := contentWidth(3)
-	if c3 != gridPadX*2+3*gridTileW+2*gridGap {
-		t.Fatalf("contentWidth(3)=%d, 期望 %d", c3, gridPadX*2+3*gridTileW+2*gridGap)
-	}
-}
+// （面板几何测试 TestPanelSize/TestContentWidth 已移到 panel_windows_test.go：
+// 它们引用的 panelSize/gridTileW 等常量定义在 panel_windows.go，只能随
+// //go:build windows 一起编译——放在本文件会让 linux/darwin 的 go vet 与
+// go test 因 undefined 而失败，这正是 CI 在 Linux runner 上红掉的原因。）

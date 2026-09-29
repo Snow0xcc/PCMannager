@@ -3,10 +3,48 @@
 package taskbar
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
+
+// TestPartsIncludeBatteryOnlyWhenPresent 守护电量字段：没有电池的设备不应
+// 出现 BAT 读数（否则面板会显示误导性的 0%），开启开关且有电池时才出现。
+//
+// 从 feature_test.go 移来：widget.parts 与 widget 的 font 字段都定义在
+// widget_windows.go，非 Windows 侧没有对应实现；放在平台无关测试文件会让
+// linux/darwin 的 go vet / go test 因 undefined 符号失败（CI 的 Linux runner
+// 正是因此红掉）。
+func TestPartsIncludeBatteryOnlyWhenPresent(t *testing.T) {
+	f := newTestFeature(t, map[string]any{optShowBattery: true})
+
+	w := &widget{feat: f}
+	got := w.parts(Stats{BatteryPresent: false, BatteryPercent: 0})
+	if strings.Contains(strings.Join(got, " "), "BAT") {
+		t.Fatalf("无电池时不应出现 BAT 读数: %v", got)
+	}
+
+	got = w.parts(Stats{BatteryPresent: true, BatteryPercent: 73, BatteryCharging: true})
+	if !containsPart(got, "BAT 73%+") {
+		t.Fatalf("有电池且充电时应出现 BAT 73%%+: %v", got)
+	}
+	got = w.parts(Stats{BatteryPresent: true, BatteryPercent: 42})
+	if !containsPart(got, "BAT 42%") {
+		t.Fatalf("有电池未充电时应出现 BAT 42%%: %v", got)
+	}
+}
+
+// TestPartsOmitBatteryWhenDisabled 守护开关：关闭 optShowBattery 时即使有
+// 电池也不显示（同 TestPartsIncludeBatteryOnlyWhenPresent 的迁移说明）。
+func TestPartsOmitBatteryWhenDisabled(t *testing.T) {
+	f := newTestFeature(t, map[string]any{optShowBattery: false})
+	w := &widget{feat: f}
+	got := w.parts(Stats{BatteryPresent: true, BatteryPercent: 88})
+	if containsPart(got, "BAT 88%") {
+		t.Fatalf("关闭显示电量时不应出现 BAT: %v", got)
+	}
+}
 
 // TestHorizontalPosAnchorsLeftOfTray 守护 TrafficMonitor 式定位：
 // 组件必须紧贴通知区域（时钟）左侧，而不是贴任务栏右边缘——后者会压在时钟上。

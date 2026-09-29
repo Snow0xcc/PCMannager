@@ -3,7 +3,6 @@ package taskbar
 import (
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -406,38 +405,9 @@ func TestStateReflectsStoppedAndHidden(t *testing.T) {
 	}
 }
 
-// TestPartsIncludeBatteryOnlyWhenPresent 守护电量字段：没有电池的设备不应出现
-// BAT 读数（否则面板会显示误导性的 0%），开启开关且有电池时才出现。
-func TestPartsIncludeBatteryOnlyWhenPresent(t *testing.T) {
-	f := newTestFeature(t, map[string]any{optShowBattery: true})
-
-	// 无电池：不出现。
-	w := &widget{feat: f, font: 0}
-	got := w.parts(Stats{BatteryPresent: false, BatteryPercent: 0})
-	if strings.Contains(strings.Join(got, " "), "BAT") {
-		t.Fatalf("无电池时不应出现 BAT 读数: %v", got)
-	}
-
-	// 有电池：出现百分比，充电时带 + 标记。
-	got = w.parts(Stats{BatteryPresent: true, BatteryPercent: 73, BatteryCharging: true})
-	if !containsPart(got, "BAT 73%+") {
-		t.Fatalf("有电池且充电时应出现 BAT 73%%+: %v", got)
-	}
-	got = w.parts(Stats{BatteryPresent: true, BatteryPercent: 42})
-	if !containsPart(got, "BAT 42%") {
-		t.Fatalf("有电池未充电时应出现 BAT 42%%: %v", got)
-	}
-}
-
-// TestPartsOmitBatteryWhenDisabled 守护开关：关闭 optShowBattery 时即使有电池也不显示。
-func TestPartsOmitBatteryWhenDisabled(t *testing.T) {
-	f := newTestFeature(t, map[string]any{optShowBattery: false})
-	w := &widget{feat: f}
-	got := w.parts(Stats{BatteryPresent: true, BatteryPercent: 88})
-	if containsPart(got, "BAT 88%") {
-		t.Fatalf("关闭显示电量时不应出现 BAT: %v", got)
-	}
-}
+// （widget.parts 相关的两个电量测试已移到 widget_windows_test.go：parts 是
+// widget_windows.go 的方法，widget_other.go 没有它；放在平台无关测试文件
+// 会让 linux/darwin 的 go vet / go test 因 undefined 符号失败。）
 
 // containsPart 判断字段切片中是否存在完全匹配的字段。
 func containsPart(parts []string, want string) bool {
