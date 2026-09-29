@@ -43,6 +43,7 @@
 - `modules/repair`：**电脑修复 / 一键安装工具箱**，所有条目集中在 `catalog.go` 的 `Entry` 切片（声明式、平台无关，单一数据源）；`feature.go` 的 `Actions()` 全量从 `Catalog()` 生成，`RunAction` 经 `Lookup`+`Entry.ResolveCommand` 分派；walk 面板（`panel_windows.go`）与 Web 面板均从此目录渲染，新增工具只改 `catalog.go`。包管理器偏好 `prefer_source`（`auto`/`winget`/`choco`）决定解析出的安装命令。
 - `docs/DEVELOPMENT.md`：快速开发指南（子模块初始化、工具链、本地调试），新人入职先读。
 - `.github/workflows/release.yml`：打 tag 时跨平台构建并发布到 GitHub Release。
+- **文档与 CI**：`docs/wiki/*.md` 是 Wiki 的**单一数据源**（含 `{TAG}`/`{REPO}` 占位符），由 `scripts/sync-wiki.sh` 在发版时渲染后推送到 `<repo>.wiki.git`——**不要**在 Wiki 网页上直接编辑，下次发版会被覆盖。`docs/site/index.html` 是 GitHub Pages 主页源码（纯静态无构建），由 `.github/workflows/pages.yml` 在 `docs/site/**` 变更时发布。
 - `bin/pcmannager.exe`：已编译的 Windows 二进制，忽略即可。
 
 ## 关键开发约定

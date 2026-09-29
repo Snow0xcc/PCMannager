@@ -1,0 +1,52 @@
+# GitHub Pages：发布项目主页。
+#
+# 站点源码就是 docs/site/index.html（纯静态，无构建步骤）。用它而不是
+# Jekyll 主题，是为了让页面与仓库内其它文档共用同一套约束与语言风格，
+# 且不引入额外的构建/依赖链。
+#
+# 触发：推送到 main 且 docs/site/ 有变更，或手动触发。
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Pages 部署需要的权限。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 并发：同一时间只允许一次部署，但不取消进行中的（避免部署到一半被打断）。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 客户端界面禁用 emoji（项目硬约束），站点发布前同样要过这道门禁。
+      - name: emoji check
+        run: bash scripts/check-emoji.sh
+
+      - name: setup pages
+        uses: actions/configure-pages@v5
+
+      - name: upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site
+
+      - name: deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

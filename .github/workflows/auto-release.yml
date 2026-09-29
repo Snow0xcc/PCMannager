@@ -101,58 +101,6 @@ jobs:
         if: steps.versioning.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.versioning.outputs.new_tag }}"
-          REPO="${{ github.repository }}"
-          WIKI_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.wiki.git"
-
-          # 若 Wiki 未在仓库设置中开启，则克隆失败；这里降级为目录占位并
-          # 原地初始化，保证首次推送也能成功建库。
-          if ! git clone "$WIKI_URL" wiki_repo 2>/dev/null; then
-            echo "::notice::Wiki 尚未初始化，尝试创建"
-            mkdir -p wiki_repo
-            git -C wiki_repo init
-            git -C wiki_repo remote add origin "$WIKI_URL"
-          fi
-          cd wiki_repo
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # 从当前提交的 CHANGELOG/TODO 提取最新一条更新日志（无文件则给占位）。
-          if [ -f CHANGELOG.md ]; then
-            CHANGE="$(sed -n '3,12p' CHANGELOG.md)"
-          else
-            CHANGE="本次发布 ${TAG}（自动生成，尚无 CHANGELOG）"
-          fi
-
-          cat > Home.md << EOF
-          # 欢迎使用 PCMannager 文档
-
-          最新版本：**${TAG}**（由 CI 自动更新）
-
-          ## 镜像站加速下载通道
-
-          | 平台 | 官方源 | ghfast 加速 | ghproxy 加速 |
-          | :--- | :--- | :--- | :--- |
-          | Windows (amd64) | [下载](https://github.com/${REPO}/releases/download/${TAG}/pcmannager-windows-amd64.exe) | [高速](https://ghfast.top/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-windows-amd64.exe) | [高速](https://ghproxy.net/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-windows-amd64.exe) |
-          | Linux (amd64) | [下载](https://github.com/${REPO}/releases/download/${TAG}/pcmannager-linux-amd64) | [高速](https://ghfast.top/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-linux-amd64) | [高速](https://ghproxy.net/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-linux-amd64) |
-          | macOS (amd64) | [下载](https://github.com/${REPO}/releases/download/${TAG}/pcmannager-darwin-amd64) | [高速](https://ghfast.top/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-darwin-amd64) | [高速](https://ghproxy.net/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-darwin-amd64) |
-          | macOS (arm64) | [下载](https://github.com/${REPO}/releases/download/${TAG}/pcmannager-darwin-arm64) | [高速](https://ghfast.top/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-darwin-arm64) | [高速](https://ghproxy.net/https://github.com/${REPO}/releases/download/${TAG}/pcmannager-darwin-arm64) |
-
-          > 某个加速站不可用时，请切换其它节点或官方源。
-
-          ## 自动检查更新与升级
-
-          运行安装脚本即可自动轮询可用镜像源进行检测与升级。
-
-          ## 本次更新日志
-
-          ${CHANGE}
-          EOF
-
-          # 修正 heredoc 前导空白（Tab/空格），让 Markdown 表格正常解析。
-          sed -i 's/^          //' Home.md
-
-          git add Home.md
-          git commit -m "docs(wiki): update for ${TAG}" || echo "Wiki 没有变更需要提交"
-          git push origin master 2>/dev/null || git push origin main || git push origin HEAD
+          TAG: ${{ steps.versioning.outputs.new_tag }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/sync-wiki.sh

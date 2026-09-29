@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCMannager — 跨平台系统托盘工具</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #57606a;
+    --card: #f6f8fa;
+    --border: #d0d7de;
+    --accent: #0969da;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --card: #161b22;
+      --border: #30363d;
+      --accent: #58a6ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0 16px 64px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+    line-height: 1.7;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  header { padding: 56px 0 24px; border-bottom: 1px solid var(--border); }
+  h1 { margin: 0 0 8px; font-size: 32px; }
+  .tagline { color: var(--muted); margin: 0; }
+  h2 { margin-top: 40px; font-size: 22px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  a { color: var(--accent); }
+  code {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 13px;
+  }
+  pre {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+  }
+  pre code { border: 0; padding: 0; background: none; }
+  footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>PCMannager</h1>
+    <p class="tagline">跨平台系统托盘工具：剪贴板历史、截图、上下文记录、电脑修复、任务栏状态、快捷面板、超级面板、自动更新。</p>
+  </header>
+
+  <h2>下载</h2>
+  <table>
+    <thead><tr><th>平台</th><th>官方源</th><th>ghfast 加速</th><th>ghproxy 加速</th></tr></thead>
+    <tbody>
+      <tr><td>Windows (amd64)</td>
+        <td><a href="https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-windows-amd64.exe">下载</a></td>
+        <td><a href="https://ghfast.top/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-windows-amd64.exe">高速</a></td>
+        <td><a href="https://ghproxy.net/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-windows-amd64.exe">高速</a></td></tr>
+      <tr><td>Linux (amd64)</td>
+        <td><a href="https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-linux-amd64">下载</a></td>
+        <td><a href="https://ghfast.top/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-linux-amd64">高速</a></td>
+        <td><a href="https://ghproxy.net/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-linux-amd64">高速</a></td></tr>
+      <tr><td>macOS (amd64)</td>
+        <td><a href="https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-darwin-amd64">下载</a></td>
+        <td><a href="https://ghfast.top/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-darwin-amd64">高速</a></td>
+        <td><a href="https://ghproxy.net/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-darwin-amd64">高速</a></td></tr>
+      <tr><td>macOS (arm64)</td>
+        <td><a href="https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-darwin-arm64">下载</a></td>
+        <td><a href="https://ghfast.top/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-darwin-arm64">高速</a></td>
+        <td><a href="https://ghproxy.net/https://github.com/Snow0xcc/PCMannager/releases/latest/download/pcmannager-darwin-arm64">高速</a></td></tr>
+    </tbody>
+  </table>
+
+  <h2>功能模块</h2>
+  <div class="grid">
+    <div class="card"><h3>剪贴板历史</h3><p>文本、图片、文件流多态存储，图片与文件只存路径避免数据库膨胀。</p></div>
+    <div class="card"><h3>截图与录屏</h3><p>区域截图、GIF 录屏、滚动长截图，支持矩形、椭圆、箭头、画笔、马赛克、文本、水印。</p></div>
+    <div class="card"><h3>任务栏状态</h3><p>网速、内存、电量等，透明背景 + 反色文字，定位锚在通知区左侧。</p></div>
+    <div class="card"><h3>快捷面板</h3><p>Alt+Space 全局搜索，多因子加权排序，支持别名与拼音缩写。</p></div>
+    <div class="card"><h3>超级面板</h3><p>Alt+P 悬浮磁贴池，高频命令一键执行，失焦隐藏。</p></div>
+    <div class="card"><h3>电脑修复</h3><p>一键安装工具箱，条目声明式集中管理，支持 winget / choco 偏好。</p></div>
+    <div class="card"><h3>上下文记录</h3><p>定时截屏结合窗口标题，可接视觉语言模型解析画面语义（默认关闭）。</p></div>
+    <div class="card"><h3>自动更新</h3><p>静默检查与镜像池轮询下载，应用需显式确认（默认关闭）。</p></div>
+  </div>
+
+  <h2>快捷键</h2>
+  <table>
+    <thead><tr><th>热键</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td><code>Alt+Space</code></td><td>唤起快捷面板</td></tr>
+      <tr><td><code>Alt+P</code></td><td>唤起超级面板</td></tr>
+      <tr><td><code>F1</code></td><td>截图</td></tr>
+      <tr><td><code>Ctrl+`</code></td><td>剪贴板历史</td></tr>
+      <tr><td><code>Ctrl+Alt+T</code></td><td>任务栏状态统计</td></tr>
+      <tr><td><code>Ctrl+Shift+A</code></td><td>滚动截图</td></tr>
+      <tr><td><code>Alt+Shift+R</code></td><td>录屏（GIF）</td></tr>
+    </tbody>
+  </table>
+
+  <h2>构建</h2>
+  <pre><code>bash scripts/build.sh windows amd64 pcmannager.exe</code></pre>
+  <p>该脚本固定 <code>-tags production</code> 并对 Windows 追加 <code>-H windowsgui</code>。直接 <code>go build</code> 会因缺少构建标签导致程序静默退出。</p>
+
+  <h2>文档</h2>
+  <p>完整文档见 <a href="https://github.com/Snow0xcc/PCMannager/wiki">Wiki</a>：快速开始、模块说明、快捷键、常见问题。</p>
+
+  <footer>本页随仓库 <code>docs/site/</code> 维护，由 GitHub Pages 发布。界面遵循项目约束，不使用 emoji。</footer>
+</div>
+</body>
+</html>

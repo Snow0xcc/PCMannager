@@ -6,6 +6,18 @@
 
 > 规划代号（PRD 与代码内部曾用的 "GoBox"）与本仓库名 PCMannager 指代同一产品，本文档统一使用 **PCMannager**。
 
+## 文档
+
+| 入口 | 内容 |
+| :--- | :--- |
+| [项目主页](docs/site/index.html)（GitHub Pages） | 下载、功能概览、快捷键速查 |
+| [Wiki](https://github.com/Snow0xcc/PCMannager/wiki) | 快速开始、模块说明、快捷键、常见问题 |
+| [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | 工具链与本地调试 |
+| [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md) | 模块开发契约 |
+| [`AGENTS.md`](AGENTS.md) | 架构约定与硬约束 |
+
+Wiki 内容以 `docs/wiki/*.md` 为单一数据源，由 `scripts/sync-wiki.sh` 在发版时渲染并同步（`{TAG}`/`{REPO}` 占位符在此替换）。修改文档请直接编辑仓库内文件，不要在 Wiki 网页上改——那里的内容会被下次发版覆盖。
+
 ## 功能与状态
 
 | 模块 | ID | 说明 | 默认热键 | 默认开关 |
