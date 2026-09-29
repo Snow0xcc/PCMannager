@@ -21,9 +21,25 @@ jobs:
       - name: emoji check
         run: bash scripts/check-emoji.sh
 
+  brand:
+    name: brand assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      # 文档上的蝴蝶必须与 internal/logo 的几何同源（README / Wiki / Pages 都用它）；
+      # 改了几何忘了跑 scripts/gen-logo.sh，发布前在这里拦下。
+      - name: brand assets check
+        run: bash scripts/gen-logo.sh --check
+
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: lint
+    needs: [lint, brand]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

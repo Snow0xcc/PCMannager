@@ -81,7 +81,7 @@ jobs:
           ls -l "pcm-${GOOS}-${GOARCH}"
 
   vet:
-    name: vet + gofmt
+    name: vet + gofmt + 品牌资源
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -114,3 +114,8 @@ jobs:
             exit 1
           fi
           echo "gofmt check passed (${#existing[@]} files)"
+
+      # 品牌资源必须与 internal/logo 的几何同源：改了几何却忘了重新生成，
+      # 文档上的蝴蝶就会和托盘图标不一致——在这里拦下。
+      - name: brand assets check
+        run: bash scripts/gen-logo.sh --check

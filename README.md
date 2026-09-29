@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/site/assets/logo.svg" alt="PCMannager" width="260">
+</p>
+
 # PCMannager
 
 跨平台系统托盘工具（以 Windows 为主，同时支持 Linux/macOS），用 Go 编写。集成任务栏状态、剪贴板历史、截图、工作上下文记录、电脑修复工具箱等模块，每个模块可独立开关并绑定全局热键。
@@ -17,6 +21,8 @@
 | [`AGENTS.md`](AGENTS.md) | 架构约定与硬约束 |
 
 Wiki 内容以 `docs/wiki/*.md` 为单一数据源，由 `scripts/sync-wiki.sh` 在发版时渲染并同步（`{TAG}`/`{REPO}` 占位符在此替换）。修改文档请直接编辑仓库内文件，不要在 Wiki 网页上改——那里的内容会被下次发版覆盖。
+
+**品牌资源**：品牌蝴蝶的**单一数据源是 `internal/logo/logo.go`**（按 0..100 归一化坐标程序化绘制；托盘图标由 `logo.Render` 直接光栅化成 HICON，不需要任何图标文件）。README / Wiki / Pages 展示用的 `docs/site/assets/logo.svg`（图标 + 字标）与 `icon.svg`（仅图标，站点 favicon）由 `bash scripts/gen-logo.sh` 从同一套几何导出（放在 `docs/site/` 是因为它是 Pages 的发布根）。改形状或配色请改 Go 几何后重新生成，**不要手改 SVG**；`bash scripts/gen-logo.sh --check` 可校验两者是否一致。
 
 ## 功能与状态
 
@@ -138,7 +144,7 @@ REST 接口：
 
 ## 配置
 
-配置文件为数据目录下的 `config.yaml`（首次运行按 `internal/config.Default()` 生成），数据目录解析见 `internal/paths`：Windows `%APPDATA%\GoBox`、Linux `$XDG_CONFIG_HOME/GoBox`，可由 `app.data_dir` 覆盖。调试时可用 `PCMANNAGER_CONFIG` 指向其它目录（也接受配置文件路径，取其父目录）。
+配置文件为数据目录下的 `config.yaml`（首次运行按 `internal/config.Default()` 生成），数据目录解析见 `internal/paths`：Windows `%APPDATA%\GoBox`、Linux `$XDG_CONFIG_HOME/GoBox`，可由 `app.data_dir` 覆盖。调试时可用 `PCMANNAGER_CONFIG` 指向其它目录（也接受配置文件路径，取其父目录）——它会同时搬走 `config.yaml` 与数据目录（日志、模块数据），不会只搬一半；优先级为 `app.data_dir` > `PCMANNAGER_CONFIG` > 系统默认。
 
 日志同时写入**两处**：数据目录 `logs/gobox.log` 与**程序所在目录** `logs/gobox.log`（后者用 `EvalSymlinks` 解析 exe 真实路径）。无控制台的 GUI 构建可就地查看程序目录的日志。
 
@@ -179,7 +185,7 @@ git push origin v1.0.0
 - **录屏仅支持 GIF**：纯 Go 无成熟 H.264 编码器，项目约束零 cgo + 无 ffmpeg，因此 MP4、音频、摄像头、麦克风均未实现（GIF 帧缓冲上限 1200 帧，约 2 分钟 @10fps）。
 - **滚动截图自动滚动会注入真实滚轮事件**并把光标移到选区中心，属“控制用户电脑”的行为；纯色背景/重复内容可能因条带多处匹配而拼接失败（会平滑停止并保留已拼部分）。
 - **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存；`modules/taskbar` 包名 `statusbar`、`modules/repair` 包名 `pcrepair` 与目录名不一致。
-- **托盘图标无可配置资源**：`defaultIcon()` 目前回退 shell 通用图标。
+- **托盘图标不可配置**：托盘已用 `internal/logo` 程序化渲染品牌蝴蝶（`logo.Render` → `winui.IconFromRGBA`），不再回退 shell 通用图标；但没有配置项可换成自定义图标路径。
 - **测试覆盖缺口**：`internal/tray`、`internal/winui`、`modules/preferences` 尚无测试文件。
 
 完整待办与优先级见 [`TODO.md`](TODO.md)，变更历史见 [`CHANGELOG.md`](CHANGELOG.md)，模块开发前请读 [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md)。

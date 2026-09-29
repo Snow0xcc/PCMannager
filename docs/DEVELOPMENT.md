@@ -53,6 +53,10 @@ CGO_ENABLED=0 go vet ./...
 # 格式化检查 / 修复
 gofmt -l .          # 列出未格式化文件
 gofmt -w .          # 就地格式化
+
+# 重新生成品牌 SVG（改了 internal/logo 的几何后必跑）
+bash scripts/gen-logo.sh
+bash scripts/gen-logo.sh --check   # 只校验 docs/site/assets/*.svg 是否与几何一致
 ```
 
 Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。

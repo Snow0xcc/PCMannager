@@ -5,6 +5,7 @@
 ## 构建、测试、检查、格式化
 - 跨平台可构建：Windows 下用 `lxn/walk`/`gonutz/w32` 渲染真实窗口，非 Windows 下对应 UI 文件由 `//go:build !windows` 的同名 no-op 版本替换（UI 降级为空转，核心逻辑照常编译运行）。
 - 构建/检查命令：`go build ./...`、`go vet ./...`、`gofmt -l .`（格式化用 `gofmt -w .`）。首次改动依赖后先跑 `go mod tidy`。
+- **代理/工具链取不到时的兜底**：`proxy.golang.org` 在本机不可达（连 `GOTOOLCHAIN` 自动下载都会 i/o timeout），可用镜像拉工具链与依赖：`GOTOOLCHAIN=go1.27.1 GOPROXY=https://goproxy.cn,direct go mod download`（工具链本身也是经 GOPROXY 下载的模块；下载一次后本机即可离线构建）。
 - **发布构建统一走 `bash scripts/build.sh <goos> <goarch> <输出>`**（CI 与本地同源，避免参数漂移）。该脚本固定 `CGO_ENABLED=0 -trimpath -ldflags="-s -w" -tags production`，并**对 Windows 追加 `-H windowsgui`**。两个参数都不能省：
   - 漏掉 `-H windowsgui` → 启动弹出黑色控制台窗口。
   - 漏掉 `-tags production` → Wails 退回 `app_default_windows.go` 桩实现，`CreateApp` 只弹错误框返回 `nil`，随后事件转发以无 Wails 值的 context 调 `runtime.EventsEmit` 触发 `log.Fatalf`，进程在**创建完 config 后静默退出**（GUI 子系统无控制台、无日志，最难排查的一类故障）。
@@ -12,7 +13,7 @@
 - **版本号由构建注入**：`internal/app.Version` 是 `var`（非 const），`scripts/build.sh` 用 `-X` 注入；取值优先 `PCM_VERSION` 环境变量（CI 设为 `github.ref_name`，即 tag 名），否则 `git describe`，未打 stamp 时从内嵌 build info 回退、再兜底 `0.0.0-dev`。**任何构建都不会出现空白版本号**，这也是自动更新（TODO #7）的前置条件。
   - **`Version` 的初值必须是 `devVersion` 常量，回退只能写在 `init()` 里**。曾经写成 `var Version = versionFromBuildInfo()`：包级初始化器在**链接期 `-X` 之后**运行，会把注入的 tag 覆盖回内嵌 build info，实测日志显示 `v0.1.0-rc1.0.<日期>+dirty` 而非构建的 `v0.1.0-rc1-8-gd412d3e-dirty`（自动更新的比较基准因此是错的）。现为 `var Version = devVersion` + `init()` 中“仅当仍等于 `devVersion` 才回退”，两条路径都能工作。
 - **面板可显示模块失败原因**：`ModuleInfo.LastError`（`last_error` 字段）。Windows 构建跑 `-H windowsgui` 没有控制台，模块"启动失败"或"热键注册失败"若不上报到面板，用户只能翻日志文件。`App` 用 `lastError`/`hotkeyError` 两个槽位分开记录（避免互相覆盖），并给 `lastError` 配 `errorAt` 时间戳——Bus 事件异步到达，用时间戳防止旧事件覆盖更新的状态。
-- 测试：`go test ./...`（`-race` 需 cgo，与项目 `CGO_ENABLED=0` 约束冲突，本机不可用）。现有单测覆盖 `internal/core`（Bus/Registry/热键解析与 `Stop` 幂等）、`internal/config`（默认值合并、原子保存）、`internal/server`（httptest 冒烟）、**`internal/app`**（注册/启停/ApplyOption 重启语义/LastError/Shutdown 幂等，仅 `!windows`）、**`internal/logx`**（多 sink 尽力而为写入、ExtraFiles、目录不可用不致命）、**`internal/paths`**（日志路径布局、可执行文件目录解析）、**`internal/winui`**（`Canvas.Image` 全屏尺寸传输、子区域传输、`FillAlpha` 遮罩、`ContrastText` 自适应对比色、`ClipboardFileDrop` 的 `CF_HDROP` 真实往返）、**`modules/taskbar`**（采集与格式化、电量字段、组件定位与反色取字、**网格字段随字号缩放**）、`modules/repair`（工具箱目录）、**`modules/screenshot`**（选项/历史/编码、GIF 帧编码器、滚动条带匹配与多解消歧、编辑器模式与屏幕坐标换算）、`modules/clipboard`（History 并发）、**`modules/preferences`**（nil Manager 容错、ModuleIDs 顺序与去重）、**`modules/updater`**（SemVer 解析与 rc 排序、isNewer opt-in 语义、主机白名单拒绝、原子下载上限、资产平台匹配）。新增功能时应随之补测试。
+- 测试：`go test ./...`（`-race` 需 cgo，与项目 `CGO_ENABLED=0` 约束冲突，本机不可用）。现有单测覆盖 `internal/core`（Bus/Registry/热键解析与 `Stop` 幂等）、`internal/config`（默认值合并、原子保存）、`internal/server`（httptest 冒烟）、**`internal/app`**（注册/启停/ApplyOption 重启语义/LastError/Shutdown 幂等，仅 `!windows`）、**`internal/logx`**（多 sink 尽力而为写入、ExtraFiles、目录不可用不致命）、**`internal/paths`**（日志路径布局、可执行文件目录解析）、**`internal/winui`**（`Canvas.Image` 全屏尺寸传输、子区域传输、`FillAlpha` 遮罩、`ContrastText` 自适应对比色、`ClipboardFileDrop` 的 `CF_HDROP` 真实往返）、**`modules/taskbar`**（采集与格式化、电量字段、组件定位与反色取字、**网格字段随字号缩放**）、`modules/repair`（工具箱目录）、**`modules/screenshot`**（选项/历史/编码、GIF 帧编码器、滚动条带匹配与多解消歧、编辑器模式与屏幕坐标换算）、`modules/clipboard`（History 并发）、**`modules/preferences`**（nil Manager 容错、ModuleIDs 顺序与去重）、**`modules/updater`**（SemVer 解析与 rc 排序、isNewer opt-in 语义、主机白名单拒绝、原子下载上限、资产平台匹配）、**`internal/logo`**（品牌蝴蝶：渲染非空、16px 下蓝翅与深色机身并存、非法尺寸返回 nil、镜像折返不出界、品牌色锁定）。新增功能时应随之补测试。
 - **`Canvas.Image` 必须让 Windows 持有像素**：`StretchDIBits` 在源缓冲区大且位于 **Go 堆**时会静默失败（实测 512×512 成功、768×768 起返回 0 不绘制），导致截图编辑器把全屏捕获画成纯黑。现改为 `CreateDIBSection` 写入后 `BitBlt`/`StretchBlt` 传输；`ImageSubRect` 同理。
 - **`AlphaBlend` 的 `BLENDFUNCTION` 按值传**：x64 调用约定下它是 4 字节结构体，打包进一个寄存器（`blend = op | flags<<8 | alpha<<16 | format<<24`），传指针会让调用静默失败——截图遮罩与任务栏半透明都由此而来。`AlphaBlend` 在 `msimg32.dll`，不在 `gdi32`/`user32`。
 - **任务栏小组件必须锁线程 + 提升 Z 序 + 颜色键透明**（三条都是实测踩出来的，详见下文“硬约束”）。`runtime.LockOSThread` 缺失会让 Explorer 卡死；不调 `winui.BringToTop` 会被 Windows 11 的 XAML 合成层遮得完全不可见；透明背景靠 `WS_EX_LAYERED` + `LWA_COLORKEY`，并且字体必须用 `NONANTIALIASED_QUAL`，否则 ClearType 混色边缘不受键控制而残留品红描边。
@@ -23,7 +24,7 @@
   - `App.Enable` 的幂等守卫是 `enabled && running`，**必须经 `EnableModule`**（会先落盘开关）才能触发；直接调 `Enable` 不经过配置写入，守卫不生效。
   - `HotkeyManager.Conflicts()` 只统计**后端真正接受**的 combo，非 Windows 下后端恒返回 `errHotkeyUnsupported`，因此恒为空；冲突检测已由 `internal/core` 的 fake backend 覆盖，其它包别重复断言。
   - `Manager.ModuleIDs()` = 注册顺序 + **配置里独有的模块**，而默认配置永远带 5 个模块，所以断言"等于注册的 N 个"必然失败——应断言前缀顺序。
-- **前端禁用 emoji 检查**：`bash scripts/check-emoji.sh`（扫描 html/css/js/md/go，正则覆盖 emoji 与符号区段）。提交前应跑；接入 CI 见 TODO #16。
+- **前端禁用 emoji 检查**：`bash scripts/check-emoji.sh`（扫描 html/css/js/md/go，正则覆盖 emoji 与符号区段）。**已接入 CI**：`ci.yml` 的 `lint` job、`release.yml` 的 `lint` job（经 `needs` 串在 `build` 之前，故 emoji 违规会卡住发布且不会随 4 个平台重复执行）与 `pages.yml` 的发布前一步都会跑它（TODO #16 已完成）。
 - `PCMANNAGER_CONFIG` 环境变量可覆盖配置文件路径，便于本地调试。
 - **四个目标平台 `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64` 均以 `CGO_ENABLED=0` 构建通过**（旧 `main.go` 引用已删除 `core` API 的构建缺口已解除）；改完依赖跑 `go mod tidy`，提交前跑 `gofmt -l . | grep -v ^reference/` 与 `go vet ./...`。
 - `reference/` 是 5 个第三方参考仓库，以 **git submodule** 引入（见 `.gitmodules`：MineContext、TrafficMonitor、clipboard、screenshot、dtools）。克隆后须 `git submodule update --init --recursive`；**不要**从主代码 import，也不修改其内容——升级只提交子模块指针变更。
@@ -38,12 +39,13 @@
 - `internal/wailsapp/`：原生窗口层（Windows 用 Wails/WebView2），`_windows.go`/`_other.go` 成对，非 Windows 返回 `ErrUnsupported` 由调用方回退到 HTTP 面板。**Wails 与 `internal/server` 并存**：二者共用 `server.Provider` 数据契约（经 `App.PanelProvider()`），面板前端通过 `transport` 抽象自动选择 `fetch+EventSource` 或 `window.go.wailsapp.API`。经实测 `wails/v2@v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。**接线已完成**：`main.go` 调 `runNativeWindow`（Windows 起独立 `LockOSThread` goroutine 跑 `wailsapp.Run`，托盘消息泵必须留在主线程；非 Windows 为 no-op），`internal/app` 的 `OpenPanel()` 按 `app.open_in_webview` 偏好选择原生窗口或浏览器，任一路径失败自动回退另一条。
 - `internal/server/`：首选项面板的 HTTP 层——JSON REST（`/api/state`、`/api/modules[/id]`、`/api/app`、`/api/events` SSE）+ `internal/panel/index.html` 通过 `embed` 内置，仅监听 `127.0.0.1`；平台无关、无 cgo，前端禁用 emoji。
 - `internal/tray/`、`internal/sysutil/`、`internal/logx/`、`internal/paths/`：支撑包——托盘抽象（`_windows`/`_other` 成对，菜单支持勾选/禁用/分隔符）、系统工具（提权/自启/单实例/通知/命令执行）、日志、统一数据目录解析（`AppName` 仍为历史代号 GoBox）。
+- `internal/logo/`：品牌蝴蝶的几何与渲染——`Render(size)` 按 0..100 归一化坐标程序化绘制（刻意不引入 SVG 解析器，保持 `CGO_ENABLED=0` 依赖精简），托盘图标由 `winui.IconFromRGBA` 从它生成 HICON；`svg.go` 把同一套几何导出为静态 SVG（`MarkSVG`/`LogoSVG`），`internal/logo/gen` 是生成命令。文档侧 `docs/site/assets/{logo,icon}.svg` 由 `bash scripts/gen-logo.sh` 生成（`--check` 只校验不写盘），**不要手改**——改形状或配色请改本包几何后重新生成。
 - `modules/<name>/`：各功能独立成包（clipboard、screenshot、selfcontext、repair、preferences、taskbar、updater），每个实现 `internal/core.Module`（`NewFeature()` 构造，包名保留旧名如 `statusbar`/`pcrepair`，注意与目录名不同）。
 - `modules/updater`：**自动更新**（TODO #7）。定时检查 GitHub Releases（SemVer 比较含 rc 排序与 `include_prerelease` opt-in），下载走主机白名单（api.github.com/github.com/objects.githubusercontent.com，per-dial Control 钩子校验、重定向同样受控）+ 原子暂存 + sha256；`apply_update` 经 `sysutil.RunElevated` 执行 PowerShell helper（等进程退出→备份→替换→重启），**绝不自动执行**下载物。版本基准来自 `core.AppControl.Version()`（新增接口方法，*App 返回 `internal/app.Version`）。默认模块关闭。
 - `modules/repair`：**电脑修复 / 一键安装工具箱**，所有条目集中在 `catalog.go` 的 `Entry` 切片（声明式、平台无关，单一数据源）；`feature.go` 的 `Actions()` 全量从 `Catalog()` 生成，`RunAction` 经 `Lookup`+`Entry.ResolveCommand` 分派；walk 面板（`panel_windows.go`）与 Web 面板均从此目录渲染，新增工具只改 `catalog.go`。包管理器偏好 `prefer_source`（`auto`/`winget`/`choco`）决定解析出的安装命令。
 - `docs/DEVELOPMENT.md`：快速开发指南（子模块初始化、工具链、本地调试），新人入职先读。
 - `.github/workflows/release.yml`：打 tag 时跨平台构建并发布到 GitHub Release。
-- **文档与 CI**：`docs/wiki/*.md` 是 Wiki 的**单一数据源**（含 `{TAG}`/`{REPO}` 占位符），由 `scripts/sync-wiki.sh` 在发版时渲染后推送到 `<repo>.wiki.git`——**不要**在 Wiki 网页上直接编辑，下次发版会被覆盖。`docs/site/index.html` 是 GitHub Pages 主页源码（纯静态无构建），由 `.github/workflows/pages.yml` 在 `docs/site/**` 变更时发布。
+- **文档与 CI**：`docs/wiki/*.md` 是 Wiki 的**单一数据源**（含 `{TAG}`/`{REPO}` 占位符），由 `scripts/sync-wiki.sh` 渲染后推送到 `<repo>.wiki.git`——该脚本由 `auto-release.yml` 在打完 tag 后调用——**不要**在 Wiki 网页上直接编辑，下次发版会被覆盖。`docs/site/index.html` 是 GitHub Pages 主页源码（纯静态无构建），由 `.github/workflows/pages.yml` 在 `docs/site/**` 变更时发布。
 - `bin/pcmannager.exe`：已编译的 Windows 二进制，忽略即可。
 
 ## 关键开发约定
@@ -75,9 +77,14 @@
 - 需要重启才生效的配置项：用 `core.Option` 的 `Restart: true` 字段声明，`internal/app` 的 `ApplyOption` 会在应用后自动重启该模块。**禁止**再用 Help 字符串前缀（历史 hack `[restart]`）承载这类元数据——改文案会静默丢失语义，且会把标记泄漏到面板上。
 
 ## CI / 发布
-- 触发：推送 `v*` tag（如 `v1.2.3`）时由 `.github/workflows/release.yml` 运行。
-- 用 `softprops/action-gh-release` 发布，矩阵构建 `windows/amd64`、`linux/amd64`、`darwin/amd64` + `darwin/arm64`，产物命名 `pcmannager-<os>-<arch>[.exe]`。
-- 改动构建矩阵、Go 版本或产物命名时，必须同步更新本约定与 workflow 文件。
+四个 workflow，职责互斥（改任一触发条件或矩阵都要同步本节）：
+- `ci.yml`：**push / PR 到 `main`** 的快速门槛——`lint`（emoji）、`test`（`go test -race`，ubuntu runner 有 cgo）、`build`（四平台矩阵，统一走 `scripts/build.sh` 只验证可编译性）、`vet`（`go vet` + gofmt + **品牌资源一致性**）。
+- `auto-release.yml`：**push 到 `main`** 时把最新 semver tag 的 patch 位 +1 并打 tag（脏 tag 一律走兜底：宁可版本保守，也不让流水线挂掉），随后调 `scripts/sync-wiki.sh` 同步 Wiki。它只负责“递增版本号”，构建与发布复用 `release.yml`，避免两处构建参数漂移。
+- `release.yml`：推送 `v*` tag 或手动触发时发布——`lint`（emoji）与 `brand`（品牌资源一致性）并行门禁 → `build`（四平台矩阵）→ `release`（断言恰好 4 个产物后用 `softprops/action-gh-release` 发布，说明里带 ghfast / ghproxy 镜像表）。
+- `pages.yml`：`docs/site/**` 变更或手动触发时把 `docs/site/` 发布到 GitHub Pages（发布前同样跑 emoji 检查；Pages 需在仓库设置里把 Source 选为 GitHub Actions）。
+- 产物命名 `pcmannager-<os>-<arch>[.exe]`，矩阵为 `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64`。
+- **品牌资源门禁**：改了 `internal/logo` 的几何必须跑 `bash scripts/gen-logo.sh` 重新生成 `docs/site/assets/*.svg`；否则 `ci.yml`（vet job）与 `release.yml`（brand job）会以 `bash scripts/gen-logo.sh --check` 失败拦下——文档上的蝴蝶与托盘图标不允许分叉。
+- 改动构建矩阵、Go 版本、产物命名或 workflow 触发条件时，必须同步更新本约定与 workflow 文件。
 
 ## 维护规则
 当项目结构、构建/测试命令、架构边界、开发约定，或本文件中记录的其他事实发生变化时，必须在同一次改动中同步更新本文件。

@@ -79,6 +79,7 @@
   并记录前端禁用 emoji 的硬性约束。
 - `docs/DEVELOPMENT.md`：快速开发指南（工具链、子模块初始化、构建命令、本地调试）。
 - `README.md`：架构、模块、规划能力（Wails 面板/托盘保活/开机自启/自动更新）、前端 emoji 规范。
+- 品牌 logo 接入 README 页眉、Wiki `Home.md` 与 Pages 站点（含 favicon）：`docs/site/assets/logo.svg`（图标 + 字标）与 `icon.svg`（仅图标）由新增的 `scripts/gen-logo.sh` 从 `internal/logo` 的蝴蝶几何导出（`internal/logo/svg.go` + `internal/logo/gen`），与托盘图标同一品牌；`--check` 可用于校验资源是否与几何一致。
 
 ### 更早的提交
 

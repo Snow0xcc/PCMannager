@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/{REPO}/main/docs/site/assets/logo.svg" alt="PCMannager" width="260">
+</p>
+
 # PCMannager 文档
 
 跨平台系统托盘工具：剪贴板历史、截图、上下文记录、电脑修复、任务栏状态、快捷面板、超级面板、自动更新。

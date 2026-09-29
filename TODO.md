@@ -248,8 +248,8 @@ go vet ./...
       若运行时缺失会回退到浏览器面板。
       - [ ] 建 `frontend/` 后**必须**加 emoji 检查（正则 `[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]`）——
             客户端界面禁用 emoji，一律用 icon 资源替代。
-- [ ] **9. 托盘图标资源**：`defaultIcon()` 目前硬编码回退 shell 通用图标，无自定义图标文件、无配置项。
-      需补图标资源与（可选）配置化路径，并与前端 icon 规范一致。
+- [x] **9. 托盘图标资源**：`defaultIcon()` 已优先用 `internal/logo` 程序化渲染的品牌蝴蝶（`logo.Render(32)` → `winui.IconFromRGBA`），不再回退 shell 通用图标；文档侧 `docs/site/assets/{logo,icon}.svg` 是同一几何的 SVG 镜像。
+      - [ ] 剩余可选项：配置化自定义图标路径（目前仍无配置项）。
 
 ## P3 — 卫生与规范
 
@@ -291,7 +291,7 @@ go vet ./...
 - [x] **16. emoji 硬约束自动化**：新增 `scripts/check-emoji.sh`（扫描 html/css/js/md/go，
       正则覆盖 emoji 与符号区段），本地已跑通；已接入 CI——`.github/workflows/release.yml`
       新增独立 `lint` job（运行该脚本），`build` 通过 `needs: lint` 串在其后，
-      因此 emoji 违规会直接卡住发布，且不会随 4 个平台重复执行 4 次。
+      因此 emoji 违规会直接卡住发布，且不会随 4 个平台重复执行 4 次。此外 `ci.yml` 的 `lint` job 与 `pages.yml` 的发布前一步同样会跑该脚本。
 - [x] **17. 统一面板配置回显 + 操作分组**：`internal/app/provider.go` 的 `moduleInfo()` 会把配置中
       **当前生效的 option 值**合并进 `State.options`（此前各模块 `State()` 不含 options，
       导致面板表单永远显示声明式默认值、保存后看不出当前值）。

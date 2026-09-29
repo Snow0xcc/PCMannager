@@ -24,6 +24,11 @@ var (
 	bodyDark = color.RGBA{R: 0x1c, G: 0x3a, B: 0x70, A: 0xff} // #1C3A70
 )
 
+// antennaWidth is the stroke weight of the antennae in normalised units. It
+// lives at package scope because the SVG exporter (svg.go) strokes the same
+// curves with the same pen as Render.
+const antennaWidth = 2.2
+
 // pt is a 2D point in a normalised 0..100 coordinate space; the drawing scales
 // to the requested output size, so the geometry is authored once at any size.
 type pt struct{ x, y float64 }
@@ -311,7 +316,6 @@ func Render(size int) *image.RGBA {
 	r.fillPolygon(bezierPath(bodyPath, 16), bodyDark)
 
 	// Antennae: two thin curves.
-	const antennaWidth = 2.2
 	for _, left := range []bool{true, false} {
 		r.strokePolyline(bezierPath(antenna(left), 12), antennaWidth, bodyDark)
 	}
