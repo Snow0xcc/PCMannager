@@ -41,6 +41,11 @@ jobs:
 
       - name: setup pages
         uses: actions/configure-pages@v5
+        # Pages 未启用时 configure-pages 会失败（Get Pages site failed / Not
+        # Found）。仓库里一次性开启即可：Settings → Pages → Build and
+        # deployment → Source 选 "GitHub Actions"。若希望 CI 自动开启，可加
+        # with: enablement: true（需要仓库 admin 权限）。
+        continue-on-error: false
 
       - name: upload artifact
         uses: actions/upload-pages-artifact@v3
