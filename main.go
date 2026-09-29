@@ -8,10 +8,10 @@ package main
 import (
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/snow0xcc/pcmannager/internal/app"
+	"github.com/snow0xcc/pcmannager/internal/paths"
 	"github.com/snow0xcc/pcmannager/modules/clipboard"
 	"github.com/snow0xcc/pcmannager/modules/launcher"
 	"github.com/snow0xcc/pcmannager/modules/repair"
@@ -24,7 +24,7 @@ import (
 func main() {
 	// internal/app resolves the data directory, loads config.yaml, opens the
 	// log file and starts the hotkey router.
-	if dir, warn := configDirEnv(); warn != "" {
+	if dir, warn := paths.ConfigDirFromEnv(); warn != "" {
 		// The logger is not up yet, so stderr is the only sink. A misconfigured
 		// override must be visible rather than silently degrading to default.
 		os.Stderr.WriteString(warn + "\n")
@@ -101,31 +101,4 @@ func main() {
 	a.Run()
 	// Shutdown is idempotent, so a signal-driven shutdown is not repeated.
 	a.Shutdown()
-}
-
-// configDirEnv keeps the historical PCMANNAGER_CONFIG override working:
-// internal/app probes config.yaml relative to the working directory, so a
-// directory (or a config file, whose parent directory is used) selected here
-// wins over the OS data directory while debugging.
-// configDirEnv keeps the historical PCMANNAGER_CONFIG override working:
-// internal/app probes config.yaml relative to the working directory, so a
-// directory (or a config file, whose parent directory is used) selected here
-// wins over the OS data directory while debugging.
-//
-// A non-existent value is NOT silently ignored: it is reported so the operator
-// knows the override did not take effect (otherwise the app would silently fall
-// back to the OS default and look misconfigured). The caller logs the warning
-// and continues with the default directory.
-func configDirEnv() (dir string, warn string) {
-	raw := os.Getenv("PCMANNAGER_CONFIG")
-	if raw == "" {
-		return "", ""
-	}
-	if fi, err := os.Stat(raw); err == nil && !fi.IsDir() {
-		return filepath.Dir(raw), ""
-	}
-	if _, err := os.Stat(raw); err != nil {
-		return "", "PCMANNAGER_CONFIG 指向的目录不存在，已忽略并回退到默认数据目录: " + raw
-	}
-	return raw, ""
 }

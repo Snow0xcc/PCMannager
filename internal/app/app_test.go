@@ -4,6 +4,8 @@ package app
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
@@ -64,6 +66,69 @@ func newTestApp(t *testing.T) *App {
 	}
 	t.Cleanup(func() { a.Shutdown() })
 	return a
+}
+
+// TestConfigDirOverrideMovesConfigAndDataTogether 守护 PCMANNAGER_CONFIG 的
+// 完整性：它必须同时搬走 config.yaml **和**数据目录（日志、模块数据）。
+//
+// 曾经的缺陷是只搬走一半——探测阶段靠 chdir 在覆盖目录里读到了 config.yaml，
+// 但数据目录仍按系统默认解析，于是“面板显示的配置”与“实际写入的数据”分处
+// 两地，/api/state 的 effective_data_dir 也和覆盖目录不一致。
+func TestConfigDirOverrideMovesConfigAndDataTogether(t *testing.T) {
+	root := t.TempDir()
+	// 与 newTestApp 保持一致：先进一个空目录，探测阶段才不会把 config.yaml
+	// 写到源码目录里（那会污染工作区）。
+	t.Chdir(t.TempDir())
+	t.Setenv("PCMANNAGER_CONFIG", root)
+
+	a, err := New()
+	if err != nil {
+		t.Fatalf("New() 失败: %v", err)
+	}
+	t.Cleanup(a.Shutdown)
+
+	if got := a.DataDir(); got != root {
+		t.Fatalf("DataDir() = %q, 期望覆盖目录 %q", got, root)
+	}
+	// 配置必须落在同一个目录，否则又回到“两处分裂”的老问题。
+	cfg := filepath.Join(root, "config.yaml")
+	if err := a.Config().Save(); err != nil {
+		t.Fatalf("保存配置: %v", err)
+	}
+	if _, err := os.Stat(cfg); err != nil {
+		t.Fatalf("config.yaml 应写入覆盖目录 %q: %v", cfg, err)
+	}
+	// 日志目录也归覆盖目录，面板展示的 effective_data_dir 才不会骗人。
+	if _, err := os.Stat(filepath.Join(root, "logs")); err != nil {
+		t.Fatalf("logs 目录应位于覆盖目录下: %v", err)
+	}
+}
+
+// TestDataDirSettingBeatsOverride 守护优先级：app.data_dir 显式指定时优先于
+// 环境变量（环境变量只是调试用的兜底，不能反过来压过用户配置）。
+func TestDataDirSettingBeatsOverride(t *testing.T) {
+	root := t.TempDir()
+	explicit := filepath.Join(root, "explicit")
+	if err := os.MkdirAll(explicit, 0o755); err != nil {
+		t.Fatalf("准备目录: %v", err)
+	}
+	// 探测阶段读的是工作目录里的 config.yaml，先把它写成带 app.data_dir 的配置。
+	t.Chdir(root)
+	t.Setenv("PCMANNAGER_CONFIG", root)
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"),
+		[]byte("app:\n  data_dir: "+explicit+"\n"), 0o600); err != nil {
+		t.Fatalf("写探测配置: %v", err)
+	}
+
+	a, err := New()
+	if err != nil {
+		t.Fatalf("New() 失败: %v", err)
+	}
+	t.Cleanup(a.Shutdown)
+
+	if got := a.DataDir(); got != explicit {
+		t.Fatalf("DataDir() = %q, 期望 app.data_dir 指定的 %q", got, explicit)
+	}
 }
 
 func TestRegisterRejectsDuplicateID(t *testing.T) {

@@ -3,6 +3,7 @@
 package paths
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,36 @@ import (
 
 // AppName is the directory name used under the OS config root.
 const AppName = "GoBox"
+
+// ConfigDirEnvVar names the debug override for where the app keeps its state.
+const ConfigDirEnvVar = "PCMANNAGER_CONFIG"
+
+// ConfigDirFromEnv resolves ConfigDirEnvVar into a directory.
+//
+// A file path is accepted and yields its parent (the documented behaviour: a
+// config file path is a valid value). A path that does not exist is reported
+// instead of being silently ignored — otherwise the app falls back to the OS
+// data directory and looks misconfigured with no explanation.
+//
+// It lives here, next to the other location rules, because **two** callers need
+// the same answer: main.go chdirs to it so the early config probe finds
+// config.yaml, and internal/app uses it when resolving the data directory.
+// Keeping the parsing in main.go alone is what made PCMANNAGER_CONFIG move only
+// config.yaml while logs and module data stayed in the OS directory.
+func ConfigDirFromEnv() (dir string, warn string) {
+	raw := os.Getenv(ConfigDirEnvVar)
+	if raw == "" {
+		return "", ""
+	}
+	fi, err := os.Stat(raw)
+	if err != nil {
+		return "", fmt.Sprintf("%s 指向的路径不存在，已忽略并回退到默认数据目录: %s", ConfigDirEnvVar, raw)
+	}
+	if !fi.IsDir() {
+		return filepath.Dir(raw), ""
+	}
+	return raw, ""
+}
 
 // LogFileName is the log file name used in every log directory.
 const LogFileName = "gobox.log"

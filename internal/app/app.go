@@ -90,7 +90,16 @@ func New() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataDir, err := paths.DataDir(probe.Config().App.DataDir)
+	// 目录优先级：app.data_dir > PCMANNAGER_CONFIG 覆盖目录 > 系统默认目录。
+	// 覆盖目录必须参与决策：它同时是上面这次探测读到的目录（main.go 已 chdir
+	// 过去），若这里只认 app.data_dir，config.yaml 会落在覆盖目录、而日志与
+	// 模块数据仍写进系统默认目录——PCMANNAGER_CONFIG 就只搬走了一半状态。
+	override, _ := paths.ConfigDirFromEnv()
+	dirSetting := probe.Config().App.DataDir
+	if dirSetting == "" {
+		dirSetting = override
+	}
+	dataDir, err := paths.DataDir(dirSetting)
 	if err != nil {
 		return nil, err
 	}

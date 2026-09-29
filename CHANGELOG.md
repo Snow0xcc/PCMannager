@@ -79,6 +79,7 @@
   并记录前端禁用 emoji 的硬性约束。
 - `docs/DEVELOPMENT.md`：快速开发指南（工具链、子模块初始化、构建命令、本地调试）。
 - `README.md`：架构、模块、规划能力（Wails 面板/托盘保活/开机自启/自动更新）、前端 emoji 规范。
+- fix：`PCMANNAGER_CONFIG` 只搬走了 `config.yaml`，数据目录（日志、模块数据）仍落系统默认目录，导致面板 `effective_data_dir` 与实际写入位置不一致。解析收敛到 `paths.ConfigDirFromEnv()`，`internal/app` 解析数据目录时纳入覆盖目录（优先级 `app.data_dir` > 环境变量 > 系统默认）；顺带删掉 `main.go` 里被复制了两遍的 `configDirEnv` 注释。
 - 品牌 logo 接入 README 页眉、Wiki `Home.md` 与 Pages 站点（含 favicon）：`docs/site/assets/logo.svg`（图标 + 字标）与 `icon.svg`（仅图标）由新增的 `scripts/gen-logo.sh` 从 `internal/logo` 的蝴蝶几何导出（`internal/logo/svg.go` + `internal/logo/gen`），与托盘图标同一品牌；`--check` 可用于校验资源是否与几何一致。
 
 ### 更早的提交
