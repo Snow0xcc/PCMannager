@@ -155,7 +155,7 @@ REST 接口：
 
 面板 `GET /api/state` 的 `capabilities.tray_icon` 由 `tray.Supported()` 给出（构建是否**带托盘实现**），它与「当前是否真显示得出来」是两回事：Linux 没有 D-Bus 会话或没有 watcher、macOS 没有菜单栏会话时 `Show()` 会返回错误并记日志，此时仍以面板为控制面。
 
-**开机自启**：`sysutil.SetAutostart/IsAutostart` 已实现，并在三条路径接线——启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单开关、面板 `PATCH /api/app`。Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`；**macOS 的 launchd 方案尚未实现**。
+**开机自启**：`sysutil.SetAutostart/IsAutostart` 已实现，并在三条路径接线——启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单开关、面板 `PATCH /api/app`。Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`（XDG），macOS 写 `~/Library/LaunchAgents/cc.snow0xcc.<name>.plist`（launchd 用户代理，登录时自动加载；Label 为 `cc.snow0xcc.gobox`）。三平台共用同一条接线，语义一致：开启幂等、关闭幂等、关闭不存在的条目不算错误。
 
 ## 自动更新（规划）
 

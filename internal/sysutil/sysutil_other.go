@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package sysutil
 
@@ -7,58 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 )
 
-// hideWindow is a no-op off Windows.
-func hideWindow(*exec.Cmd) {}
-
-// IsElevated reports whether the process runs as root.
-func IsElevated() bool { return os.Geteuid() == 0 }
-
-// Elevate is unsupported off Windows: GoBox's Windows-first modules are the
-// only callers, and silently re-running under sudo would be surprising.
-func Elevate([]string) error {
-	return fmt.Errorf("提权仅支持 Windows")
-}
-
-// RunElevated is unsupported off Windows.
-func RunElevated(string) error { return fmt.Errorf("提权执行仅支持 Windows") }
-
-// RunElevatedPath is unsupported off Windows.
-func RunElevatedPath(path string, args []string) error {
-	return fmt.Errorf("以管理员身份运行仅支持 Windows")
-}
-
-// ShowInFolder reveals a file in the platform file manager.
-func ShowInFolder(path string) error {
-	var cmd string
-	var args []string
-	switch {
-	case fileExists("/usr/bin/xdg-open"):
-		cmd, args = "xdg-open", []string{filepath.Dir(path)}
-	case fileExists("/usr/bin/open"):
-		cmd, args = "open", []string{"-R", path}
-	default:
-		return fmt.Errorf("未找到文件管理器")
-	}
-	return exec.Command(cmd, args...).Start()
-}
-
-// OpenTerminalHere opens a terminal at dir off Windows.
-func OpenTerminalHere(dir string) error {
-	var cmd string
-	var args []string
-	switch {
-	case fileExists("/usr/bin/x-terminal-emulator"):
-		cmd, args = "x-terminal-emulator", []string{"--working-directory=" + dir}
-	case fileExists("/usr/bin/open"):
-		cmd, args = "open", []string{"-a", "Terminal", dir}
-	default:
-		return fmt.Errorf("未找到终端")
-	}
-	return exec.Command(cmd, args...).Start()
-}
+// Linux（及其它非 Windows、非 macOS 的 Unix）平台实现。
+// macOS 的对应实现在 sysutil_darwin.go；单实例/提权等共用部分在 sysutil_unix.go。
 
 // SetAutostart writes/removes a desktop autostart entry.
 //
@@ -100,47 +52,33 @@ func IsAutostart(name string) bool {
 	return err == nil
 }
 
-// AcquireSingleInstance takes an exclusive advisory lock on a lock file.
-func AcquireSingleInstance(name string) (release func(), ok bool) {
-	dir, err := os.UserCacheDir()
+// ShowInFolder reveals a file in the platform file manager.
+func ShowInFolder(path string) error {
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		dir = os.TempDir()
+		return err
 	}
-	path := filepath.Join(dir, name+".lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return func() {}, false
+	if !fileExists("/usr/bin/xdg-open") {
+		return fmt.Errorf("未找到文件管理器")
 	}
-	// LOCK_EX|LOCK_NB fails immediately when another process holds the lock.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		return func() {}, false
-	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, true
+	return exec.Command("xdg-open", filepath.Dir(abs)).Start()
 }
 
-// Notify is a no-op off Windows.
-func Notify(title, message string) error {
-	return fmt.Errorf("通知仅支持 Windows")
+// OpenTerminalHere opens a terminal at dir.
+func OpenTerminalHere(dir string) error {
+	if !fileExists("/usr/bin/x-terminal-emulator") {
+		return fmt.Errorf("未找到终端")
+	}
+	return exec.Command("x-terminal-emulator", "--working-directory="+dir).Start()
 }
 
 // OpenURL opens a URL with the platform handler.
 func OpenURL(target string) error {
-	var cmd string
-	var args []string
-	switch {
-	case fileExists("/usr/bin/xdg-open"):
-		cmd, args = "xdg-open", []string{target}
-	default:
+	if target == "" {
+		return fmt.Errorf("open: 目标为空")
+	}
+	if !fileExists("/usr/bin/xdg-open") {
 		return fmt.Errorf("未找到 xdg-open")
 	}
-	return exec.Command(cmd, args...).Start()
-}
-
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
+	return exec.Command("xdg-open", target).Start()
 }

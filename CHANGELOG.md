@@ -80,6 +80,11 @@
 - `docs/DEVELOPMENT.md`：快速开发指南（工具链、子模块初始化、构建命令、本地调试）。
 - `README.md`：架构、模块、规划能力（Wails 面板/托盘保活/开机自启/自动更新）、前端 emoji 规范。
 - fix：`PCMANNAGER_CONFIG` 只搬走了 `config.yaml`，数据目录（日志、模块数据）仍落系统默认目录，导致面板 `effective_data_dir` 与实际写入位置不一致。解析收敛到 `paths.ConfigDirFromEnv()`，`internal/app` 解析数据目录时纳入覆盖目录（优先级 `app.data_dir` > 环境变量 > 系统默认）；顺带删掉 `main.go` 里被复制了两遍的 `configDirEnv` 注释。
+- feat(sysutil): macOS 平台实现落地——开机自启走 launchd LaunchAgent
+  （`~/Library/LaunchAgents/cc.snow0xcc.gobox.plist`，登录时自动加载，此前 README 明确标注未实现）；
+  `ShowInFolder`/`OpenTerminalHere`/`OpenURL` 从 xdg-open 分支中拆出，改走系统 `open`
+  （此前在 macOS 上必然报"未找到"）。sysutil 拆为 windows/darwin/other(!w&&!d)/unix 四份，
+  自启往返用同一份单测在三平台各自验证（macOS 侧加 `plutil -lint` 权威校验）。
 - feat(tray): 托盘角标——`Tray.SetBadge` 三平台实现，绘制统一在 `badge.go` 的 `BadgeOverlay`（红色胶囊 + 3x5 手工点阵数字，纯 Go 无字库依赖）；默认接线为剪贴板历史条数实时驱动（`app.badgeWatch`），模块停用或清空即清除；Windows 侧换 HICON 时只销毁自己铸造的句柄（初始图标可能是 shell 的 LR_SHARED，不可销毁）。
 - feat(tray): 补齐 macOS 与 Linux 托盘——macOS 走 AppKit `NSStatusBar`（经 purego 的 Objective-C runtime，仍保持 `CGO_ENABLED=0`；显式 dlopen Foundation/AppKit，UI 操作统一派发回主线程，Run 在主线程泵 CFRunLoop），Linux 走 `StatusNotifierItem` + `com.canonical.dbusmenu`（纯 Go D-Bus，godbus）；新增 `tray.Supported()`，面板 `capabilities.tray_icon` 据实上报，不再按平台写死 false。
 - 品牌 logo 接入 README 页眉、Wiki `Home.md` 与 Pages 站点（含 favicon）：`docs/site/assets/logo.svg`（图标 + 字标）与 `icon.svg`（仅图标）由新增的 `scripts/gen-logo.sh` 从 `internal/logo` 的蝴蝶几何导出（`internal/logo/svg.go` + `internal/logo/gen`），与托盘图标同一品牌；`--check` 可用于校验资源是否与几何一致。

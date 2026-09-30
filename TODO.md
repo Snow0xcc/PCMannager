@@ -218,8 +218,7 @@ go vet ./...
 - [x] **6. 开机自启** ✅ 已落地：`sysutil.SetAutostart/IsAutostart` 原本已实现（Windows 写
       `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`），
       此前**无人调用**。现由 `App.applyAutostart()` 统一承接，三条路径均已接线：
-      启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单"开机自启"开关、面板 `PATCH /api/app`。
-      macOS 的 launchd 方案仍未实现（Linux 走 .desktop，Windows 走注册表）。
+      启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单"开机自启"开关、面板 `PATCH /api/app`。三平台落地：Windows 注册表、Linux XDG、macOS launchd LaunchAgent（`sysutil_darwin.go`）。
 - [~] **7. 自动更新**：**已实现为 updater 模块**（2026-09-24），零第三方依赖（不用 go-github-selfupdate）。
       `modules/updater` 实现 `core.Module`：定时检查 GitHub Releases（`auto_check` 默认开、
       `interval_hours` 1-168h）、`include_prerelease` 开关（SemVer 比较：final > rc，
