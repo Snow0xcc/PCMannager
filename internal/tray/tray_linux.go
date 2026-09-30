@@ -64,6 +64,8 @@ type linuxTray struct {
 	visible     bool
 	destroyed   bool
 	icon        []iconPixmap
+	badge       string      // 当前角标文本（空 = 无角标）
+	baseImg     *image.RGBA // 品牌底图缓存：角标变化时只做合成，不重画几何
 }
 
 // statusNotifierItem 只向 SNI 接口导出协议要求的方法。
@@ -92,10 +94,47 @@ func New(log *slog.Logger, handler Handler) Tray {
 	if log == nil {
 		log = slog.Default()
 	}
+	base := logo.Render(64)
 	return &linuxTray{
 		log:     log,
 		handler: handler,
-		icon:    rgbaToIconPixmap(logo.Render(64)),
+		baseImg: base,
+		icon:    rgbaToIconPixmap(base),
+	}
+}
+
+// SetBadge 更新角标并通知面板刷新图标。
+//
+// SNI 客户端靠 NewIcon 信号感知图标变化（PropertiesChanged 的 IconPixmap 只是
+// 辅助，部分实现只认信号），两者都发。未显示或未连接时只更新缓存，等 Show
+// 重新导出时自然带上。
+func (t *linuxTray) SetBadge(text string) {
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+
+	t.mu.Lock()
+	if t.badge == text {
+		t.mu.Unlock()
+		return
+	}
+	t.badge = text
+	if t.baseImg == nil {
+		t.baseImg = logo.Render(64)
+	}
+	t.icon = rgbaToIconPixmap(BadgeOverlay(t.baseImg, text))
+	conn, visible := t.conn, t.visible
+	t.mu.Unlock()
+
+	if !visible || conn == nil {
+		return
+	}
+	if err := conn.Emit(statusNotifierPath, statusNotifierInterface+".NewIcon"); err != nil {
+		t.log.Warn("无法发送托盘图标更新信号", "error", err)
+	}
+	changed := map[string]dbus.Variant{"IconPixmap": dbus.MakeVariant(t.icon)}
+	if err := conn.Emit(statusNotifierPath, propertiesInterface+".PropertiesChanged",
+		statusNotifierInterface, changed, []string{}); err != nil {
+		t.log.Warn("无法发送托盘图标属性更新信号", "error", err)
 	}
 }
 

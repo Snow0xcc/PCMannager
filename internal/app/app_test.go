@@ -6,9 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
+	"github.com/snow0xcc/pcmannager/internal/tray"
 )
 
 // errFakeStart is what Start failure tests return, so assertions can line up
@@ -128,6 +132,106 @@ func TestDataDirSettingBeatsOverride(t *testing.T) {
 
 	if got := a.DataDir(); got != explicit {
 		t.Fatalf("DataDir() = %q, 期望 app.data_dir 指定的 %q", got, explicit)
+	}
+}
+
+// fakeTray 捕获托盘调用，用于断言角标派发。其余方法是空的：badgeWatch 只调
+// SetBadge。
+type fakeTray struct {
+	badges []string
+	mu     sync.Mutex
+}
+
+func (f *fakeTray) SetMenu(tray.Menu) {}
+func (f *fakeTray) Show() error       { return nil }
+func (f *fakeTray) Hide()             {}
+func (f *fakeTray) Visible() bool     { return true }
+func (f *fakeTray) Destroy()          {}
+func (f *fakeTray) SetBadge(text string) {
+	f.mu.Lock()
+	f.badges = append(f.badges, text)
+	f.mu.Unlock()
+}
+
+func (f *fakeTray) lastBadge() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.badges) == 0 {
+		return ""
+	}
+	return f.badges[len(f.badges)-1]
+}
+
+// TestBadgeWatchMirrorsClipboardCount 守护角标接线：剪贴板状态事件里的 count
+// 必须以文本形式到达托盘；停用事件必须清除角标；其它模块的事件不参与。
+//
+// 用 eventual 断言（轮询而非 sleep 固定时长）：badgeWatch 在独立 goroutine 里
+// 消费事件，到达时机不确定，但上限毫秒级。
+func TestBadgeWatchMirrorsClipboardCount(t *testing.T) {
+	a := newTestApp(t)
+	ft := &fakeTray{}
+	a.mu.Lock()
+	a.tray = ft
+	a.mu.Unlock()
+
+	a.bus.State("clipboard", core.State{"count": 7, "running": true})
+	waitFor(t, func() bool { return ft.lastBadge() == "7" })
+
+	a.bus.State("clipboard", core.State{"count": 0, "running": true})
+	waitFor(t, func() bool { return ft.lastBadge() == "" })
+
+	// 其它模块的状态事件不能写角标。
+	a.bus.State("taskbar", core.State{"count": 99, "running": true})
+	a.bus.State("clipboard", core.State{"count": 3, "running": false})
+	waitFor(t, func() bool { return ft.lastBadge() == "" })
+}
+
+// waitFor 轮询 cond 直到成立或超时（200ms 足够本地事件总线往返）。
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("条件在 200ms 内未成立")
+}
+
+// TestBadgeFromClipboardStateToleratesBadPayload 守护事件负载的宽容解析：
+// 异常负载都必须落到“清除角标”，绝不能让 watcher 拿到垃圾或被吓停。
+func TestBadgeFromClipboardStateToleratesBadPayload(t *testing.T) {
+	tests := []struct {
+		name string
+		data core.State
+		// wantBadge 是 watcher 应该设置的角标文本（"" = 清除）。
+		wantBadge string
+		wantShow  bool
+	}{
+		{"正常", core.State{"count": 7, "running": true}, "7", true},
+		{"nil 负载", nil, "", false},
+		{"缺 count", core.State{"running": true}, "", false},
+		{"count 类型不对", core.State{"count": "7", "running": true}, "", false},
+		{"count 为零", core.State{"count": 0, "running": true}, "", false},
+		{"count 为负", core.State{"count": -3, "running": true}, "", false},
+		// 停用时 show 仍为 true：watcher 需要收到一次 SetBadge("") 把角标清掉。
+		{"未运行", core.State{"count": 7, "running": false}, "", true},
+		{"缺 running 视为停用", core.State{"count": 7}, "", true},
+	}
+	for _, tt := range tests {
+		count, running, show := badgeFromClipboardState(tt.data)
+		if show != tt.wantShow {
+			t.Errorf("%s: show = %v, 期望 %v", tt.name, show, tt.wantShow)
+			continue
+		}
+		got := ""
+		if show && running {
+			got = strconv.Itoa(count)
+		}
+		if got != tt.wantBadge {
+			t.Errorf("%s: 角标 = %q, 期望 %q", tt.name, got, tt.wantBadge)
+		}
 	}
 }
 

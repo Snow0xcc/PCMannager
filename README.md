@@ -148,6 +148,11 @@ REST 接口：
 - **macOS 的 AppKit 只能在主线程动**：`main_darwin.go` 用 `init()` 把主 goroutine 锁在主线程，`app_darwin.go` 的 `Run()` 在主线程泵 CFRunLoop（否则图标能显示但菜单点了没反应），所有托盘操作经 `onMain` 派发回主线程。
 - **AppKit / Foundation 要显式 `dlopen`**：纯 Go 二进制不链接这两个框架，不加载时 `objc_getClass` 直接返回 0（曾一度靠某个依赖顺带载入才可用，已改为确定加载）。
 
+**托盘角标**：托盘图标右上角可叠加红色数字气泡（`Tray.SetBadge`，空串清除），绘制统一在
+`internal/tray/badge.go` 的 `BadgeOverlay`（手工 3x5 点阵数字 + 胶囊气泡，纯 Go，无字库依赖）。当前接线：
+剪贴板模块每条历史变更经 Bus 状态事件实时驱动，角标 = 历史条数（模块停用或清空即清除），
+见 `internal/app` 的 `badgeWatch`；`SetBadge` 三平台均实现（Windows 经 `winui.IconFromRGBA` 换 HICON）。
+
 面板 `GET /api/state` 的 `capabilities.tray_icon` 由 `tray.Supported()` 给出（构建是否**带托盘实现**），它与「当前是否真显示得出来」是两回事：Linux 没有 D-Bus 会话或没有 watcher、macOS 没有菜单栏会话时 `Show()` 会返回错误并记日志，此时仍以面板为控制面。
 
 **开机自启**：`sysutil.SetAutostart/IsAutostart` 已实现，并在三条路径接线——启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单开关、面板 `PATCH /api/app`。Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`；**macOS 的 launchd 方案尚未实现**。

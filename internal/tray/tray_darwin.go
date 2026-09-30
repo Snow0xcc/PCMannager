@@ -80,6 +80,8 @@ type darwinTray struct {
 	menuObj objc.ID // NSMenu
 	target  objc.ID // 自己注册的 target 对象，承载菜单项的 action
 	visible bool
+	badge   string      // 当前角标文本（空 = 无角标）
+	baseImg *image.RGBA // 品牌底图缓存：角标频繁变化时避免反复渲染几何
 }
 
 // targetRegistry 把 target 实例（回调里拿到的 self）映射回 tray 实例。
@@ -288,7 +290,7 @@ func (t *darwinTray) Show() error {
 	t.item = item
 
 	if button := objc.Send[objc.ID](item, objc.RegisterName("button")); button != 0 {
-		if img := nsImageFromRGBA(logo.Render(trayIconPixels)); img != 0 {
+		if img := nsImageFromRGBA(t.composedIcon()); img != 0 {
 			objc.Send[objc.ID](button, objc.RegisterName("setImage:"), img)
 		}
 		objc.Send[objc.ID](button, objc.RegisterName("setToolTip:"), nsString(t.menu.Tooltip))
@@ -329,6 +331,46 @@ func (t *darwinTray) Visible() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.visible
+}
+
+// SetBadge 更新角标。可从任意 goroutine 调用：AppKit 操作经 onMain 回主线程。
+//
+// 频繁调用（剪贴板每复制一次就更新）在 36px 下合成 + PNG 编码的开销可以忽略，
+// 真正昂贵的是几何渲染，因此品牌底图只渲染一次并缓存。
+func (t *darwinTray) SetBadge(text string) {
+	t.mu.Lock()
+	if t.badge == text {
+		t.mu.Unlock()
+		return
+	}
+	t.badge = text
+	t.mu.Unlock()
+	onMain(t.rebadgeOnMain)
+}
+
+// rebadgeOnMain 把带角标的图标重新铺到状态栏按钮上（主线程）。
+func (t *darwinTray) rebadgeOnMain() {
+	t.mu.Lock()
+	visible := t.visible && t.item != 0
+	img := t.composedIcon()
+	t.mu.Unlock()
+	if !visible {
+		return
+	}
+	if button := objc.Send[objc.ID](t.item, objc.RegisterName("button")); button != 0 && img != nil {
+		objc.Send[objc.ID](button, objc.RegisterName("setImage:"), nsImageFromRGBA(img))
+	}
+}
+
+// composedIcon 返回叠加了当前角标的托盘底图（可在任意线程调用：纯 Go 绘制）。
+func (t *darwinTray) composedIcon() *image.RGBA {
+	t.mu.Lock()
+	badge := t.badge
+	t.mu.Unlock()
+	if t.baseImg == nil {
+		t.baseImg = logo.Render(trayIconPixels)
+	}
+	return BadgeOverlay(t.baseImg, badge)
 }
 
 // SetMenu 重建菜单。

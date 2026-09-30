@@ -29,6 +29,11 @@ type winTray struct {
 	added    bool
 	visible  bool
 
+	// badge tracks the current overlay text; iconOwned marks t.nid.Icon as a
+	// handle we created (badge composites) and may destroy. The initial icon
+	// can be a shell-provided LR_SHARED handle, which must never be destroyed.
+	badge     string
+	iconOwned bool
 	// ownerDraw holds the payloads behind colored (owner-drawn) menu items,
 	// keyed by the dwItemData value the system hands back in
 	// WM_MEASUREITEM/WM_DRAWITEM. odMu separates it from the tray lock so the
@@ -64,6 +69,53 @@ const odDisabledBit = uintptr(1) << 31
 // mfOwnerDraw is AppendMenuW's MF_OWNERDRAW (0x10B = MF_STRING|MF_BYCOMMAND
 // is implied by the low bits); winui 尚未声明它.
 const mfOwnerDraw = 0x0000010B
+
+// SetBadge overlays a badge (e.g. the clipboard history count) on the tray
+// icon, compositing the brand mark with the badge bubble in pure Go and
+// swapping the HICON via NIM_MODIFY.
+//
+// Called from arbitrary goroutines (clipboard copies arrive on the module's
+// watcher thread), so it follows the tray lock protocol: snapshot under the
+// lock, Win32 call outside it. Handles we mint are destroyed on replacement;
+// the initial icon may be a shell LR_SHARED handle, which must never be
+// destroyed, hence the iconOwned flag.
+func (t *winTray) SetBadge(text string) {
+	t.mu.Lock()
+	if t.badge == text {
+		t.mu.Unlock()
+		return
+	}
+	t.badge = text
+	if !t.added {
+		t.mu.Unlock()
+		return // Show() composes the icon with the current badge anyway
+	}
+	nid := t.nid
+	prev, prevOwned := nid.Icon, t.iconOwned
+	// 32px 与 brandIconHandle 的渲染尺寸一致（托盘小图标的事实尺寸），
+	// 尺寸不一致会让角标切换时图标轻微缩放跳动。
+	img := BadgeOverlay(logo.Render(32), text)
+	t.mu.Unlock()
+
+	h := winui.IconFromRGBA(img)
+	if h == 0 {
+		return // keep the current icon rather than blanking the tray
+	}
+
+	t.mu.Lock()
+	t.nid.Icon = h
+	t.nid.Flags |= winui.NIF_ICON
+	nid = t.nid
+	t.iconOwned = true
+	t.mu.Unlock()
+
+	if err := t.notify(winui.NIM_MODIFY, nid); err != nil {
+		t.log.Warn("托盘角标更新失败", "err", err)
+	}
+	if prevOwned {
+		winui.DestroyIconHandle(prev)
+	}
+}
 
 // SetMenu replaces the tray menu and refreshes the tooltip.
 func (t *winTray) SetMenu(m Menu) {

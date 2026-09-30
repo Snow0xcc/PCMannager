@@ -71,4 +71,8 @@ func TestNsImageFromRGBAUsesBrandMark(t *testing.T) {
 	if img := nsImageFromRGBA(nil); img != 0 {
 		t.Fatal("nil 图像应返回 0")
 	}
+	// 角标合成路径也要能转成 NSImage：这是 SetBadge 落到菜单栏的最后一跳。
+	if img := nsImageFromRGBA(BadgeOverlay(logo.Render(trayIconPixels), "7")); img == 0 {
+		t.Fatal("带角标图像转成 NSImage 失败")
+	}
 }

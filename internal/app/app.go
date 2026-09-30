@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,6 +162,7 @@ func New() (*App, error) {
 	// subscriber turns those into panel-visible state. The stop function is
 	// registered with the cleanup below so the goroutine cannot outlive the bus.
 	a.errorWatch(bus)
+	a.badgeWatch(bus)
 
 	winui.SetDPIAware()
 
@@ -211,6 +213,50 @@ func (a *App) errorWatch(bus *core.Bus) {
 			a.recordRuntimeError(ev.Module, ev.Message, ev.Time)
 		}
 	}()
+}
+
+// badgeWatch 把剪贴板历史条数镜像到托盘角标。
+//
+// 剪贴板模块每次历史变更都会发 EventState（含 count 字段），这是托盘上最自然
+// 的“数字型”状态源：角标实时反映当前记录了多少条。模块停用（running=false）
+// 或条数归零时清除角标；其它模块的状态事件不参与，将来要接其它数据源
+// （如更新可用）从这里扩展即可。
+func (a *App) badgeWatch(bus *core.Bus) {
+	ch, stop := bus.Subscribe()
+	go func() {
+		defer stop()
+		for ev := range ch {
+			if ev.Type != core.EventState || ev.Module != "clipboard" {
+				continue
+			}
+			count, running, show := badgeFromClipboardState(ev.Data)
+			t := a.currentTray()
+			if t == nil {
+				continue
+			}
+			if show && running {
+				t.SetBadge(strconv.Itoa(count))
+			} else {
+				t.SetBadge("")
+			}
+		}
+	}()
+}
+
+// badgeFromClipboardState 从剪贴板状态事件里提取角标所需字段。
+//
+// 拆成纯函数是为了单测：事件负载是 map[string]any，字段可能缺失或类型不对，
+// 这里必须宽容（取不到就不显示），不能让一个异常事件打断 watcher。
+func badgeFromClipboardState(data core.State) (count int, running, show bool) {
+	if data == nil {
+		return 0, false, false
+	}
+	c, ok := data["count"].(int)
+	if !ok || c <= 0 {
+		return 0, false, false
+	}
+	r, _ := data["running"].(bool)
+	return c, r, true
 }
 
 // hotkeyWarn is the warn callback handed to core.HotkeyManager.

@@ -57,6 +57,11 @@ func (f HandlerFunc) OnSelect(id string) { f(id) }
 type Tray interface {
 	// SetMenu replaces the tray menu.
 	SetMenu(Menu)
+	// SetBadge 在托盘图标右上角叠加角标（如剪贴板历史条数），空串清除。
+	// 角标内容只支持 0-9 与 '+'、'!'，其它字符会被跳过；跨平台外观由
+	// BadgeOverlay 统一绘制，方法只需把合成结果换成本平台的图标表示。
+	// 可从任意 goroutine 调用（实现方负责线程安全）。
+	SetBadge(text string)
 	// Show makes the icon visible.
 	Show() error
 	// Hide removes the icon.
