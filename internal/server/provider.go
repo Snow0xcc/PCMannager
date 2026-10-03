@@ -71,6 +71,18 @@ type AppConfigPatch struct {
 	Language      *string `json:"language,omitempty"`
 }
 
+// HotkeyConflict reports one global hotkey combo claimed by more than one
+// module, so the panel can warn the user and point at the module pages where
+// the binding can be changed (C2-2).
+type HotkeyConflict struct {
+	// Hotkey is the canonical combo text, e.g. "ctrl+alt+k".
+	Hotkey string `json:"hotkey"`
+	// Holders lists the module ids that configure this combo, in registration
+	// order. Only the first binding wins, so the remaining holders' hotkeys
+	// are dead until the user rebinds them.
+	Holders []string `json:"holders"`
+}
+
 // Provider is the application-side data source used by the HTTP handlers.
 type Provider interface {
 	// Modules returns every registered module in declaration order.
@@ -93,6 +105,9 @@ type Provider interface {
 
 	// Capabilities describes the platform features available in this build.
 	Capabilities() any
+	// Conflicts reports global hotkey combos claimed by more than one module,
+	// so the panel can render a rebind hint (C2-2).
+	Conflicts() []HotkeyConflict
 	// ValidateHotkey checks a hotkey string, returning a reason when invalid.
 	ValidateHotkey(hotkey string) error
 

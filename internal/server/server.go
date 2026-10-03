@@ -289,6 +289,7 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 		"app":          s.provider.AppConfig(),
 		"modules":      s.provider.Modules(),
 		"capabilities": s.provider.Capabilities(),
+		"conflicts":    s.provider.Conflicts(),
 	})
 }
 

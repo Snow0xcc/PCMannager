@@ -95,6 +95,8 @@
   .alert-body strong { font-weight: 600; word-break: break-word; }
   .alert-hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
   nav button .badge.err { margin-left: auto; }
+  /* ---- 热键冲突警告条（C2-2）：组合徽标 + 涉及模块名 ---- */
+  .conflict-line { margin-top: 6px; font-size: 13px; word-break: break-all; }
   /* ---- 结构化运行状态 ---- */
   .state-v { word-break: break-word; }
   .state-obj, .raw { margin-top: 4px; }
@@ -238,6 +240,8 @@ const state = {
   app: null, modules: [], caps: null, version: "", page: "app",
   navQuery: "",      // 左侧导航搜索词（纯前端过滤）
   actionQuery: "",   // 模块页 Actions 过滤词（repair 有 ~60 个工具）
+  conflicts: [],     // 全局热键冲突（C2-2，来自 /api/state 顶层 conflicts 键）
+  logQuery: "",      // 日志页过滤词（纯前端过滤，C2-4）
 };
 
 // ---------------------------------------------------------------------------
@@ -418,6 +422,7 @@ async function api(path, method, body) {
 async function load() {
   const s = await transport.call("state");
   state.app = s.app; state.modules = s.modules || []; state.caps = s.capabilities;
+  state.conflicts = s.conflicts || [];
   state.version = s.version || "";
   // 后端（git describe）通常已带 v 前缀，但不要重复拼接（曾显示成 vv0.1.0）。
   const v = state.version;
@@ -466,7 +471,9 @@ function renderCaps() {
 // navItems builds the full navigation list (app + modules + log) with an icon
 // and a searchable text blob (name + id + description).
 function navItems() {
-  const items = [{ id: "app", name: "应用设置", icon: "app", text: "应用设置 app" }];
+  const items = [{ id: "app", name: "应用设置", icon: "app", text: "应用设置 app",
+    // C2-2：存在热键冲突时在导航上给出醒目标记，详情见应用设置页顶部警告条。
+    conflicts: (state.conflicts || []).length }];
   state.modules.forEach(m => {
     items.push({
       id: m.id, name: m.name || m.id, icon: "module",
@@ -525,6 +532,12 @@ function renderNavList() {
       tag.title = it.error;
       b.appendChild(tag);
     }
+    // “热键冲突”标记（C2-2）：应用设置项上提示存在冲突，详情在应用设置页。
+    if (it.conflicts) {
+      const tag = el('<span class="badge err">' + icon("keyboard") + '热键冲突</span>');
+      tag.title = "多个模块绑定了同一全局热键，详情见应用设置页";
+      b.appendChild(tag);
+    }
     if (state.page === it.id) b.className = "active";
     b.onclick = () => {
       // 切换模块时重置该模块的操作筛选词，避免上一个模块的词残留。
@@ -553,6 +566,7 @@ function renderPage() {
 }
 
 function renderAppPage(root) {
+  renderConflictsAlert(root);
   const a = state.app || {};
   const card = el('<div class="card"><h2>应用设置</h2><div class="desc">全局行为与面板选项。</div></div>');
 
@@ -600,6 +614,28 @@ function renderAppPage(root) {
     } catch (e) { toast(e.message, true); }
   };
   root.appendChild(card);
+}
+
+// renderConflictsAlert（C2-2）：全局热键冲突常驻应用设置页顶部，列出冲突
+// 组合与涉及模块，引导用户到模块页改绑（模块页已有热键编辑器）。无冲突时
+// 不渲染。holders 是模块 id，优先显示模块名并括号保留 id 便于定位。
+function renderConflictsAlert(root) {
+  const list = state.conflicts || [];
+  if (!list.length) return;
+  const holderNames = (ids) => (ids || []).map(id => {
+    const m = mod(id);
+    return m ? (m.name || id) + "（" + id + "）" : id;
+  }).join("、");
+  const lines = list.map(c =>
+    '<div class="conflict-line"><span class="badge">' + esc(c.hotkey) + '</span> ' +
+    esc(holderNames(c.holders)) + '</div>').join("");
+  root.appendChild(el('<div class="alert">' + icon("keyboard") +
+    '<div class="alert-body">' +
+    '<strong>检测到 ' + list.length + ' 处全局热键冲突</strong>' +
+    lines +
+    '<div class="alert-hint">同一组合只由先绑定的模块生效，其余模块的热键不会触发。' +
+    '请进入对应模块页修改热键，保存后本警告自动消失。</div>' +
+    '</div></div>'));
 }
 
 function renderModulePage(root, m) {
@@ -1249,33 +1285,128 @@ async function patchModule(id, patch) {
 async function reload() {
   const s = await transport.call("state");
   state.modules = s.modules || [];
+  state.conflicts = s.conflicts || [];
   renderNav(); renderPage();
+}
+
+// logLevel 取事件级别（视图样式类与过滤共用；notice/progress 也算日志）。
+function logLevel(ev) { return ev.level || ev.type || "info"; }
+
+// logContent 提取事件正文：message、progress 行或 data JSON。
+function logContent(ev) {
+  if (ev.message) return ev.message;
+  if (ev.data && ev.data.line) return ev.data.line;
+  if (ev.data && Object.keys(ev.data).length) return JSON.stringify(ev.data);
+  return "";
+}
+
+// logLineText 组装一条事件的可见文本（视图、过滤、复制共用同一来源，
+// 保证“看到的即可搜到/可复制的”）。
+function logLineText(ev) {
+  let text = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] ";
+  if (ev.module) text += ev.module + " ";
+  return text + logContent(ev);
+}
+
+// logMatches（C2-4）：过滤命中 = 级别 / 模块 / 可见文本任一包含关键词
+//（大小写不敏感）。
+function logMatches(ev, needle) {
+  const hay = (logLevel(ev) + " " + (ev.module || "") + " " + logLineText(ev)).toLowerCase();
+  return hay.indexOf(needle) !== -1;
+}
+
+// paintLogCounter 刷新日志页的“显示条数”计数（页面不在日志页时跳过）。
+function paintLogCounter() {
+  const counter = document.getElementById("log-count");
+  const box = document.getElementById("log");
+  if (!counter || !box) return;
+  const needle = state.logQuery.trim().toLowerCase();
+  counter.textContent = needle
+    ? (box.childNodes.length + " / " + logBuffer.length + " 条")
+    : (logBuffer.length + " 条");
 }
 
 function renderLogPage(root) {
   const card = el('<div class="card log-page"><h2>事件日志</h2>' +
-    '<div class="desc">模块通过事件总线推送的实时消息（含打开本页前的事件，最近 ' + LOG_BUFFER_MAX + ' 条）。</div>' +
-    '<div class="actions"><button class="btn" id="log-clear">' + icon("clear") + '清空显示</button>' +
-    '<button class="btn" id="log-copy">' + icon("save") + '复制全部</button></div>' +
+    '<div class="desc">模块通过事件总线推送的实时消息（含打开本页前的事件，最近 ' + LOG_BUFFER_MAX + ' 条）。' +
+    '「清空」会同时清空离线缓冲（日志仅是诊断视图，不影响任何数据）；「导出 .log」按时间正序保存当前缓冲。</div>' +
+    '<div class="row"><label>过滤</label><div class="grow">' +
+    '<label class="field">' + icon("search") +
+    '<input type="text" id="log-q" placeholder="按级别 / 模块 / 内容过滤，大小写不敏感" autocomplete="off"></label>' +
+    '</div><span class="hint" id="log-count"></span></div>' +
+    '<div class="actions">' +
+    '<button class="btn" id="log-clear">' + icon("trash") + '清空</button>' +
+    '<button class="btn" id="log-export">' + icon("file") + '导出 .log</button>' +
+    '<button class="btn" id="log-copy">' + icon("save") + '复制全部</button>' +
+    '</div>' +
     '<div id="log" class="log-flex"></div></div>');
   root.appendChild(card);
 
-  // 回放离线缓冲：打开页面时把订阅以来缓存的事件全部补上——
-  // 这是“日志不显示”的主因修复（此前只在页面上实时追加，打开前的事件全丢）。
-  // 必须倒序遍历：logBuffer 是 unshift（新=>旧），而 appendLogLine 把每条
-  // 插到最上；正序回放会把显示顺序反转成旧=>新，与实时路径不一致。
   const box = card.querySelector("#log");
-  for (let i = logBuffer.length - 1; i >= 0; i--) {
-    appendLogLine(box, logBuffer[i]);
+  const q = card.querySelector("#log-q");
+  q.value = state.logQuery;
+
+  // redraw 按当前过滤词从 logBuffer 重建视图。必须倒序遍历：logBuffer 是
+  // unshift（新=>旧），而 appendLogLine 把每条插到最上；正序回放会把显示
+  // 顺序反转成旧=>新，与实时路径不一致。
+  function redraw() {
+    box.innerHTML = "";
+    const needle = state.logQuery.trim().toLowerCase();
+    for (let i = logBuffer.length - 1; i >= 0; i--) {
+      const ev = logBuffer[i];
+      if (needle && !logMatches(ev, needle)) continue;
+      appendLogLine(box, ev);
+    }
+    paintLogCounter();
   }
-  card.querySelector("#log-clear").onclick = () => { box.innerHTML = ""; };
+
+  // 纯前端过滤：只重绘日志区，输入框保持挂载，焦点与光标不丢失。
+  q.oninput = () => { state.logQuery = q.value; redraw(); };
+  const qclear = el('<button class="btn icon-only" id="log-q-clear" title="清空过滤">' + icon("clear") + '</button>');
+  qclear.onclick = () => { state.logQuery = ""; q.value = ""; q.focus(); redraw(); };
+  card.querySelector(".field").appendChild(qclear);
+
+  // 清空（C2-4）：同时清视图与离线缓冲。按任务决策直接清、不做二次确认，
+  // 说明文案已注明；日志只是诊断视图，清空不触碰任何持久化数据。
+  card.querySelector("#log-clear").onclick = () => {
+    logBuffer.length = 0;
+    box.innerHTML = "";
+    paintLogCounter();
+  };
+
+  // 导出（C2-4）：把当前缓冲按时间正序（旧=>新）下载为 .log 文本。
+  card.querySelector("#log-export").onclick = () => {
+    if (!logBuffer.length) { toast("缓冲为空，暂无日志可导出"); return; }
+    const lines = [];
+    for (let i = logBuffer.length - 1; i >= 0; i--) {
+      const ev = logBuffer[i];
+      const t = new Date(ev.time || Date.now()).toISOString();
+      lines.push("[" + t + "] [" + logLevel(ev) + "] " +
+        (ev.module ? ev.module + " " : "") + logContent(ev));
+    }
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pcm-events-" + new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19) + ".log";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("已导出 " + lines.length + " 条日志");
+  };
+
+  // 复制全部始终针对整个缓冲（不受过滤影响，名称里的“全部”即整个缓冲）。
   card.querySelector("#log-copy").onclick = async () => {
-    const text = Array.from(box.children).map(d => d.textContent).join("\n");
+    const text = [];
+    for (let i = logBuffer.length - 1; i >= 0; i--) text.push(logLineText(logBuffer[i]));
     try {
-      await navigator.clipboard.writeText(text);
-      toast("已复制 " + box.children.length + " 条日志");
+      await navigator.clipboard.writeText(text.join("\n"));
+      toast("已复制 " + logBuffer.length + " 条日志");
     } catch (e) { toast("复制失败：" + e.message, true); }
   };
+
+  redraw();
 }
 
 // LOG_BUFFER_MAX 是离线缓冲上限：足够覆盖订阅到打开页面之间的窗口期，
@@ -1290,21 +1421,8 @@ const logBuffer = [];
 // 独立成函数是因为实时路径与回放路径都要走同一套渲染规则。
 function appendLogLine(box, ev) {
   const d = document.createElement("div");
-  // 事件类型作为级别的兑底：notice/progress 也是用户关心的日志，
-  // 此前它们因无 level 字段落到未知样式类上，看起来像“没有日志”。
-  const level = ev.level || ev.type || "info";
-  d.className = "lev-" + level;
-  let text = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] ";
-  if (ev.module) text += ev.module + " ";
-  if (ev.message) {
-    text += ev.message;
-  } else if (ev.data && ev.data.line) {
-    // progress 事件的正文在 data.line 里。
-    text += ev.data.line;
-  } else if (ev.data && Object.keys(ev.data).length) {
-    text += JSON.stringify(ev.data);
-  }
-  d.textContent = text;
+  d.className = "lev-" + logLevel(ev);
+  d.textContent = logLineText(ev);
   box.insertBefore(d, box.firstChild);
   while (box.childNodes.length > LOG_BUFFER_MAX) box.removeChild(box.lastChild);
 }
@@ -1321,7 +1439,12 @@ function pushLog(ev) {
 
   const box = document.getElementById("log");
   if (!box) return;
+  // 过滤激活时（C2-4），未命中当前关键词的实时事件只进缓冲、不进视图，
+  // 与 redraw 的结果保持一致。
+  const needle = state.logQuery.trim().toLowerCase();
+  if (needle && !logMatches(ev, needle)) { paintLogCounter(); return; }
   appendLogLine(box, ev);
+  paintLogCounter();
 }
 
 function connectEvents() {

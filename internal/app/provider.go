@@ -177,6 +177,42 @@ func (p panelProvider) PatchAppConfig(patch server.AppConfigPatch) error {
 // Capabilities describes the platform features available in this build.
 func (p panelProvider) Capabilities() any { return winui.Capabilities() }
 
+// Conflicts reports global hotkey combos claimed by more than one module,
+// grouped from the modules' *configured* hotkeys (C2-2).
+//
+// Why not core.HotkeyManager.Conflicts()? That method groups h.combos, which
+// can never hold the same combo twice: Bind rejects an in-process duplicate
+// before inserting it and rolls back registrations the OS refused, so its
+// result is structurally always empty. The conflict a user can actually fix
+// is "two modules configured the same combo" — the manager silently drops
+// the second binding, so the panel detects it here at the configuration
+// layer, using the same canonical parsing (core.ParseHotkey) the manager
+// binds from. Holders keep registration order; disabled modules are included
+// because RebindHotkeys binds them the same way.
+func (p panelProvider) Conflicts() []server.HotkeyConflict {
+	mods := p.a.Modules()
+	cfg := p.a.Config()
+	groups := make(map[string][]string, len(mods))
+	var order []string // canonical combo texts in first-seen order
+	for _, m := range mods {
+		combo, ok, err := core.ParseHotkey(cfg.Module(m.ID()).Hotkey())
+		if err != nil || !ok {
+			continue // "" (unbound) and unparseable strings cannot conflict
+		}
+		if _, seen := groups[combo.Text]; !seen {
+			order = append(order, combo.Text)
+		}
+		groups[combo.Text] = append(groups[combo.Text], m.ID())
+	}
+	out := make([]server.HotkeyConflict, 0)
+	for _, text := range order {
+		if holders := groups[text]; len(holders) > 1 {
+			out = append(out, server.HotkeyConflict{Hotkey: text, Holders: holders})
+		}
+	}
+	return out
+}
+
 // ValidateHotkey checks a hotkey string, returning a reason when invalid.
 func (p panelProvider) ValidateHotkey(hotkey string) error {
 	if hotkey == "" {

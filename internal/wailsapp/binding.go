@@ -73,14 +73,15 @@ func (a *API) ctxFor() context.Context {
 	return a.ctx
 }
 
-// State returns the full panel snapshot: version, app settings, modules and
-// platform capabilities. Mirrors GET /api/state.
+// State returns the full panel snapshot: version, app settings, modules,
+// platform capabilities and hotkey conflicts. Mirrors GET /api/state.
 func (a *API) State() map[string]any {
 	return map[string]any{
 		"version":      a.prov.Version(),
 		"app":          a.prov.AppConfig(),
 		"modules":      a.prov.Modules(),
 		"capabilities": a.prov.Capabilities(),
+		"conflicts":    a.prov.Conflicts(),
 	}
 }
 

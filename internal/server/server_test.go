@@ -24,13 +24,14 @@ const testToken = "pcm-unit-test-token"
 // fakeProvider is an in-memory Provider used to exercise the HTTP layer
 // without booting the whole application.
 type fakeProvider struct {
-	mu       sync.Mutex
-	patches  []ModulePatch
-	patched  []string
-	actions  []string
-	hotkeys  []string
-	uis      []string
-	appPatch *AppConfigPatch
+	mu        sync.Mutex
+	patches   []ModulePatch
+	patched   []string
+	actions   []string
+	hotkeys   []string
+	uis       []string
+	appPatch  *AppConfigPatch
+	conflicts []HotkeyConflict
 
 	events chan core.Event
 }
@@ -107,6 +108,14 @@ func (p *fakeProvider) PatchAppConfig(patch AppConfigPatch) error {
 
 func (p *fakeProvider) Capabilities() any {
 	return map[string]bool{"tray_icon": true, "hotkeys": false}
+}
+
+func (p *fakeProvider) Conflicts() []HotkeyConflict {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]HotkeyConflict, len(p.conflicts))
+	copy(out, p.conflicts)
+	return out
 }
 
 func (p *fakeProvider) ValidateHotkey(hotkey string) error {
@@ -219,6 +228,53 @@ func TestHandleStateReturnsFullSnapshot(t *testing.T) {
 	}
 	if body.App.Language != "zh-CN" {
 		t.Fatalf("language = %q, 期望 zh-CN", body.App.Language)
+	}
+}
+
+// TestHandleStateIncludesConflicts（C2-2）：/api/state 必须在顶层下发热键
+// 冲突列表（与 capabilities 同级），应用设置页的警告条才有数据源。
+func TestHandleStateIncludesConflicts(t *testing.T) {
+	p := newFakeProvider()
+	p.conflicts = []HotkeyConflict{
+		{Hotkey: "ctrl+alt+k", Holders: []string{"x", "y"}},
+	}
+	ts := newTestServer(t, p)
+
+	var body struct {
+		Conflicts    []HotkeyConflict `json:"conflicts"`
+		Capabilities map[string]bool  `json:"capabilities"`
+	}
+	if err := getJSON(ts.URL+"/api/state", &body); err != nil {
+		t.Fatalf("获取 /api/state 失败: %v", err)
+	}
+	if len(body.Conflicts) != 1 {
+		t.Fatalf("conflicts = %+v, 期望 1 条冲突", body.Conflicts)
+	}
+	got := body.Conflicts[0]
+	if got.Hotkey != "ctrl+alt+k" {
+		t.Errorf("hotkey = %q, 期望 ctrl+alt+k", got.Hotkey)
+	}
+	if len(got.Holders) != 2 || got.Holders[0] != "x" || got.Holders[1] != "y" {
+		t.Errorf("holders = %v, 期望 [x y]", got.Holders)
+	}
+	if !body.Capabilities["tray_icon"] {
+		t.Error("capabilities 应与 conflicts 同级且照常下发")
+	}
+}
+
+// TestHandleStateConflictsEmptyByDefault：无冲突时定式下发空数组（而非
+// null），前端按 length 判断即可，不必做 null 防御。
+func TestHandleStateConflictsEmptyByDefault(t *testing.T) {
+	ts := newTestServer(t, newFakeProvider())
+
+	var body struct {
+		Conflicts []HotkeyConflict `json:"conflicts"`
+	}
+	if err := getJSON(ts.URL+"/api/state", &body); err != nil {
+		t.Fatalf("获取 /api/state 失败: %v", err)
+	}
+	if body.Conflicts == nil {
+		t.Fatal("conflicts 应为空数组 [], 而不是 null")
 	}
 }
 
