@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -170,13 +169,15 @@ func (f *Feature) interval() time.Duration {
 	return time.Duration(h) * time.Hour
 }
 
-// currentVersion reports the running version. It uses the same fallback chain
-// as internal/app.Version (ldflags stamp → build info → dev), but reading the
-// app package directly would invert the modules→app dependency, so the logic
-// is duplicated here deliberately and MUST stay in sync with version.go.
+// currentVersion reports the running version via core.AppControl.Version()
+// (implemented by *App). The ldflags stamp only exists in internal/app, so
+// reading debug.ReadBuildInfo() here would return "(devel)" → 0.0.0-dev for
+// every release build and make isNewer flag the current tag itself as an
+// update (A3). The AppControl seam exists precisely to hand modules the
+// trusted version baseline without inverting the modules→app dependency.
 func (f *Feature) currentVersion() string {
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
+	if f.ctx != nil && f.ctx.App != nil {
+		return f.ctx.App.Version()
 	}
 	return "0.0.0-dev"
 }
