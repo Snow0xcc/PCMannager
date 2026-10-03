@@ -16,3 +16,6 @@ dist/
 
 # RustCode local-scope configs (machine-specific)
 .rustcode/local/
+
+# 执行计划的过程台账（技能工作区，不入库）
+.superpowers/
