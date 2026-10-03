@@ -16,6 +16,12 @@ Windows 专属代码在 CI 里从未被编译过。建议**先止损（阶段 A�
 
 ## 阶段 A — P0 止损：已发布但不可用的功能（建议立即做，1–2 天）
 
+> **状态（2026-10-03）：A1–A7 已全部完成**，分支 `fix/stage-a`（基于 `13c8f0c`），
+> 每项独立提交、TDD 验收；`go test -race -count=1` 全绿、四平台交叉编译通过。
+> A1–A7 的改动点：A1 `internal/panel`+`internal/server`；A2 `internal/app/version.go`；
+> A3/A4 `modules/updater/feature.go`；A5 `scripts/check-emoji.sh`；A6 `internal/panel/index.html`；
+> A7 `internal/config/config.go`+`internal/server/provider.go`+`internal/app/provider.go`。
+
 这一阶段的共同特征：**代码「已实现」且被文档标记为完成，但实际不生效**。
 这是当前最高价值的投入——修的都是既有投入的兑现，不是新增功能。
 
