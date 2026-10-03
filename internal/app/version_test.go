@@ -11,11 +11,11 @@ func TestNormalizedVersion(t *testing.T) {
 	cases := []struct {
 		stamp, want string
 	}{
-		{"v1.2.3", "1.2.3"},   // CI 注入的 tag 名，必须去 v
-		{"1.2.3", "1.2.3"},    // 已无前缀，保持原样
+		{"v1.2.3", "1.2.3"}, // CI 注入的 tag 名，必须去 v
+		{"1.2.3", "1.2.3"},  // 已无前缀，保持原样
 		{"v0.1.0-rc1", "0.1.0-rc1"},
 		{"0.0.0-dev", "0.0.0-dev"},
-		{"", ""},              // 空值不得 panic
+		{"", ""}, // 空值不得 panic
 	}
 	for _, c := range cases {
 		Version = c.stamp

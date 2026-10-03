@@ -9,11 +9,11 @@ import (
 // stubAppControl 提供 Version() 的假实现，模拟 ldflags stamp 过的发布构建。
 type stubAppControl struct{ version string }
 
-func (s stubAppControl) Version() string                     { return s.version }
-func (s stubAppControl) Shutdown()                           {}
-func (s stubAppControl) PanelURL() string                    { return "" }
-func (s stubAppControl) OpenPanel() error                    { return nil }
-func (s stubAppControl) EnableModule(string, bool) error     { return nil }
+func (s stubAppControl) Version() string                 { return s.version }
+func (s stubAppControl) Shutdown()                       {}
+func (s stubAppControl) PanelURL() string                { return "" }
+func (s stubAppControl) OpenPanel() error                { return nil }
+func (s stubAppControl) EnableModule(string, bool) error { return nil }
 
 // TestCurrentVersionUsesAppControl 验证 currentVersion 以 ctx.App.Version()
 // 为基准（A3）：发布构建的 ldflags stamp 只有 internal/app 知道，
