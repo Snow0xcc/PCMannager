@@ -55,7 +55,7 @@ gofmt -l .          # 列出未格式化文件
 gofmt -w .          # 就地格式化
 ```
 
-Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。
+Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。注意**构建通过不等于功能可用**：全局热键、托盘、任务栏嵌入、截图编辑器、修复动作、快捷面板等原生能力在非 Windows 上均不可用，逐模块成色见 README 功能表「平台可用性」列。
 
 > **不要裸调 `go build` 产出发布版**：必须带 `-tags production`（Wails 需要）且 Windows 需 `-H windowsgui`（否则弹控制台）。`scripts/build.sh` 已把两者固定下来，发布请一律走它。
 

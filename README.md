@@ -1,6 +1,6 @@
 # PCMannager
 
-跨平台系统托盘工具（以 Windows 为主，同时支持 Linux/macOS），用 Go 编写。集成任务栏状态、剪贴板历史、截图、工作上下文记录、电脑修复工具箱等模块，每个模块可独立开关并绑定全局热键。
+系统托盘工具（Windows 优先），用 Go 编写。集成任务栏状态、剪贴板历史、截图、工作上下文记录、电脑修复工具箱、快捷面板等模块，每个模块可独立开关并绑定全局热键。四个目标平台均可构建运行，但**构建通过不等于功能等价**：功能模块的平台成色差异显著（Windows 最完整），逐模块实测结论见下方功能表「平台可用性」列。
 
 **设计原则**：单一二进制、`CGO_ENABLED=0` 纯 Go 构建、零 cgo 依赖（Windows GUI 走自研 `internal/winui`，基于 `syscall.LazyDLL` 直接调 Win32）。
 
@@ -20,15 +20,16 @@ Wiki 内容以 `docs/wiki/*.md` 为单一数据源，由 `scripts/sync-wiki.sh` 
 
 ## 功能与状态
 
-| 模块 | ID | 说明 | 默认热键 | 默认开关 |
-| --- | --- | --- | --- | --- |
-| 任务栏状态 | `taskbar` | 任务栏 CPU/内存/网络/磁盘/运行时长/电量小组件（TrafficMonitor 式锚在通知区左侧，真透明背景），2×2 网格排版字段**随字号实测缩放**，文字颜色随背景明暗自适应（Windows 真实嵌入窗口，其他平台仅采集日志） | `Ctrl+Alt+T` | 开 |
-| 剪贴板历史 | `clipboard` | 文本 + 图片历史、置顶、容量裁剪、保留期清理（Windows 查看器可拖动，选中后恢复焦点并可选自动粘贴） | `` Ctrl+` `` | 开 |
-| 截图 | `screenshot` | 全屏抓取 + 框选编辑器（选区浮动工具栏：矩形/椭圆/箭头/画笔标注、颜色与粗细、撤销、确认/复制/取消），png/jpg 可选，可自动复制到剪贴板；另含 **GIF 录屏**（框选后录制，独立置顶控制条）与**滚动长截图**（手动或自动滚动 + 像素条带拼接，自动滚动会注入滚轮） | `F1` | 开 |
-| 上下文记录 | `selfcontext` | 记录活动窗口标题/进程名（不含截屏），可导出/清空 | `Ctrl+Alt+M` | **关**（隐私 opt-in） |
-| 电脑修复与工具 | `repair` | 声明式工具箱目录（7 大页、约 60 个工具：系统设置/网络排查/清理/运行环境/包管理器…） | — | 开 |
-| 自动更新 | `updater` | 定时检查 GitHub Releases 新版并提醒（SemVer/rc 排序、prerelease 开关）；下载走主机白名单 + sha256，经提权 helper 显式应用 | — | **关** |
-| 首选项 | `preferences` | 统一设置面板；**非功能模块**，是注册表的视图 | — | — |
+| 模块 | ID | 说明 | 默认热键 | 默认开关 | 平台可用性 |
+| --- | --- | --- | --- | --- | --- |
+| 任务栏状态 | `taskbar` | 任务栏 CPU/内存/网络/磁盘/运行时长/电量小组件（TrafficMonitor 式锚在通知区左侧，真透明背景），2×2 网格排版字段**随字号实测缩放**，文字颜色随背景明暗自适应 | `Ctrl+Alt+T` | 开 | Windows 完整；Linux/macOS 部分可用（指标采集与面板展示正常，无任务栏嵌入窗口、无电量） |
+| 剪贴板历史 | `clipboard` | 文本 + 图片历史、置顶、容量裁剪、保留期清理（Windows 查看器可拖动，选中后恢复焦点并可选自动粘贴） | `` Ctrl+` `` | 开 | Windows 完整；Linux/macOS 部分可用（文本/图片历史与面板浏览/写回/删除正常；文件类型采集与写回、自动粘贴、原生查看器窗口不可用） |
+| 截图 | `screenshot` | 全屏抓取 + 框选编辑器（选区浮动工具栏：矩形/椭圆/箭头/画笔标注、颜色与粗细、撤销、确认/复制/取消），png/jpg 可选，可自动复制到剪贴板；另含 **GIF 录屏**（框选后录制，独立置顶控制条）与**滚动长截图**（手动或自动滚动 + 像素条带拼接，自动滚动会注入滚轮） | `F1` | 开 | Windows 完整；Linux/macOS 不可用（编辑器窗口降级为空转，抓屏后无区域选择/保存/复制，截图直接丢弃；GIF/滚动/MP4 编码管线只能经编辑器进入，同样不可达） |
+| 上下文记录 | `selfcontext` | 记录活动窗口标题/进程名（不含截屏），可导出/清空 | `Ctrl+Alt+M` | **关**（隐私 opt-in） | Windows 完整；Linux/macOS 不可用（活动窗口探针恒为空，采样不产生记录；屏幕捕获与查看器不可用；导出/清空可用但数据恒为空） |
+| 电脑修复与工具 | `repair` | 声明式工具箱目录（7 大页、约 60 个工具：系统设置/网络排查/清理/运行环境/包管理器…） | — | 开 | 仅 Windows；Linux/macOS 不可用（所有动作返回「当前平台不支持」） |
+| 自动更新 | `updater` | 定时检查 GitHub Releases 新版并提醒（SemVer/rc 排序、prerelease 开关）；下载走主机白名单 + sha256，经提权 helper 显式应用 | — | **关** | 全平台可用（检查/下载/校验一致；Linux/macOS 的应用更新需 root 或 setuid） |
+| 快捷面板 | `launcher` | uTools 式全局搜索面板（Alt+Space）与超级磁贴池（Alt+P）：模块动作/界面入口、网页捷径、开始菜单应用；拼音首字母缩写、多因子加权排序与置顶、右键编辑关键字 | `Alt+Space` | 开 | 仅 Windows；Linux/macOS 不可用（面板/超级面板为原生窗口能力，空转降级，热键无可见响应；开始菜单应用索引亦仅 Windows） |
+| 首选项 | `preferences` | 统一设置面板；**非功能模块**，是注册表的视图 | — | — | 全平台可用（设置走 HTTP 面板；原生窗口仅 Windows） |
 
 模块 ID 是稳定契约，被配置、热键绑定与 REST API 按 ID 查找，新增 ID 须同步 `internal/config`。
 
@@ -77,7 +78,7 @@ go test -count=1 ./internal/... ./modules/...
 ## 架构
 
 ```
-main.go                  注册 6 个模块（含 updater） → app.New() → StartPanel/StartTray → Run() 阻塞
+main.go                  注册功能模块（taskbar · clipboard · screenshot · selfcontext · repair · updater · launcher） → app.New() → StartPanel/StartTray → Run() 阻塞
   │
   ├─ internal/app        装配层：config / logx / Bus / HotkeyManager / tray / panel
   │                      实现 server.Provider（依赖方向 app → server，反向会成环）
@@ -86,7 +87,7 @@ main.go                  注册 6 个模块（含 updater） → app.New() → S
   ├─ internal/server     HTTP REST + SSE，仅监听 127.0.0.1
   │    └─ internal/panel/index.html   面板唯一前端资源（embed 内置，两种传输共用）
   ├─ internal/wailsapp   原生窗口（Wails/WebView2，Windows only；其它平台返回 ErrUnsupported）
-  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · updater · preferences
+  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · updater · launcher · preferences
 平台层：internal/winui（自研免 cgo Win32：窗口/任务栏嵌入/DPI/托盘/注册表）
         internal/tray · internal/sysutil（提权/自启/单实例/通知）· internal/paths · internal/logx
 ```
@@ -177,6 +178,7 @@ git push origin v1.0.0
 
 ## 已知限制
 
+- **跨平台成色差异大（D1 如实标注）**：四平台构建均通过，但功能不等价——全局热键与托盘在非 Windows 不可用；`screenshot`/`selfcontext`/`repair`/`launcher` 核心能力不可用，`taskbar`/`clipboard` 部分可用，`updater`/`preferences` 全平台可用。逐模块实测结论见上方功能表「平台可用性」列。
 - **真实 Windows 验收部分完成**：托盘启退循环、热键触发、任务栏小组件嵌入、Wails 原生窗口、截图编辑器、剪贴板历史窗口已在本机 Windows 实跑验证；Explorer 重启恢复等边界场景仍未覆盖。
 - **热键可能被占用**：`F1`、`` Ctrl+` `` 在部分机器已被其它程序占用，当前按设计降级（告警 + 面板/托盘仍可用）；面板尚未提供"可用性检测"与改绑引导。
 - **录屏仅支持 GIF**：纯 Go 无成熟 H.264 编码器，项目约束零 cgo + 无 ffmpeg，因此 MP4、音频、摄像头、麦克风均未实现（GIF 帧缓冲上限 1200 帧，约 2 分钟 @10fps）。
