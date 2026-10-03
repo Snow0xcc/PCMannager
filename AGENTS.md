@@ -72,7 +72,7 @@
 - **事件总线同步协议（P0-3）**：`Bus` 的锁顺序恒为 `Bus.mu → subscriber.mu`，不可反向。发送只能走 `subscriber.send()`、关闭只能走 `subscriber.close()`；历史在 `Bus.mu` 下**同步预填**（`subBuffer` 256 > `maxHist` 200，故不阻塞），不得再改回异步回放 goroutine——那是"向已关闭 channel 发送"的竞态源。
 - **截图模块（`modules/screenshot`）的三工作流与三条硬约束**：
   - **同一编辑器服务三种模式**（`edModeCapture`/`edModeRecord`/`edModeScroll`，见 `editor.go`）。窗口/遮罩/框选是共用的，只有工具栏（`editorState.buttons()`）与选区动作不同；**新增模式只加按钮 id + 在 `buttons()` 里挂一项**，不要另写一套 overlay。`colorful` 标注仅裁剪模式可用（`beginDraw` 直接拒绝其余模式），否则图形会被烘进录屏/长截图且无法撤销。
-  - **录屏只有 GIF**（`recorder.go` + `record_flow.go`）。纯 Go 无成熟 H.264 编码器，项目又约束零 cgo + 无 ffmpeg，因此 **MP4/音频/摄像头/麦克风不可实现**；不要为了“支持 MP4”引入 ffmpeg 外部依赖而不与用户确认。帧缓冲上限 `recMaxFrames=1200`（默认 10fps 约 2 分钟）。录制期间编辑器必须 `parkEditor()` 隐藏，否则会把自己录进去。
+  - **录屏默认 GIF，MP4 为 opt-in**（`recorder.go` + `record_flow.go`；MP4 在 `record_flow_mp4.go`）。GIF 纯 Go 无外部依赖，帧缓冲上限 `recMaxFrames=1200`（默认 10fps 约 2 分钟）。MP4 **仅在检测到外部 ffmpeg 时**才出现在选项里（`ffmpegAvailable()`，支持扬声器/麦克风；未装 ffmpeg 报错并回退 GIF），帧不进内存、每帧 PNG 直写 ffmpeg 管道，边界为时长 8h / 体积 5GB。摄像头/麦克风**画面采集**仍不做。录制期间编辑器必须 `parkEditor()` 隐藏，否则会把自己录进去。
   - **滚动拼接必须在“上一帧位置附近”搜索条带**（`scroll.go` 的 `findStripOffset`，从 expected 向外辐射、近距优先）。纯色背景/重复表格行会让条带**多处匹配**，改成全帧自上而下扫描会选到错误位置（回归测试 `TestStitchNoMotionAddsNothing` 会当场抓住）。自动滚动会 **注入真实滚轮**并把光标移到选区中心（`winui.SetCursorPos`+`ScrollWheel`），属“控制用户电脑”的行为，需用户知晓。
   - **需要重启才生效**的配置：无。但驱动器/进程外操作都在超时保护下（如 `shutdownTimeout`）；`Stop()` 会先 `requestStop()` 滚动采样再等 `wg`，否则采样循环会跑到进程退出。
   - **控制条（`editor_control.go`）是与编辑器分开的窗口**，因为编辑器被隐藏后无法承载停止按钮。它与其编辑器**同线程**（`LockOSThread`），`teardown` 里一并销毁——`DestroyWindow` 跨线程会静默失败留下死窗口。

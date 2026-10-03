@@ -251,7 +251,14 @@ README 主打跨平台，但按代码逐模块核实，**非 Windows 上多数�
   当前「README 说跨平台、代码是 Windows 优先」的落差本身就是信任损耗。
   建议：**先在 README/面板如实标注成色**（S 工作量），再决定要不要投入做跨平台。
 
-### D2. 依赖卫生
+### D2. 依赖卫生（状态：**已完成 2026-10-03**）
+
+> **状态（2026-10-03）**：已完成。`kbinani/screenshot` 收进 `capture_windows.go`
+> （`capture_other.go` 端 `captureDisplayCount()` 恒返回编译期常量 0，编辑器/录屏/
+> 滚动拼接整棵调用树被死代码消除，非 Windows 二进制瘦身）；`gopsutil v4.26.9`
+> 与 `x/crypto v0.57.0`、`x/net v0.59.0`、`x/sys v0.48.0`、`x/text v0.42.0` 已升级
+> （越过 CVE-2025-22869 修复版本）。验证：build/vet/gofmt/tidy -diff、Linux 测试、
+> `GOOS=windows` vet + 各测试包编译、`GOOS=darwin` vet 全绿。
 
 - `modules/screenshot/feature.go` **没有 build tag** → `kbinani/screenshot` 把
   `x/exp/shiny`、`x/mobile`、`x/image`、`xgb`、`plan9stats` 一并拖进 Linux/macOS 二进制。
@@ -305,15 +312,27 @@ README 主打跨平台，但按代码逐模块核实，**非 Windows 上多数�
 
 ## 执行顺序建议
 
+**首轮计划（A→F）已于 2026-10-03 全部执行完毕**：A1–A7、B1–B4、C1、
+C2-1/C2-2/C2-4、C3、C4、D1、D2、F 均已完成（B5 属外部硬件依赖，见下）。
+以下为**后续推进方案**（同日制定，按价值排序，并行 worker ≤ 2）：
+
 ```
-第 1 周   A1 SSE  →  A2 版本号  →  A3/A4 updater  →  A5 emoji 闸门  →  A6 XSS
-          （每个都是独立小 PR，全部有明确验收标准）
-第 1 周末  A7 配置竞态（含 -race 验收）
-第 2 周   B4 CI 补 Windows 编译闸门  →  B1 面板鉴权/CSRF  →  B2 repair 超时+提权  →  B3 内存上限
-          并行：F 文档校准 + C1 死代码清理（低风险，可随时插入）
-第 3 周   B5 安排真实 Windows 实机验收（需硬件，属外部依赖，尽早预约）
-第 3-4 周 C2/C3 产品补齐（剪贴板历史、热键冲突 UI、持久化）
-第 5 周+  D1 跨平台决策 → D2 依赖升级 → E 架构收敛
+第 1 步   C2-3 需重启标记（小）—— server_port/data_dir/log_level 走已存在的
+          core.Option.Restart 机制声明，面板保存后提示"重启后生效"；
+          验收：internal/server 加契约测试断言三个 option 均带 Restart: true
+第 1 步   TODO #1 CI 实测发布（小，与上一步互相独立，可双 worker 并行）——
+          打测试 tag（如 v0.0.1-rc2）验证 release.yml 全流程：
+          版本注入 / 四平台矩阵 / Release 附件 / Wiki 同步
+第 2 步   C2-5 截图历史与 selfcontext 条目列表面板化（中）——
+          两模块 State() 暴露条目列表 + REST 端点 + 面板页，
+          非 Windows 用户不再只能开原生窗口查看
+第 3 步   B5 + TODO #49 Windows 实机验收（外部依赖，尽早预约机器）——
+          先写 docs/RELEASE-CHECKLIST.md 可勾选清单（托盘启退 20 次、
+          热键真实触发、任务栏组件、updater 全链路、Wails 回退路径），
+          发版前逐项打勾并记录机器/系统版本
+第 4 步   TODO #9 托盘图标资源 → TODO #11/#12/#13 命名与平台对账（中，择机穿插）
+第 5 步   E 阶段架构收敛（大，明确延后）—— panelapi DTO 抽包、
+          App god-struct 拆分；排在产品补齐与实机验收之后
 ```
 
 ### 明确不做（本轮）
@@ -322,7 +341,8 @@ README 主打跨平台，但按代码逐模块核实，**非 Windows 上多数�
   `screenshot` 编辑器非 Windows、`repair` 非 Windows）存在「宣称有、实际无」的问题，
   加第 7 个只会放大信任损耗。
 - 不动 `GoBox` → `PCMannager` 代码改名（破坏配置路径，需迁移方案）。
-- 不重构 `App` god-struct（阶段 E），在 A/B 未收敛前重构会放大回归面。
+- 不重构 `App` god-struct（阶段 E），排在产品补齐（C2-5）与
+  Windows 实机验收（B5）之后，避免在功能尚未补齐时放大回归面。
 
 ---
 
