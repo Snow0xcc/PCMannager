@@ -4,7 +4,10 @@ package app
 
 import (
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
 )
@@ -354,6 +357,111 @@ func TestHotkeyConflictReportedNotFatal(t *testing.T) {
 	}
 	if got := a.ModuleError("y"); got == "" {
 		t.Error("重复热键的第二个模块也应记录原因")
+	}
+}
+
+// toggleFuzzModule detects the C4 double-start race: a second Start without
+// an intervening Stop means two goroutines passed the "already running" guard
+// together. (Stop-on-stopped is deliberately tolerated: plain Disable has
+// never been guarded, and modules must already survive that today.)
+type toggleFuzzModule struct {
+	core.Base
+	id string
+
+	mu         sync.Mutex
+	running    bool
+	starts     int
+	stops      int
+	violations []string
+}
+
+func (f *toggleFuzzModule) ID() string               { return f.id }
+func (f *toggleFuzzModule) Name() string             { return "racey " + f.id }
+func (f *toggleFuzzModule) Description() string      { return "test double" }
+func (f *toggleFuzzModule) Init(*core.Context) error { return nil }
+
+func (f *toggleFuzzModule) Start() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.running {
+		f.violations = append(f.violations,
+			fmt.Sprintf("Start 在已运行时被再次调用（第 %d 次 Start）", f.starts+1))
+	}
+	f.running = true
+	f.starts++
+	// Widen the check-then-act window so the pre-fix race is caught reliably
+	// instead of depending on scheduler luck. Post-fix the per-module lock
+	// serialises callers, so this only costs ~50µs per real start.
+	time.Sleep(50 * time.Microsecond)
+	return nil
+}
+
+func (f *toggleFuzzModule) Stop() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.running = false
+	f.stops++
+	return nil
+}
+
+// TestEnableDisableConcurrentNeverDoubleStart is the C4 check-then-act
+// regression: Enable reads "enabled && running" and only later sets the
+// running state, so concurrent callers (HTTP PATCH vs tray click) could both
+// pass the guard and start the module twice. The per-module lifecycle lock
+// must make the check+start/stop section atomic.
+func TestEnableDisableConcurrentNeverDoubleStart(t *testing.T) {
+	a := newTestApp(t)
+	m := &toggleFuzzModule{id: "racey"}
+	a.MustRegister(m)
+
+	const (
+		goroutines = 6
+		iterations = 40
+	)
+
+	var start sync.WaitGroup
+	start.Add(1)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			start.Wait()
+			for j := 0; j < iterations; j++ {
+				// EnableModule is the real-world entry point (HTTP PATCH and
+				// tray toggle both land here), and its guard only short-
+				// circuits for a config-enabled running module.
+				var err error
+				if i%2 == 0 {
+					err = a.EnableModule("racey", true)
+				} else {
+					err = a.EnableModule("racey", false)
+				}
+				if err != nil {
+					t.Errorf("EnableModule(%v): %v", i%2 == 0, err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	start.Done()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("并发 EnableModule 死锁")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.starts == 0 {
+		t.Fatal("压测未产生任何 Start（测试无效）")
+	}
+	if len(m.violations) > 0 {
+		t.Fatalf("检测到 %d 次并发双重启动（check-then-act 竞态）, 首次: %s",
+			len(m.violations), m.violations[0])
 	}
 }
 

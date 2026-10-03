@@ -128,11 +128,13 @@ func (t *winTray) createWindowLocked() error {
 	if t.window != nil {
 		return nil
 	}
-	w, err := winui.NewWindow("GoBoxTray", 0, 0, 0)
+	// The handler must be installed before the window joins the global
+	// dispatch table (C4): a Handle written after NewWindow returns misses
+	// any message dispatched in between and races the pump thread's read.
+	w, err := winui.NewWindowWithHandler("GoBoxTray", 0, 0, 0, t.wndProc)
 	if err != nil {
 		return err
 	}
-	w.Handle = t.wndProc
 	t.window = w
 	return nil
 }

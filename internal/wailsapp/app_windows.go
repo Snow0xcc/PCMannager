@@ -19,6 +19,40 @@ func emitEvent(ctx context.Context, ev core.Event) {
 	runtime.EventsEmit(ctx, EventBusName, ev)
 }
 
+// cancelGuard stores the forwarding context's CancelFunc so the goroutines
+// Wails uses for OnStartup/OnShutdown and the goroutine running wails.Run can
+// all publish and consume it without a data race (C4: the pre-fix code shared
+// a plain variable written by OnStartup and read by OnShutdown and the
+// post-Run backstop).
+//
+// call is idempotent: the stored func is taken (and nilled) under the lock,
+// so a cancelled context is never cancelled twice and a call before any set
+// is a no-op. It is a leaf lock — never held while calling into another
+// package.
+type cancelGuard struct {
+	mu sync.Mutex
+	fn context.CancelFunc
+}
+
+// set publishes fn, replacing any previous one.
+func (g *cancelGuard) set(fn context.CancelFunc) {
+	g.mu.Lock()
+	g.fn = fn
+	g.mu.Unlock()
+}
+
+// call cancels the stored context exactly once; it is a no-op when nothing
+// (or nothing more) is stored.
+func (g *cancelGuard) call() {
+	g.mu.Lock()
+	fn := g.fn
+	g.fn = nil
+	g.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
 // windowState is the package-level handle to the running native window.
 type windowState struct {
 	// mu guards every field below.
@@ -151,7 +185,7 @@ func run(opts Options, prov server.Provider) error {
 	defer unsubscribe()
 
 	var (
-		cancel  context.CancelFunc
+		cancel  cancelGuard
 		started = make(chan struct{})
 	)
 	go func() {
@@ -188,9 +222,12 @@ func run(opts Options, prov server.Provider) error {
 		},
 		OnStartup: func(ctx context.Context) {
 			api.setCtx(ctx)
-			// Cancelled in OnShutdown to stop the forwarding goroutine.
-			var base context.Context
-			base, cancel = context.WithCancel(ctx)
+			// Cancelled in OnShutdown to stop the forwarding goroutine. The
+			// func is published through cancelGuard because OnStartup runs on
+			// a different goroutine than OnShutdown and the post-Run backstop
+			// below (C4).
+			base, c := context.WithCancel(ctx)
+			cancel.set(c)
 			api.setCtx(base)
 			// Publish the package-level context last so Show/Hide only ever
 			// see a context that is fully wired up.
@@ -206,9 +243,7 @@ func run(opts Options, prov server.Provider) error {
 			// posting to a window that no longer exists. The readiness latch
 			// stays closed — it is a one-shot "the window came up" signal.
 			setWindowCtx(nil)
-			if cancel != nil {
-				cancel()
-			}
+			cancel.call()
 			unsubscribe()
 			if opts.Logf != nil {
 				opts.Logf("wailsapp: 原生窗口已关闭")
@@ -216,8 +251,8 @@ func run(opts Options, prov server.Provider) error {
 		},
 		Bind: []interface{}{api},
 	})
-	if cancel != nil {
-		cancel()
-	}
+	// Backstop if OnShutdown never ran; call is idempotent, so a context
+	// already cancelled above stays cancelled exactly once.
+	cancel.call()
 	return err
 }

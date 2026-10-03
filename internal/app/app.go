@@ -54,6 +54,16 @@ type App struct {
 	hotkeyError map[string]string
 	errorAt     map[string]time.Time
 
+	// lifeMu serialises the check-then-act section of Enable/Disable per
+	// module, so concurrent callers (HTTP PATCH vs tray click) cannot both
+	// pass the "already running" guard and start a module twice (C4).
+	//
+	// It is separate from mu on purpose: module Start/Stop callbacks run while
+	// a lifeMu is held, and module code may call back into App methods that
+	// take mu. Lock order is lifeMu -> mu; mu is never held while calling into
+	// module code. Entries are keyed by module id and guarded by mu.
+	lifeMu map[string]*sync.Mutex
+
 	hotkeys *core.HotkeyManager
 
 	// tray renders the notification-area icon. It is nil when the platform
@@ -125,6 +135,7 @@ func New() (*App, error) {
 		lastError:   map[string]string{},
 		hotkeyError: map[string]string{},
 		errorAt:     map[string]time.Time{},
+		lifeMu:      map[string]*sync.Mutex{},
 		dataDir:     dataDir,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -295,8 +306,39 @@ func (a *App) StartModules() {
 	}
 }
 
+// lifecycleLock returns the per-module mutex that serialises the
+// Enable/Disable check-then-act section. Entries are created lazily so tests
+// that build an App without New keep working.
+func (a *App) lifecycleLock(id string) *sync.Mutex {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lifeMu == nil {
+		a.lifeMu = map[string]*sync.Mutex{}
+	}
+	m, ok := a.lifeMu[id]
+	if !ok {
+		m = &sync.Mutex{}
+		a.lifeMu[id] = m
+	}
+	return m
+}
+
 // Enable starts a single module and (re)binds its hotkey.
+//
+// The whole check+start sequence runs under the module's lifecycle lock so
+// concurrent callers (HTTP PATCH, tray toggle) cannot both pass the running
+// guard and double-start the module (C4). Module callbacks run under that
+// lock but never under a.mu, preserving the app-wide rule that module code is
+// never invoked while holding mu.
 func (a *App) Enable(id string) error {
+	lock := a.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return a.enableLocked(id)
+}
+
+// enableLocked is Enable with the module's lifecycle lock already held.
+func (a *App) enableLocked(id string) error {
 	m, ok := a.Module(id)
 	if !ok {
 		return fmt.Errorf("未找到模块 %s", id)
@@ -327,7 +369,18 @@ func (a *App) Enable(id string) error {
 }
 
 // Disable stops a module and unbinds its hotkey.
+//
+// Like Enable, the whole sequence runs under the module's lifecycle lock so
+// enable/disable pairs remain ordered against concurrent callers (C4).
 func (a *App) Disable(id string) error {
+	lock := a.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return a.disableLocked(id)
+}
+
+// disableLocked is Disable with the module's lifecycle lock already held.
+func (a *App) disableLocked(id string) error {
 	m, ok := a.Module(id)
 	if !ok {
 		return fmt.Errorf("未找到模块 %s", id)
@@ -351,14 +404,22 @@ func (a *App) Disable(id string) error {
 }
 
 // EnableModule implements core.AppControl for cross-module toggling.
+//
+// The persisted flip and the start/stop that follows it form one atomic
+// section under the module's lifecycle lock (C4): with SetEnabled outside the
+// lock, a concurrent toggle could flip the switch between another caller's
+// guard check and its Start, re-opening the double-start window.
 func (a *App) EnableModule(id string, on bool) error {
+	lock := a.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	if err := a.cfgMgr.Module(id).SetEnabled(on); err != nil {
 		return err
 	}
 	if on {
-		return a.Enable(id)
+		return a.enableLocked(id)
 	}
-	return a.Disable(id)
+	return a.disableLocked(id)
 }
 
 // bindHotkey registers a module's configured global hotkey.
