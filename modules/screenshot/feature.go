@@ -13,6 +13,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,11 @@ const (
 	actionCapture = "capture"
 	actionOpenDir = "open_dir"
 )
+
+// savedNamePrefix is the filename prefix of every saved screenshot; the
+// startup cleaner uses it (plus a numeric stem and a known extension) to tell
+// this module's own files apart from anything else in the directory.
+const savedNamePrefix = "screenshot_"
 
 // Timeouts for the operations that touch another process or the OS UI.
 const (
@@ -105,7 +111,7 @@ func (f *Feature) Options() []core.Option {
 			Help: "留空则使用本模块的数据目录"},
 		{Key: optMaxHistory, Label: "最多保留张数", Kind: core.KindInt,
 			Default: defaultMaxHistory, Min: 10, Max: 2000, Step: 10,
-			Help: "超出后删除本次会话中最早保存的图片"},
+			Help: "超出后自动删除最早的图片（含历史文件）"},
 	}
 }
 
@@ -119,12 +125,15 @@ func (f *Feature) Actions() []core.Action {
 	}
 }
 
-// Init implements core.Module.
+// Init implements core.Module. The save directory outlives the process, so
+// Init adopts the files already on disk and trims past max_history; otherwise
+// the directory would grow without bound across restarts.
 func (f *Feature) Init(ctx *core.Context) error {
 	if ctx == nil {
 		return errNotReady
 	}
 	f.ctx = ctx
+	f.enforceHistoryLimit()
 	return nil
 }
 
@@ -252,6 +261,8 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		if !ok || n < 1 {
 			return fmt.Errorf("screenshot: %s 需要正整数", key)
 		}
+		// A shrunken limit must take effect immediately, not on the next save.
+		f.enforceHistoryLimit()
 	default:
 		return fmt.Errorf("screenshot: 未知配置项 %s", key)
 	}
@@ -323,7 +334,7 @@ func (f *Feature) save(img image.Image) {
 		f.ctx.Bus.Notice(moduleID, "无法创建截图目录："+dir)
 		return
 	}
-	name := filepath.Join(dir, fmt.Sprintf("screenshot_%d%s", time.Now().UnixMilli(), f.ext()))
+	name := filepath.Join(dir, fmt.Sprintf(savedNamePrefix+"%d%s", time.Now().UnixMilli(), f.ext()))
 	if err := f.writeImage(name, img); err != nil {
 		f.ctx.Logger.Error("保存截图失败", "module", moduleID, "file", name, "err", err)
 		f.ctx.Bus.Notice(moduleID, "保存截图失败："+err.Error())
@@ -376,6 +387,85 @@ func (f *Feature) remember(path string) {
 		stale = f.saved[:len(f.saved)-max]
 		f.saved = f.saved[len(f.saved)-max:]
 	}
+	f.mu.Unlock()
+
+	for _, old := range stale {
+		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+			f.ctx.Logger.Warn("删除旧截图失败", "module", moduleID, "file", old, "err", err)
+		}
+	}
+}
+
+// isModuleScreenshot reports whether name follows this module's save pattern
+// (screenshot_<digits>.png|.jpg). The startup cleaner only ever deletes files
+// matching it, so user documents in the same directory are never touched.
+func isModuleScreenshot(name string) bool {
+	if !strings.HasPrefix(name, savedNamePrefix) {
+		return false
+	}
+	ext := filepath.Ext(name)
+	if ext != ".png" && ext != ".jpg" {
+		return false
+	}
+	stem := strings.TrimSuffix(strings.TrimPrefix(name, savedNamePrefix), ext)
+	if stem == "" {
+		return false
+	}
+	for _, r := range stem {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// enforceHistoryLimit adopts the files this module already saved across
+// restarts: it lists them oldest-first, deletes everything past max_history
+// and repopulates f.saved with the survivors so in-session pruning continues
+// from the real directory state. A missing or unreadable directory is silently
+// ignored — there is simply nothing to clean.
+func (f *Feature) enforceHistoryLimit() {
+	dir := f.saveDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type shot struct {
+		path string
+		mod  time.Time
+	}
+	var shots []shot
+	for _, e := range entries {
+		if e.IsDir() || !isModuleScreenshot(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		shots = append(shots, shot{path: filepath.Join(dir, e.Name()), mod: info.ModTime()})
+	}
+	sort.Slice(shots, func(i, j int) bool {
+		if shots[i].mod.Equal(shots[j].mod) {
+			return shots[i].path < shots[j].path
+		}
+		return shots[i].mod.Before(shots[j].mod)
+	})
+
+	var stale []string
+	if max := maxHistory(f.ctx); max > 0 && len(shots) > max {
+		for _, s := range shots[:len(shots)-max] {
+			stale = append(stale, s.path)
+		}
+		shots = shots[len(shots)-max:]
+	}
+
+	kept := make([]string, len(shots))
+	for i, s := range shots {
+		kept[i] = s.path
+	}
+	f.mu.Lock()
+	f.saved = kept
 	f.mu.Unlock()
 
 	for _, old := range stale {

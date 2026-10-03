@@ -7,6 +7,7 @@
 package selfcontext
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -63,6 +64,10 @@ const (
 	actionExport = "export"
 )
 
+// historyFileName is the JSON file in the module data directory that carries
+// the recorded entries across restarts.
+const historyFileName = "context_history.json"
+
 // Module-level errors.
 var (
 	errNoFeature = errors.New("selfcontext: 模块未初始化")
@@ -83,13 +88,16 @@ type Feature struct {
 	// paused reflects pause_on_lock: sampling is suspended while the session
 	// is locked so a lock screen is never recorded.
 	paused bool
+	// activeWindow is injectable so tests can drive record() without a real
+	// window system; nil means use the platform probe.
+	activeWindow func() (title, process string, err error)
 }
 
 // Entry is one sampled active-window context record.
 type Entry struct {
-	Title     string
-	Process   string
-	Timestamp time.Time
+	Title     string    `json:"title"`
+	Process   string    `json:"process,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // NewFeature constructs the selfcontext module.
@@ -145,13 +153,14 @@ func (f *Feature) Actions() []core.Action {
 	}
 }
 
-// Init implements core.Module.
+// Init implements core.Module. It restores the persisted history so records
+// survive a restart, then trims it to the retention window and entry cap.
 func (f *Feature) Init(ctx *core.Context) error {
 	if ctx == nil {
 		return errors.New("selfcontext: 模块上下文为空")
 	}
 	f.ctx = ctx
-	f.prune()
+	f.load()
 	return nil
 }
 
@@ -253,7 +262,7 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		if !ok || n <= 0 {
 			return fmt.Errorf("selfcontext: %s 需要正整数", key)
 		}
-		f.prune()
+		f.pruneAndSave()
 	case optCaptureMode:
 		s, ok := value.(string)
 		if !ok || (s != modeTitle && s != modePrimary) {
@@ -305,14 +314,7 @@ func (f *Feature) Export() (string, error) {
 	if f.ctx == nil {
 		return "", errNoFeature
 	}
-	dir := f.ctx.DataDir
-	if dir == "" {
-		base, err := os.UserConfigDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(base, "PCMannager", moduleID)
-	}
+	dir := f.dataDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -346,7 +348,11 @@ func (f *Feature) record() {
 	if f.ctx == nil {
 		return
 	}
-	title, process, err := ActiveWindow()
+	probe := f.activeWindow
+	if probe == nil {
+		probe = ActiveWindow
+	}
+	title, process, err := probe()
 	if err != nil {
 		// A transient Win32 failure is not worth a log line per tick.
 		return
@@ -375,8 +381,12 @@ func (f *Feature) record() {
 	if len(f.entries) > maxEntries {
 		f.entries = append(f.entries[:0], f.entries[len(f.entries)-maxEntries:]...)
 	}
+	// Persist under the same lock section so the file always matches the
+	// latest in-memory state; the write is small and only happens on a new
+	// distinct title, so holding f.mu through the disk write is cheap.
+	f.pruneLocked()
+	f.saveLocked()
 	f.mu.Unlock()
-	f.prune()
 }
 
 // setPaused records whether sampling is currently suspended.
@@ -386,11 +396,12 @@ func (f *Feature) setPaused(paused bool) {
 	f.mu.Unlock()
 }
 
-// Clear drops every recorded entry.
+// Clear drops every recorded entry and persists the empty state.
 func (f *Feature) Clear() {
 	f.mu.Lock()
 	f.entries = nil
 	f.last = ""
+	f.saveLocked()
 	f.mu.Unlock()
 	if f.ctx != nil && f.ctx.Bus != nil {
 		f.ctx.Bus.State(moduleID, f.State())
@@ -429,10 +440,25 @@ func (f *Feature) Summary() string {
 	return b.String()
 }
 
-// prune drops entries older than the configured retention window.
+// prune drops expired entries from memory only.
 func (f *Feature) prune() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pruneLocked()
+}
+
+// pruneAndSave applies the retention window and persists the result; used when
+// retention_days changes at runtime.
+func (f *Feature) pruneAndSave() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pruneLocked()
+	f.saveLocked()
+}
+
+// pruneLocked drops entries older than the configured retention window.
+// Callers must hold f.mu.
+func (f *Feature) pruneLocked() {
 	cutoff := time.Now().AddDate(0, 0, -f.retentionDays())
 	kept := f.entries[:0]
 	for _, e := range f.entries {
@@ -441,6 +467,91 @@ func (f *Feature) prune() {
 		}
 	}
 	f.entries = kept
+}
+
+// load restores the persisted history from the module data directory, then
+// trims it to the retention window and entry cap and rewrites the file, so a
+// restart never resurrects expired entries. A missing file is the normal
+// first-run case; a corrupt file is dropped with a warning so a damaged write
+// can never crash the app.
+func (f *Feature) load() {
+	path := filepath.Join(f.dataDir(), historyFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			f.ctx.Logger.Warn("读取上下文历史失败，从空记录开始", "module", moduleID, "path", path, "err", err)
+		}
+		return
+	}
+	var loaded []Entry
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		f.ctx.Logger.Warn("上下文历史文件损坏，忽略并从空记录开始",
+			"module", moduleID, "path", path, "err", err)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = loaded
+	if len(f.entries) > maxEntries {
+		f.entries = append(f.entries[:0], f.entries[len(f.entries)-maxEntries:]...)
+	}
+	f.pruneLocked()
+	f.saveLocked()
+}
+
+// save persists the current history to disk.
+func (f *Feature) save() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saveLocked()
+}
+
+// saveLocked atomically writes the in-memory history to the module data
+// directory. Callers must hold f.mu so the file can never be overwritten by a
+// stale snapshot nor observed mid-write.
+func (f *Feature) saveLocked() {
+	if f.ctx == nil {
+		return
+	}
+	dir := f.dataDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		f.ctx.Logger.Warn("无法创建上下文记录目录", "module", moduleID, "dir", dir, "err", err)
+		return
+	}
+	entries := f.entries
+	if entries == nil {
+		entries = []Entry{}
+	}
+	data, err := json.Marshal(entries)
+	if err != nil {
+		f.ctx.Logger.Warn("序列化上下文历史失败", "module", moduleID, "err", err)
+		return
+	}
+	path := filepath.Join(dir, historyFileName)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		f.ctx.Logger.Warn("上下文历史落盘失败", "module", moduleID, "path", tmp, "err", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		// Windows can refuse rename while the target is momentarily locked;
+		// fall back to a direct write so the user's history is not lost.
+		if werr := os.WriteFile(path, data, 0o600); werr != nil {
+			f.ctx.Logger.Warn("上下文历史落盘失败", "module", moduleID, "path", path, "err", werr)
+		}
+	}
+}
+
+// dataDir returns the directory the history file lives in: the module data
+// directory, else a folder under the user's config directory.
+func (f *Feature) dataDir() string {
+	if f.ctx != nil && f.ctx.DataDir != "" {
+		return f.ctx.DataDir
+	}
+	if base, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(base, "PCMannager", moduleID)
+	}
+	return "."
 }
 
 // interval returns the sampling interval in milliseconds, clamped.
