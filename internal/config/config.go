@@ -104,10 +104,11 @@ func Default() *Config {
 				Enabled: true,
 				Hotkey:  "Ctrl+`",
 				Options: map[string]any{
-					"max_items":      500,
-					"store_images":   true,
-					"paste_on_copy":  false,
-					"retention_days": 30,
+					"max_items":       500,
+					"store_images":    true,
+					"paste_on_copy":   false,
+					"retention_days":  30,
+					"max_image_bytes": 8388608,
 				},
 			},
 			"selfcontext": {

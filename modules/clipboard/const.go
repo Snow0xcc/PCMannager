@@ -14,6 +14,7 @@ const (
 	optStoreImages   = "store_images"
 	optPasteOnCopy   = "paste_on_copy"
 	optRetentionDays = "retention_days"
+	optMaxImageBytes = "max_image_bytes"
 
 	// Action ids declared by Actions().
 	actionOpen  = "open_history"
@@ -27,4 +28,7 @@ const (
 	defaultStoreImages   = true
 	defaultPasteOnCopy   = false
 	defaultRetentionDays = 30
+
+	// defaultMaxImageBytes caps one image entry; 0/negative (hand-edited) = unlimited.
+	defaultMaxImageBytes = 8 * 1024 * 1024
 )

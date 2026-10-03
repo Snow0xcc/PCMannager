@@ -4,8 +4,8 @@
 package clipboard
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -53,9 +53,9 @@ type Feature struct {
 	cancel  context.CancelFunc
 	// echo* remembers the last payload this module wrote so the watcher can
 	// skip it instead of re-adding it to the history.
-	echoText  string
-	echoImage []byte
-	echoAt    time.Time
+	echoText      string
+	echoImageHash [32]byte
+	echoAt        time.Time
 }
 
 // NewFeature constructs the clipboard manager module.
@@ -187,14 +187,15 @@ func (f *Feature) State() core.State {
 	running := f.running
 	f.mu.Unlock()
 	return core.State{
-		"running":        running,
-		"count":          len(entries),
-		"last":           last,
-		"last_kind":      lastKind,
-		"max_items":      cfg.MaxItems,
-		"store_images":   cfg.StoreImages,
-		"paste_on_copy":  cfg.PasteOnCopy,
-		"retention_days": cfg.Retention,
+		"running":         running,
+		"count":           len(entries),
+		"last":            last,
+		"last_kind":       lastKind,
+		"max_items":       cfg.MaxItems,
+		"store_images":    cfg.StoreImages,
+		"paste_on_copy":   cfg.PasteOnCopy,
+		"retention_days":  cfg.Retention,
+		"max_image_bytes": cfg.MaxImageBytes,
 	}
 }
 
@@ -283,6 +284,12 @@ func (f *Feature) snapshot() configView {
 	if n, ok := toInt(f.ctx.Config.Get(optMaxItems, defaultMaxItems)); ok && n > 0 {
 		cfg.MaxItems = n
 	}
+	// 显式 0/负数 = 不限制；键缺省时 Get 回落默认上限。
+	if n, ok := toInt(f.ctx.Config.Get(optMaxImageBytes, defaultMaxImageBytes)); ok && n > 0 {
+		cfg.MaxImageBytes = n
+	} else if ok {
+		cfg.MaxImageBytes = 0
+	}
 	if v, ok := f.ctx.Config.Get(optStoreImages, defaultStoreImages).(bool); ok {
 		cfg.StoreImages = v
 	}
@@ -324,6 +331,13 @@ func (f *Feature) ingest(cfg configView, d clip.Data) {
 	}
 	if d.Format == clip.FmtImage {
 		if !cfg.StoreImages || f.isEcho(clip.FmtImage, d.Bytes) {
+			return
+		}
+		// B3：单条图片字节上限。超过即拒收（不入历史），warn 上报面板；
+		// 上限 ≤0 表示不限制（手改配置时）。
+		if cfg.MaxImageBytes > 0 && len(d.Bytes) > cfg.MaxImageBytes {
+			f.ctx.Logger.Warn("剪贴板图片超过大小上限，已拒收", "module", moduleID,
+				"bytes", len(d.Bytes), "limit", cfg.MaxImageBytes)
 			return
 		}
 		f.hist.AddImage(d.Bytes)
@@ -384,10 +398,10 @@ func (f *Feature) markEcho(format clip.Format, buf []byte) {
 	f.echoAt = time.Now()
 	if format == clip.FmtImage {
 		f.echoText = ""
-		f.echoImage = append([]byte(nil), buf...)
+		f.echoImageHash = sha256.Sum256(buf)
 		return
 	}
-	f.echoImage = nil
+	f.echoImageHash = [32]byte{}
 	f.echoText = string(buf)
 }
 
@@ -399,18 +413,20 @@ func (f *Feature) isEcho(format clip.Format, buf []byte) bool {
 		return false
 	}
 	if format == clip.FmtImage {
-		return len(f.echoImage) > 0 && bytes.Equal(f.echoImage, buf)
+		sum := sha256.Sum256(buf)
+		return f.echoImageHash == sum
 	}
 	return f.echoText != "" && f.echoText == string(buf)
 }
 
 // configView is this module's settings as read from the configuration.
 type configView struct {
-	Enabled     bool
-	MaxItems    int
-	StoreImages bool
-	PasteOnCopy bool
-	Retention   int
+	Enabled       bool
+	MaxItems      int
+	StoreImages   bool
+	PasteOnCopy   bool
+	Retention     int
+	MaxImageBytes int // <=0 = 不限制
 }
 
 // toInt narrows the numeric shapes a YAML/JSON config value can arrive in.
