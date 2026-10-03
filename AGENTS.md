@@ -14,6 +14,11 @@
   - `HotkeyManager.Conflicts()` 只统计**后端真正接受**的 combo，非 Windows 下后端恒返回 `errHotkeyUnsupported`，因此恒为空；冲突检测已由 `internal/core` 的 fake backend 覆盖，其它包别重复断言。
   - `Manager.ModuleIDs()` = 注册顺序 + **配置里独有的模块**，而默认配置永远带 5 个模块，所以断言"等于注册的 N 个"必然失败——应断言前缀顺序。
 - **前端禁用 emoji 检查**：`bash scripts/check-emoji.sh`（扫描 `*.html/*.css/*.js/*.go`——前端资产与原生 UI 字符串；符号区段仅扫 `*.html`；`*.md` 不扫，文档排版符号合法）。脚本内置探测器自检（fixture 必须命中，否则闸门视为无效直接 fail）；提交前应跑。
+- **RustCode 自动化**（`.rustcode/`，随仓库共享；`settings.json` 为本机配置，不入库）：
+  - skills：`new-module`（新建模块）、`test-writer`（按约定写测试）、`platform-parity-reviewer`（平台成对+并发协议审查）、`security-reviewer`（updater 下载执行链/面板闸门/提权审查）、`docs-sync`（文档与代码现状同步，**用例数等可计算量必须现场跑命令取数**）。
+  - commands：`/check`（提交前检查）、`/build <goos> <goarch>`（走 `scripts/build.sh`，禁裸 `go build`）、`/win-gate`（本地补跑 Windows 测试二进制编译闸门 + 跨 OS vet + `go mod tidy -diff`）。
+  - hooks：编辑 `.go` 自动 `gofmt -w`；编辑 `*.html/*.css/*.js` 即时拦截 emoji（html 另拦箭头/几何符号），与 `scripts/check-emoji.sh` 同一正则；`reference/` 写入拦截。
+  - 另需全局安装 `golang-concurrency` skill（社区版）：`npx skills add samber/cc-skills-golang@golang-concurrency -g -y`。
 - `PCMANNAGER_CONFIG` 环境变量可覆盖配置文件路径，便于本地调试。
 - **四个目标平台 `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64` 均以 `CGO_ENABLED=0` 构建通过**（旧 `main.go` 引用已删除 `core` API 的构建缺口已解除）；改完依赖跑 `go mod tidy`，提交前跑 `gofmt -l . | grep -v ^reference/` 与 `go vet ./...`。
 - `reference/` 是 5 个第三方参考仓库，以 **git submodule** 引入（见 `.gitmodules`：MineContext、TrafficMonitor、clipboard、screenshot、dtools）。克隆后须 `git submodule update --init --recursive`；**不要**从主代码 import，也不修改其内容——升级只提交子模块指针变更。
