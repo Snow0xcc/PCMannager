@@ -78,7 +78,7 @@ go vet ./...
       `modules/preferences/panel_windows.go` 与 `modules/repair/panel_windows.go` 在用。
 - [x] **4. 确认 `internal/server/` 的作用** ✅ 已落地：面板服务端已接入 `app`。
       `internal/server` 提供 JSON REST（`/api/state`、`/api/modules[/id]`、`/api/app`、`/api/events` SSE）+ `embed`
-      内置的 `web/index.html` 单页面板；`internal/app/provider.go` 实现 `server.Provider`
+      内置的 `internal/panel/index.html` 单页面板；`internal/app/provider.go` 实现 `server.Provider`
       （依赖方向 `app -> server`，反向会成环）。`App.StartPanel()` 仅监听 `127.0.0.1`，端口取自 `app.server_port`
       （0 = 由 OS 分配），绑定失败只告警不 fatal。
 
@@ -153,10 +153,10 @@ go vet ./...
       无效热键拒绝且不落盘、`LastError` 记录与清除、Shutdown 幂等、模块注册顺序、`Version` 非空；
       **`modules/preferences`** ✅（TODO #15 点名的最后一块）：nil Manager 容错、
       ModuleIDs 顺序与去重、仅存在于配置的模块仍出现、`Show` 在非 Windows 与 nil 下均不 panic。
-      全仓共 **202 个用例**，`go test -race -count=1 ./internal/... ./modules/...` 全绿。
+      全仓用例数以实测为准（`grep -rn "^func Test" --include=*_test.go internal/ modules/ | wc -l`，勿手写具体数字），`go test -race -count=1 ./internal/... ./modules/...` 全绿。
       **仍缺**：`internal/tray`（Windows build-tag 仅验证可编译）、`internal/winui`、
       `internal/logx`、`internal/paths`、`internal/wailsapp`（均为平台 UI/IO，收益低）。
-- [ ] **18. 消除 `[restart]` 元数据 hack** ✅ 已修复：原先 `app.go` 用
+- [x] **18. 消除 `[restart]` 元数据 hack** ✅ 已修复：原先 `app.go` 用
       `strings.HasPrefix(o.Help, "[restart]")` 判断改配置后是否需重启模块——改一次帮助文案
       就会静默丢失重启语义，且面板上会显示 `[restart]` 脏字符。已新增
       `core.Option.Restart bool` 字段，迁移 4 处声明（clipboard 记录图片、taskbar 布局/渲染、
@@ -168,7 +168,7 @@ go vet ./...
 - [x] **17. 统一面板配置回显 + 操作分组**：`internal/app/provider.go` 的 `moduleInfo()` 会把配置中
       **当前生效的 option 值**合并进 `State.options`（此前各模块 `State()` 不含 options，
       导致面板表单永远显示声明式默认值、保存后看不出当前值）。
-      前端 `web/index.html` 已按 `Action.Group` **分组渲染**操作按钮（repair 约 60 个工具
+      前端 `internal/panel/index.html` 已按 `Action.Group` **分组渲染**操作按钮（repair 约 60 个工具
       不再平铺成一堵墙），并新增 `.card.sub` / `.btn.install` 样式。
 
 ## 交接须知

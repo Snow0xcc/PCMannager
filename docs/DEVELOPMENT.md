@@ -62,26 +62,26 @@ Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心
 2. 新增模块：在 `modules/<name>/` 下建包实现 `internal/core.Module`，并在 `main.go` 注册；平台相关 UI 须成对提供 `_windows.go`（`//go:build windows`）与 `_other.go`（`//go:build !windows`）。
 3. 改动依赖后跑 `go mod tidy`，并提交更新后的 `go.mod`/`go.sum`。
 4. 提交前执行 `gofmt -w . && go vet ./...` 自查。
-5. 前端（规划中的 Wails 面板）**严禁使用 emoji**，图形一律用 icon 资源替代（详见 README「前端显示规范」）。
+5. 前端（Web 面板与 Wails 原生窗口）**严禁使用 emoji**，图形一律用 icon 资源替代（详见 README「前端显示规范」）。
 
 ## 5. 本地运行与调试
 
-- 配置文件默认位于用户配置目录下的 `PCMannager/config.json`。可用环境变量覆盖路径以便调试：
+- 配置文件默认位于数据目录下的 `config.yaml`（数据目录：Windows `%APPDATA%\GoBox`、Linux `$XDG_CONFIG_HOME/GoBox`，可由 `app.data_dir` 覆盖；`GoBox` 为历史代号，见 README「已知限制」）。可用环境变量覆盖路径以便调试：
 
   ```bash
-  PCMANNAGER_CONFIG=/path/to/dev-config.json go run .
+  PCMANNAGER_CONFIG=/path/to/dev-config.yaml go run .
   ```
 
-- 日志写入配置文件同级的 `pcmannager.log`。
+- 日志写入数据目录下的 `logs/gobox.log`（`internal/paths.LogFile`）。
 
-## 6. 已知构建缺口（重要）
+## 6. 构建状态（历史缺口已解除）
 
-当前 `main.go` 仍引用旧版 `core` API（`Manager`/`Feature`/`App`），而 `internal/core` 已重构为 `Module`/`Registry`/`Bus` 体系，二者尚未对齐，**直接 `go build` 会失败**。
+早期 `main.go` 曾引用旧版 `core` API（`Manager`/`Feature`/`App`）导致四平台构建失败；该迁移缺口**已修复**（全模块迁移到 `core.Module` 契约，`main.go` 改用 `internal/app` 装配层）。
 
-在迁移缺口修好之前：
+当前状态：
 
-- CI（`.github/workflows/release.yml`）在构建步骤会报错，属预期。
-- 本地无法完整 `go run .`。若需先跑通，需先把 `main.go` 与 `internal/core` 的新接口对齐（这是独立的迁移任务，不在普通功能开发范围内）。
+- `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64` 均以 `CGO_ENABLED=0` 构建通过，`go build` / `go vet` / `go run .` 可正常使用。
+- 发布构建统一走 `bash scripts/build.sh <goos> <goarch> <输出>`（对 Windows 追加 `-H windowsgui`，见 README）。
 
 ## 7. 提交说明
 

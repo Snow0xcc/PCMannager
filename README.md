@@ -15,6 +15,7 @@
 | 截图 | `screenshot` | 全屏抓取 + 框选编辑器，png/jpg 可选，可自动复制到剪贴板 | `F1` | 开 |
 | 上下文记录 | `selfcontext` | 记录活动窗口标题/进程名（不含截屏），可导出/清空 | `Ctrl+Alt+M` | **关**（隐私 opt-in） |
 | 电脑修复与工具 | `repair` | 声明式工具箱目录（7 大页、约 60 个工具：系统设置/网络排查/清理/运行环境/包管理器…） | — | 开 |
+| 自动更新 | `updater` | 定时检查 GitHub Releases 新版并提醒（SemVer/rc 排序、prerelease 开关）；下载走主机白名单 + sha256，经提权 helper 显式应用 | — | **关** |
 | 首选项 | `preferences` | 统一设置面板；**非功能模块**，是注册表的视图 | — | — |
 
 模块 ID 是稳定契约，被配置、热键绑定与 REST API 按 ID 查找，新增 ID 须同步 `internal/config`。
@@ -51,7 +52,8 @@ go vet ./...
 gofmt -l .                      # 格式化：gofmt -w .
 bash scripts/check-emoji.sh     # 前端禁用 emoji 检查
 
-# 测试（当前 175 个用例）
+# 测试（用例数以实测为准，文档不手写具体数字）
+grep -rn "^func Test" --include=*_test.go internal/ modules/ | wc -l
 go test -race -count=1 ./internal/... ./modules/...
 ```
 
@@ -62,7 +64,7 @@ go test -race -count=1 ./internal/... ./modules/...
 ## 架构
 
 ```
-main.go                  注册 5 个模块 → app.New() → StartPanel/StartTray → Run() 阻塞
+main.go                  注册 6 个模块（含 updater） → app.New() → StartPanel/StartTray → Run() 阻塞
   │
   ├─ internal/app        装配层：config / logx / Bus / HotkeyManager / tray / panel
   │                      实现 server.Provider（依赖方向 app → server，反向会成环）
@@ -71,7 +73,7 @@ main.go                  注册 5 个模块 → app.New() → StartPanel/StartTr
   ├─ internal/server     HTTP REST + SSE，仅监听 127.0.0.1
   │    └─ internal/panel/index.html   面板唯一前端资源（embed 内置，两种传输共用）
   ├─ internal/wailsapp   原生窗口（Wails/WebView2，Windows only；其它平台返回 ErrUnsupported）
-  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · preferences
+  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · updater · preferences
 平台层：internal/winui（自研免 cgo Win32：窗口/任务栏嵌入/DPI/托盘/注册表）
         internal/tray · internal/sysutil（提权/自启/单实例/通知）· internal/paths · internal/logx
 ```
@@ -93,7 +95,7 @@ Windows 专用 UI 放 `_windows.go`（`//go:build windows`），非 Windows 由 
 ## 首选项面板
 
 - **跨平面板（全平台可用）**：`internal/server` 提供 JSON REST + SSE，前端为 `internal/panel/index.html`，仅监听回环地址。
-- **原生窗口（Windows，进行中）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。该包已实现 `API` 绑定层（`State`/`Modules`/`Module`/`PatchModule`…，是 `server.Provider` 的薄适配），**尚未在 `internal/app` 接线**；非 Windows 自动回退浏览器面板。
+- **原生窗口（Windows，已接线）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。该包已实现 `API` 绑定层（`State`/`Modules`/`Module`/`PatchModule`…，是 `server.Provider` 的薄适配），**已在 `internal/app` 接线**（`main.go` 调 `runNativeWindow`：Windows 起独立 `LockOSThread` goroutine 跑 `wailsapp.Run`，托盘消息泵留在主线程；非 Windows 为 no-op，自动回退浏览器面板）。
 
 REST 接口：
 
@@ -110,7 +112,7 @@ REST 接口：
 
 ### 前端显示规范：禁用 emoji
 
-客户端界面（Web 面板、Wails 前端与任何原生 UI）**严禁 emoji 字符**作为图标或装饰，一律用 icon 资源替代——SVG / 图标字体置于前端 `assets/icons/`，原生托盘与任务栏走 `internal/winui` 的 `TrayIcon` 等句柄。此约束优先于"美观/快捷"类考量。
+客户端界面（Web 面板、Wails 前端与任何原生 UI）**严禁 emoji 字符**作为图标或装饰，一律用 icon 资源替代——面板图标当前是 `internal/panel/index.html` 的内联 SVG（`icon(name)` 生成），原生托盘与任务栏走 `internal/winui` 的 `TrayIcon` 等句柄。此约束优先于"美观/快捷"类考量。
 
 已落地自动化检查：`bash scripts/check-emoji.sh`（扫描 html/css/js/md/go，正则覆盖 emoji 与符号区段），并在 `.github/workflows/release.yml` 中作为独立 `lint` job，`build` 通过 `needs: lint` 串在其后——emoji 违规会直接卡住发布。
 
@@ -120,9 +122,9 @@ REST 接口：
 
 **开机自启**：`sysutil.SetAutostart/IsAutostart` 已实现，并在三条路径接线——启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单开关、面板 `PATCH /api/app`。Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`；**macOS 的 launchd 方案尚未实现**。
 
-## 自动更新（规划）
+## 自动更新
 
-代码中**完全没有**。规划用 GitHub Releases API 比对版本 + 自更新库完成差分下载与替换，托盘菜单加"检查更新"入口，与开机自启等设置同处首选项面板。
+已实现为 `modules/updater` 模块（默认**关闭**，需在面板显式开启）：定时检查 GitHub Releases（SemVer 比较含 rc 排序与 `include_prerelease` 开关），发现新版经 Bus 事件 + 系统通知提醒。面板动作三步走：`check_now` 检查 → `download` 下载平台匹配资产（主机白名单 + 原子暂存 + sha256 + 128MiB 上限）→ `apply_update`（danger+admin）经提权 helper 显式应用，**绝不自动执行**下载物。托盘菜单的"检查更新"入口尚未加（现仅面板动作）；真实替换流程仍需 Windows 实机验证。
 
 ## 配置
 
@@ -164,7 +166,7 @@ git push origin v1.0.0
 - **热键可能被占用**：`F1`、`` Ctrl+` `` 在部分机器已被其它程序占用，当前按设计降级（告警 + 面板/托盘仍可用）；面板尚未提供"可用性检测"与改绑引导。
 - **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存；`modules/taskbar` 包名 `statusbar`、`modules/repair` 包名 `pcrepair` 与目录名不一致。
 - **托盘图标无可配置资源**：`defaultIcon()` 目前回退 shell 通用图标。
-- **测试覆盖缺口**：`internal/app`、`internal/tray`、`internal/winui`、`modules/preferences` 尚无测试文件。
+- **测试覆盖缺口**：`internal/winui`、`internal/logx`、`internal/paths`、`internal/wailsapp` 尚无测试文件；`internal/tray` 仅有 Windows build-tag 的编译验证（`tray_windows_test.go`）。
 
 完整待办与优先级见 [`TODO.md`](TODO.md)，变更历史见 [`CHANGELOG.md`](CHANGELOG.md)，模块开发前请读 [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md)。
 
@@ -173,7 +175,7 @@ git push origin v1.0.0
 ```
 main.go / main_{windows,other}.go   程序入口
 internal/{app,core,config,server,panel,wailsapp,winui,tray,sysutil,paths,logx}/
-modules/{taskbar,clipboard,screenshot,selfcontext,repair,preferences}/
+modules/{taskbar,clipboard,screenshot,selfcontext,repair,updater,preferences}/
 scripts/{build.sh,check-emoji.sh}   构建与 emoji 检查脚本
 docs/                               DEVELOPMENT（开发指南）· MODULE-CONTRACT（模块契约）
                                     · AI-PHASE-A-PROMPT · HANDOVER · PROJECT-AUDIT · competitors

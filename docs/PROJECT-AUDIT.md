@@ -277,7 +277,7 @@ github.com/gonutz/w32 v1.0.0
 位置：
 
 - `internal/server/server.go`
-- `internal/server/web/index.html`
+- `internal/panel/index.html`
 - `modules/repair/feature.go`
 
 问题：回环监听和随机端口只能降低暴露面，不能替代认证。当前没有 token、Origin、Host、CSRF、CSP 或请求体限制。危险确认只在前端，Admin 标记不执行提权。
