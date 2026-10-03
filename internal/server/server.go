@@ -8,10 +8,14 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -29,6 +33,11 @@ type Options struct {
 	Port int
 	// Host is the bind address; it stays loopback so the panel is local-only.
 	Host string
+	// Token is the secret all mutation routes require (B1), passed via the
+	// X-PCMT-Token header or the ?token= query. An empty value makes New
+	// generate a fresh random 128-bit token; Start then appends it to the
+	// panel URL so the app only ever sees the token-carrying address.
+	Token string
 	// Log receives server-side diagnostics.
 	Log *slog.Logger
 }
@@ -40,6 +49,7 @@ type Server struct {
 	srv      *http.Server
 	mu       sync.Mutex
 	url      string
+	token    string
 }
 
 // New wires the routes but does not listen; call Start.
@@ -47,7 +57,10 @@ func New(p Provider, opts Options) *Server {
 	if opts.Host == "" {
 		opts.Host = "127.0.0.1"
 	}
-	s := &Server{provider: p, log: opts.Log}
+	if opts.Token == "" {
+		opts.Token = newToken()
+	}
+	s := &Server{provider: p, token: opts.Token, log: opts.Log}
 	mux := http.NewServeMux()
 
 	// Panel shell.
@@ -70,7 +83,7 @@ func New(p Provider, opts Options) *Server {
 
 	s.srv = &http.Server{
 		Addr:              net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port)),
-		Handler:           mux,
+		Handler:           s.guard(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
@@ -87,7 +100,11 @@ func (s *Server) Start() (string, error) {
 	}
 
 	addr := ln.Addr().(*net.TCPAddr)
-	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.Port))
+	// The URL carries the mutation token (B1): this is the address stored via
+	// App.SetPanelURL / App.PanelURL and opened from the tray, so the panel
+	// always boots with its credentials in place. It is also logged at info
+	// level by StartPanel — acceptable for a local single-user panel.
+	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.Port)) + "/?token=" + s.token
 
 	s.mu.Lock()
 	s.url = url
@@ -113,11 +130,118 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
+// pcmTokenHeader carries the panel auth token on mutation requests.
+const pcmTokenHeader = "X-PCMT-Token"
+
+// guard wraps the API mux with the panel's request gate (ROADMAP B1, in
+// cost-effectiveness order):
+//
+//  1. mutation routes require the startup token (X-PCMT-Token header or
+//     ?token= query) — a local process that cannot read the panel URL cannot
+//     rewrite configuration or fire repair actions;
+//  2. mutation routes require Content-Type: application/json. CORS simple
+//     requests (form posts, no-cors fetch) cannot carry it, so this alone
+//     blocks every preflight-free cross-site probe;
+//  3. browsers label cross-site requests with Sec-Fetch-Site: cross-site;
+//     refuse them outright;
+//  4. the Host header must be loopback, defeating DNS-rebinding where an
+//     attacker-resolved domain would show up in Host.
+//
+// Read paths (GET/HEAD) stay open so the panel page and its bootstrap state
+// load without credentials; rejections answer as plain text with the reason.
+func (s *Server) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !loopbackHost(r.Host) {
+			reject(w, http.StatusForbidden, "拒绝请求: Host 非本机回环地址")
+			return
+		}
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			reject(w, http.StatusForbidden, "拒绝跨站请求 (Sec-Fetch-Site: cross-site)")
+			return
+		}
+		if isMutation(r.Method) {
+			if !s.tokenMatch(r) {
+				reject(w, http.StatusForbidden, "缺少或错误的访问令牌")
+				return
+			}
+			if !jsonContentType(r) {
+				reject(w, http.StatusBadRequest, "变更请求必须携带 Content-Type: application/json")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isMutation reports whether the method writes; only read verbs bypass the
+// token and content-type gates.
+func isMutation(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
+	}
+}
+
+// tokenMatch checks the X-PCMT-Token header, falling back to the ?token=
+// query. Comparison is constant-time so timing cannot leak the secret.
+func (s *Server) tokenMatch(r *http.Request) bool {
+	tok := r.Header.Get(pcmTokenHeader)
+	if tok == "" {
+		tok = r.URL.Query().Get("token")
+	}
+	return tok != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.token)) == 1
+}
+
+// jsonContentType accepts application/json with any parameters
+// (e.g. charset=utf-8), which is what the panel's fetch wrapper sends.
+func jsonContentType(r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	if ct == "" {
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	return err == nil && mediaType == "application/json"
+}
+
+// loopbackHost validates the Host header (host or host:port, IPv6 bracketed)
+// against loopback addresses and localhost.
+func loopbackHost(hostPort string) bool {
+	host := hostPort
+	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+		host = h
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// reject answers with a plain-text reason (403 for forbidden requests, 400
+// for malformed ones); the panel surfaces it through its error toast.
+func reject(w http.ResponseWriter, code int, reason string) {
+	http.Error(w, reason, code)
+}
+
 // logf is a nil-safe logger.
 func (s *Server) logf(format string, args ...any) {
 	if s.log != nil {
 		s.log.Warn(fmt.Sprintf(format, args...))
 	}
+}
+
+// newToken generates the panel auth token: 128 bits of crypto/rand entropy,
+// hex-encoded. crypto/rand.Read is documented never to fail on supported
+// platforms, but a silent fallback to a fixed value would disable the CSRF
+// gate entirely, so an error surfaces loudly instead.
+func newToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("server: 生成面板 token 失败: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 // writeJSON serialises v with a compact envelope.

@@ -333,10 +333,19 @@ const transport = (function () {
   return { isWails: isWails, call: call, subscribe: subscribe };
 })();
 
+// 面板 URL 自带 ?token=…（internal/server 的 Start 生成，B1 鉴权）。变更类
+// 请求必须把它放进 X-PCMT-Token 头回传——fetch 用相对路径不会自动继承
+// 页面 URL 的 query，所以这里从 location.search 提取一次。Wails 路径走
+// window.go.wailsapp.API，不经过 HTTP，天然免鉴权，不受此影响。
+const PANEL_TOKEN = new URLSearchParams(window.location.search).get("token") || "";
+
 async function api(path, method, body) {
+  const headers = {};
+  if (PANEL_TOKEN) headers["X-PCMT-Token"] = PANEL_TOKEN;
+  if (body) headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method: method || "GET",
-    headers: body ? { "Content-Type": "application/json" } : {},
+    headers: headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
