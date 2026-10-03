@@ -18,12 +18,6 @@ func platformCapabilities() CapabilitiesInfo {
 // SetDPIAware is a no-op off Windows.
 func SetDPIAware() {}
 
-// Elevate is a no-op on non-Windows platforms.
-func Elevate(args []string) error { return errUnsupported }
-
-// IsElevated always reports false off Windows.
-func IsElevated() bool { return false }
-
 // FocusedWindow reports no window off Windows: there is no cross-platform way
 // to name the focused control without a native toolkit, and callers (the
 // clipboard write-back) only use it to aim a synthetic paste, which is itself

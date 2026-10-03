@@ -52,10 +52,8 @@ func TestManagerLogIsAvailable(t *testing.T) {
 	}
 }
 
-// The methods below are written against a nil receiver so the panel code can
-// call them on a Manager that failed to construct without a nil-deref panic.
-// That tolerance is deliberate: Show() runs on the UI thread, where a panic
-// would kill the whole app.
+// The methods below are written against a nil receiver so a failed Manager
+// construction degrades to harmless reads instead of a nil-deref panic.
 func TestNilManagerIsTolerated(t *testing.T) {
 	var m *Manager
 	if m.App() != nil {
@@ -138,17 +136,6 @@ func TestModuleIDsEmptyWhenNoModules(t *testing.T) {
 	if ids := m.ModuleIDs(); len(ids) != 0 {
 		t.Errorf("空 Manager 的 ModuleIDs = %v, 期望空", ids)
 	}
-}
-
-func TestShowOnUnsupportedPlatformIsSafe(t *testing.T) {
-	// Off Windows Show must warn and return, never panic: main calls it from a
-	// tray/menu handler where a panic would take the process down.
-	Show(NewManager(newTestApp(t)))
-}
-
-func TestShowWithNilManagerDoesNotPanic(t *testing.T) {
-	var m *Manager
-	Show(m)
 }
 
 func TestFormatValue(t *testing.T) {

@@ -74,27 +74,8 @@ func FindWindowEx(parent, after HWND, className, windowName string) HWND {
 // TaskbarClassName is the primary taskbar window class.
 const TaskbarClassName = "Shell_TrayWnd"
 
-// SecondaryTaskbarClassName is the class of secondary-monitor taskbars.
-const SecondaryTaskbarClassName = "Shell_SecondaryTrayWnd"
-
 // FindTaskbar locates the primary taskbar window.
 func FindTaskbar() HWND { return FindWindow(TaskbarClassName, "") }
-
-// FindSecondaryTaskbars enumerates secondary-monitor taskbars.
-func FindSecondaryTaskbars() []HWND {
-	var out []HWND
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		name := ClassName(HWND(hwnd))
-		if name == SecondaryTaskbarClassName {
-			out = append(out, HWND(hwnd))
-		}
-		return 1 // keep enumerating
-	})
-	r, _, _ := procEnumWindows.Call(cb, 0)
-	runtime.KeepAlive(cb)
-	_ = r
-	return out
-}
 
 // ChildWindows returns every direct child of parent whose class name starts with
 // the given prefix.
@@ -273,16 +254,6 @@ func KillTimer(h HWND, id uintptr) { _, _, _ = procKillTimer.Call(uintptr(h), id
 // InvalidateRect schedules a repaint.
 func InvalidateRect(h HWND) { _, _, _ = procInvalidateRect.Call(uintptr(h), 0, 0) }
 
-// RegisterWindowMessage registers a broadcast message id (e.g. TaskbarCreated).
-func RegisterWindowMessage(name string) uint32 {
-	p, err := syscall.UTF16PtrFromString(name)
-	if err != nil {
-		return 0
-	}
-	r, _, _ := procRegisterWindowMessage.Call(uintptr(unsafe.Pointer(p)))
-	return uint32(r)
-}
-
 // ScreenSize returns the primary display size in pixels.
 func ScreenSize() (int32, int32) {
 	w, _, _ := procGetSystemMetrics.Call(SM_CXSCREEN)
@@ -404,15 +375,6 @@ func MessageLoop(dispatch func(msg *MSG) bool) {
 // PostQuitMessage terminates the current message loop.
 func PostQuitMessage(code int32) {
 	procPostQuitMessage.Call(uintptr(code))
-}
-
-// MessageBox shows a modal message box; returns true when the user accepted.
-func MessageBox(title, text string, flags uint32) bool {
-	t, _ := syscall.UTF16PtrFromString(title)
-	m, _ := syscall.UTF16PtrFromString(text)
-	r, _, _ := procMessageBoxW.Call(0, uintptr(unsafe.Pointer(m)),
-		uintptr(unsafe.Pointer(t)), uintptr(flags))
-	return r != 0
 }
 
 // Window is a lightweight base window with a Go message handler.

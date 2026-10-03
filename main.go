@@ -54,8 +54,8 @@ func main() {
 	}
 
 	// Register every feature. Each is independently toggleable + hotkeyable.
-	// preferences is not registered: it is a view over this registry, opened
-	// on demand through preferences.Show(preferences.NewManager(a)).
+	// preferences is not registered: the preferences panel is opened on demand
+	// through App.OpenPanel (native WebView2 window or browser).
 	a.MustRegister(taskbar.NewFeature())
 	a.MustRegister(clipboard.NewFeature())
 	a.MustRegister(screenshot.NewFeature())

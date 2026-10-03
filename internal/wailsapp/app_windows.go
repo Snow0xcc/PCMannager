@@ -61,49 +61,21 @@ type windowState struct {
 	// ctx is the Wails runtime context from OnStartup; nil before startup and
 	// after shutdown. Only non-nil while the window can accept runtime calls.
 	ctx context.Context
-
-	// ready is closed the first time ctx becomes non-nil, and then stays
-	// closed: it is a one-shot "the window was up" latch, which is what
-	// Available waiters need. Callers that must know whether the window is up
-	// *right now* use IsAvailable.
-	ready chan struct{}
-
-	// readyOnce makes closing ready idempotent.
-	readyOnce sync.Once
 }
 
 // win is shared between the goroutine running wails.Run (which writes it from
-// OnStartup/OnShutdown) and any caller of Show/Hide/IsAvailable/Available
-// (which read it from the tray or elsewhere).
+// OnStartup/OnShutdown) and any caller of Show/IsAvailable (which read it from
+// the tray or elsewhere).
 //
 // Lock order: win.mu is the only lock in this package. It is a leaf lock — it
 // is never held while calling into another package (wails, runtime, server),
 // and no other lock is acquired while holding it — so no cycle is possible.
-// ready is closed under the same mu as the write that makes ctx non-nil, so a
-// reader that observes a non-nil ctx is guaranteed to observe a closed ready.
-var win = windowState{ready: make(chan struct{})}
+var win windowState
 
-// available is the platform implementation behind the exported Available.
-func available() <-chan struct{} {
-	win.mu.RLock()
-	defer win.mu.RUnlock()
-	return win.ready
-}
-
-// setWindowCtx publishes (or clears) the runtime context, closing ready the
-// first time a context arrives.
+// setWindowCtx publishes (or clears) the runtime context.
 func setWindowCtx(ctx context.Context) {
 	win.mu.Lock()
-	if ctx != nil {
-		win.ctx = ctx
-		win.readyOnce.Do(func() {
-			if win.ready != nil {
-				close(win.ready)
-			}
-		})
-	} else {
-		win.ctx = nil
-	}
+	win.ctx = ctx
 	win.mu.Unlock()
 }
 
@@ -131,21 +103,8 @@ func Show() error {
 	return nil
 }
 
-// Hide hides the native window without quitting: HideWindowOnClose keeps the
-// process alive in the tray, and this is its programmatic counterpart.
-//
-// It returns ErrUnsupported when no window is running.
-func Hide() error {
-	ctx := windowCtx()
-	if ctx == nil {
-		return ErrUnsupported
-	}
-	runtime.WindowHide(ctx)
-	return nil
-}
-
-// IsAvailable reports whether the native window is up and can be shown or
-// hidden. It is safe to call at any time and never blocks.
+// IsAvailable reports whether the native window is up and can be shown.
+// It is safe to call at any time and never blocks.
 func IsAvailable() bool { return windowCtx() != nil }
 
 // run builds and launches the native Wails window, blocking until closed.
