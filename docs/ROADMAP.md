@@ -22,7 +22,8 @@ Windows 专属代码在 CI 里从未被编译过。建议**先止损（阶段 A�
 > A3/A4 `modules/updater/feature.go`；A5 `scripts/check-emoji.sh`；A6 `internal/panel/index.html`；
 > A7 `internal/config/config.go`+`internal/server/provider.go`+`internal/app/provider.go`。
 > **同日追加**：评审修复关（I-1 竞态 + M-1~M-5）与 B4（windows-compile-gate）、
-> F（文档校准）亦已完成；M-6/M-7 记账延后。
+> F（文档校准）、B1（面板四层安全闸门）、B2（repair 执行预算 + walk 提权/异步）、
+> B3（剪贴板图片字节上限）亦已完成；M-6/M-7 记账延后。
 
 这一阶段的共同特征：**代码「已实现」且被文档标记为完成，但实际不生效**。
 这是当前最高价值的投入——修的都是既有投入的兑现，不是新增功能。
