@@ -307,11 +307,20 @@ const transport = (function () {
     throw new Error("未知的面板操作: " + op);
   }
 
+  // EVENT_TYPES 与 internal/core 的 Event* 常量一一对应（契约测试
+  // internal/panel/panel_test.go 钉死两侧，漂移即红）。服务端 SSE 发送的是
+  // 具名事件（event: <type>），而 onmessage 只对无名事件触发，所以必须
+  // 按类型 addEventListener——这是 HTTP 面板事件日志曾经全空（A1）的根因。
+  const EVENT_TYPES = ["log", "state", "progress", "notice"];
+
   // subscribe delivers live module events to onEvent.
   function subscribe(onEvent) {
     if (!isWails) {
       const es = new EventSource("/api/events");
-      es.onmessage = (e) => { try { onEvent(JSON.parse(e.data)); } catch (err) { /* 忽略坏帧 */ } };
+      for (const t of EVENT_TYPES) {
+        es.addEventListener(t, (e) => { try { onEvent(JSON.parse(e.data)); } catch (err) { /* 忽略坏帧 */ } });
+      }
+      es.onmessage = (e) => { try { onEvent(JSON.parse(e.data)); } catch (err) { /* 兼容无名事件 */ } };
       es.onerror = () => { /* EventSource 自行重连 */ };
       return;
     }
@@ -903,18 +912,35 @@ async function reload() {
 function renderLogPage(root) {
   const card = el('<div class="card"><h2>事件日志</h2><div class="desc">模块通过事件总线推送的实时消息。</div><div id="log"></div></div>');
   root.appendChild(card);
+  // 页签是按需挂载的：挂载时回放环形缓冲，切走期间的事件不丢。
+  const box = document.getElementById("log");
+  if (!box) return;
+  for (let i = logBuffer.length - 1; i >= 0; i--) box.appendChild(logEntry(logBuffer[i]));
+}
+
+// logBuffer 环形缓冲：事件到达时日志页可能未挂载，先进缓冲（A1 修攟）。
+const logBuffer = [];
+const LOG_BUFFER_MAX = 300;
+
+function logEntry(item) {
+  const d = document.createElement("div");
+  d.className = "lev-" + item.level;
+  d.textContent = "[" + new Date(item.time).toLocaleTimeString() + "] " + item.text;
+  return d;
 }
 
 function pushLog(ev) {
+  const item = {
+    time: ev.time || Date.now(),
+    level: ev.level || ev.type || "info",
+    text: (ev.module ? ev.module + " " : "") + (ev.message || JSON.stringify(ev.data || {})),
+  };
+  logBuffer.push(item);
+  while (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
   const box = document.getElementById("log");
   if (!box) return;
-  const d = document.createElement("div");
-  const level = ev.level || ev.type || "info";
-  d.className = "lev-" + level;
-  d.textContent = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] " +
-    (ev.module ? ev.module + " " : "") + (ev.message || JSON.stringify(ev.data || {}));
-  box.insertBefore(d, box.firstChild);
-  while (box.childNodes.length > 300) box.removeChild(box.lastChild);
+  box.insertBefore(logEntry(item), box.firstChild);
+  while (box.childNodes.length > LOG_BUFFER_MAX) box.removeChild(box.lastChild);
 }
 
 function connectEvents() {

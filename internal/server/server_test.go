@@ -331,12 +331,21 @@ func TestHandleEventsStreamsBus(t *testing.T) {
 
 	reader := bufio.NewReader(res.Body)
 	deadline := time.After(3 * time.Second)
+	var sawEventName bool
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			t.Fatalf("读取 SSE 失败: %v", err)
 		}
+		// 契约（A1）：服务端发送具名事件 `event: <type>`，前端按类型
+		// addEventListener（internal/panel/panel_test.go 钉住另一侧）。
+		if strings.HasPrefix(line, "event: ") && strings.TrimSpace(line) == "event: "+core.EventLog {
+			sawEventName = true
+		}
 		if strings.HasPrefix(line, "data: ") && strings.Contains(line, "hello") {
+			if !sawEventName {
+				t.Fatal("SSE 帧缺少 event: 名——前端按类型监听将收不到该事件")
+			}
 			return // received the published event
 		}
 		select {
