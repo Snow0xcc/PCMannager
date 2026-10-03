@@ -188,5 +188,6 @@ func (p panelProvider) Subscribe() (<-chan core.Event, func()) {
 	return p.a.Bus().Subscribe()
 }
 
-// Version is the application version string.
-func (p panelProvider) Version() string { return Version }
+// Version is the application version string (normalized, no leading "v";
+// the panel must not double the prefix).
+func (p panelProvider) Version() string { return NormalizedVersion() }

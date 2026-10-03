@@ -581,7 +581,7 @@ func (a *App) SetPanelURL(u string) {
 
 // Version implements core.AppControl: it exposes the running version to
 // modules (the updater compares it against the latest release tag).
-func (a *App) Version() string { return Version }
+func (a *App) Version() string { return NormalizedVersion() }
 
 // PanelURL returns the preferences panel address.
 func (a *App) PanelURL() string {
