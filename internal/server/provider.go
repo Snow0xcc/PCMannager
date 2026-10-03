@@ -54,6 +54,10 @@ type AppConfig struct {
 	// the user override flows through DataDir, and this field is for display
 	// so the panel never shows an empty box while data lives elsewhere.
 	EffectiveDataDir string `json:"effective_data_dir"`
+	// RestartRequired lists config keys that are only read at startup, so
+	// saving them has no effect until the app restarts (A7). The panel
+	// renders a hint for these instead of silently ignoring the change.
+	RestartRequired []string `json:"restart_required,omitempty"`
 }
 
 // AppConfigPatch is a partial update of the application settings.

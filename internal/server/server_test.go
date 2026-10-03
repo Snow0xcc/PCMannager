@@ -87,7 +87,8 @@ func (p *fakeProvider) OpenUI(id string) error {
 }
 
 func (p *fakeProvider) AppConfig() AppConfig {
-	return AppConfig{Theme: "auto", LogLevel: "info", Language: "zh-CN"}
+	return AppConfig{Theme: "auto", LogLevel: "info", Language: "zh-CN",
+		RestartRequired: []string{"server_port", "data_dir", "log_level"}}
 }
 
 func (p *fakeProvider) PatchAppConfig(patch AppConfigPatch) error {
@@ -185,6 +186,28 @@ func TestHandleStateReturnsFullSnapshot(t *testing.T) {
 	}
 	if body.App.Language != "zh-CN" {
 		t.Fatalf("language = %q, 期望 zh-CN", body.App.Language)
+	}
+}
+
+// TestHandleGetAppRestartsRequired（A7）：面板必须能得知哪些应用设置
+// 只在启动时读取，否则保存 server_port 后用户无从知道为何不生效。
+func TestHandleGetAppRestartsRequired(t *testing.T) {
+	ts := newTestServer(t, newFakeProvider())
+
+	var body AppConfig
+	if err := getJSON(ts.URL+"/api/app", &body); err != nil {
+		t.Fatalf("获取 /api/app 失败: %v", err)
+	}
+	want := map[string]bool{"server_port": false, "data_dir": false, "log_level": false}
+	for _, k := range body.RestartRequired {
+		if _, ok := want[k]; ok {
+			want[k] = true
+		}
+	}
+	for k, seen := range want {
+		if !seen {
+			t.Errorf("restart_required 缺少 %q", k)
+		}
 	}
 }
 

@@ -202,8 +202,32 @@ func mergeOptions(def, cur map[string]any) map[string]any {
 	return out
 }
 
-// Config returns the live configuration document.
-func (m *Manager) Config() *Config { return m.cfg }
+// Config returns a detached snapshot of the configuration document.
+//
+// It used to return the live pointer, which let callers read App fields
+// without holding cfg.mu while UpdateApp wrote them concurrently (A7 data
+// race). The returned copy is owned by the caller: mutating it never
+// affects the Manager. All writes must go through ModuleView setters,
+// UpdateApp or DeclareDefaults; re-take a snapshot to observe fresh values.
+func (m *Manager) Config() *Config {
+	m.cfg.mu.RLock()
+	defer m.cfg.mu.RUnlock()
+	out := &Config{
+		App:     m.cfg.App,
+		Modules: make(map[string]Module, len(m.cfg.Modules)),
+	}
+	for id, mod := range m.cfg.Modules {
+		if mod.Options != nil {
+			opts := make(map[string]any, len(mod.Options))
+			for k, v := range mod.Options {
+				opts[k] = v
+			}
+			mod.Options = opts
+		}
+		out.Modules[id] = mod
+	}
+	return out
+}
 
 // Path returns the config file location.
 func (m *Manager) Path() string { return m.path }

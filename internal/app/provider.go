@@ -122,6 +122,10 @@ func (p panelProvider) RunHotkey(id string) error { return p.a.RunHotkey(id) }
 // OpenUI opens a module's dedicated window.
 func (p panelProvider) OpenUI(id string) error { return p.a.OpenUI(id) }
 
+// restartRequiredKeys are app settings read only during startup: saving
+// them succeeds but takes no effect until the next launch (A7).
+var restartRequiredKeys = []string{"server_port", "data_dir", "log_level"}
+
 // AppConfig returns the application settings.
 func (p panelProvider) AppConfig() server.AppConfig {
 	c := p.a.Config().App()
@@ -134,6 +138,7 @@ func (p panelProvider) AppConfig() server.AppConfig {
 		OpenInWebview:    c.OpenInWebview,
 		Language:         c.Language,
 		EffectiveDataDir: p.a.DataDir(),
+		RestartRequired:  restartRequiredKeys,
 	}
 }
 
