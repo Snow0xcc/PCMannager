@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kbinani/screenshot"
 	clip "golang.design/x/clipboard"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
@@ -466,14 +465,13 @@ func (f *Feature) captureAs(mode edMode) {
 		f.ctx.Logger.Error("初始化剪贴板失败", "module", moduleID, "err", err)
 		f.ctx.Bus.Log(moduleID, "error", "剪贴板不可用，将无法复制截图")
 	}
-	if screenshot.NumActiveDisplays() <= 0 {
+	if captureDisplayCount() <= 0 {
 		f.ctx.Logger.Warn("未找到可用的显示器", "module", moduleID)
 		f.ctx.Bus.Notice(moduleID, "未找到可用的显示器")
 		return
 	}
 
-	bounds := screenshot.GetDisplayBounds(0)
-	img, err := screenshot.CaptureRect(bounds)
+	bounds, img, err := grabDisplay()
 	if err != nil {
 		f.ctx.Logger.Error("截屏失败", "module", moduleID, "err", err)
 		f.ctx.Bus.Log(moduleID, "error", "截屏失败："+err.Error())
