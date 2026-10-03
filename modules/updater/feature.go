@@ -5,6 +5,7 @@ package updater
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -52,6 +53,17 @@ type Feature struct {
 	staged string
 	// last is the most recent check result surfaced in the panel state.
 	last CheckResult
+
+	// —— 测试 seam（零值 = 生产行为）——
+	// firstCheckDelay 覆盖 loop 的首检延迟（默认 1 分钟）。
+	firstCheckDelay time.Duration
+	// checkInterval 覆盖 loop 的后续间隔（默认读 interval_hours 配置）。
+	checkInterval time.Duration
+	// httpClientFn 覆盖出站 HTTP 客户端（默认 newHTTPClient 白名单客户端）。
+	httpClientFn func() *http.Client
+
+	// stopCh 关闭即终止轮询 goroutine；Start 创建、Stop 关闭并置 nil。
+	stopCh chan struct{}
 }
 
 // CheckResult is the panel-facing snapshot of the most recent check/download.
@@ -109,7 +121,9 @@ func (f *Feature) Actions() []core.Action {
 	}
 }
 
-// Init stores the context, seeds state and starts the periodic check loop.
+// Init stores the context and seeds state. The periodic check loop is NOT
+// started here: app only calls Start for enabled modules, so starting in Init
+// would make the default-off updater poll GitHub anyway (A4).
 func (f *Feature) Init(ctx *core.Context) error {
 	f.ctx = ctx
 	f.last.Current = f.currentVersion()
@@ -117,36 +131,59 @@ func (f *Feature) Init(ctx *core.Context) error {
 	if p := filepath.Join(ctx.DataDir, stagedName); fileExists(p) {
 		f.staged = p
 	}
-	if boolOpt(f.ctx.Config.Get(optAutoCheck, true)) {
-		go f.loop()
-	}
 	return nil
 }
 
 // Start implements core.Module: it publishes the initial state so the panel
-// shows the module as running with the detected version. The periodic check
-// loop was already started in Init.
+// shows the module as running with the detected version, and opens the
+// periodic check loop (only reached for enabled modules — the app gates
+// Start on the enabled flag).
 func (f *Feature) Start() error {
 	f.last.Current = f.currentVersion()
 	if f.ctx != nil {
 		f.ctx.Bus.State(moduleID, f.State())
 	}
+	if boolOpt(f.ctx.Config.Get(optAutoCheck, true)) {
+		f.mu.Lock()
+		if f.stopCh == nil { // 已在轮询则不重复起 goroutine
+			f.stopCh = make(chan struct{})
+			go f.loop(f.stopCh)
+		}
+		f.mu.Unlock()
+	}
 	return nil
 }
 
-// Stop implements core.Module. The check loop exits via ctx cancellation;
-// nothing to stop here. A staged download is intentionally kept: the user may
-// apply it after restarting into this or a later session.
-func (f *Feature) Stop() error { return nil }
+// Stop implements core.Module: it closes the check loop and joins it. A
+// staged download is intentionally kept: the user may apply it after
+// restarting into this or a later session.
+func (f *Feature) Stop() error {
+	f.mu.Lock()
+	ch := f.stopCh
+	f.stopCh = nil
+	f.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+	return nil
+}
 
-// loop runs the periodic check until app shutdown.
-func (f *Feature) loop() {
+// loop runs the periodic check until app shutdown or the module is stopped.
+// stop is owned by the caller (Start/Stop lifecycle); ctx cancellation still
+// exits for shutdown.
+func (f *Feature) loop(stop <-chan struct{}) {
 	// First check shortly after boot so a fresh release is noticed promptly;
 	// later checks follow the configured interval.
-	t := time.NewTimer(time.Minute)
+	first := f.firstCheckDelay
+	if first <= 0 {
+		first = time.Minute
+	}
+	t := time.NewTimer(first)
 	defer t.Stop()
 	for {
 		select {
+		case <-stop:
+			return
 		case <-f.ctx.Ctx.Done():
 			return
 		case <-t.C:
@@ -155,7 +192,11 @@ func (f *Feature) loop() {
 					f.ctx.Logger.Warn("自动检查更新失败", "err", err)
 				}
 			}
-			t.Reset(f.interval())
+			next := f.checkInterval
+			if next <= 0 {
+				next = f.interval()
+			}
+			t.Reset(next)
 		}
 	}
 }
@@ -167,6 +208,14 @@ func (f *Feature) interval() time.Duration {
 		return 24 * time.Hour
 	}
 	return time.Duration(h) * time.Hour
+}
+
+// client returns the outbound HTTP client, honoring the test seam.
+func (f *Feature) client() *http.Client {
+	if f.httpClientFn != nil {
+		return f.httpClientFn()
+	}
+	return newHTTPClient()
 }
 
 // currentVersion reports the running version via core.AppControl.Version()
@@ -198,7 +247,7 @@ func (f *Feature) Check(ctx context.Context) (CheckResult, error) {
 		f.mu.Unlock()
 	}()
 
-	rel, err := fetchLatest(ctx, newHTTPClient())
+	rel, err := fetchLatest(ctx, f.client())
 	res := f.recordCheck(rel, err)
 	return res, err
 }
@@ -342,7 +391,7 @@ func (f *Feature) Download(ctx context.Context) error {
 	}
 
 	// Resolve the download URL fresh: the check step only stores the name.
-	hc := newHTTPClient()
+	hc := f.client()
 	rel, err := fetchLatest(ctx, hc)
 	if err != nil {
 		return err
