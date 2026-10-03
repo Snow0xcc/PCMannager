@@ -8,7 +8,7 @@ require (
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/wailsapp/wails/v2 v2.10.2
-	golang.design/x/clipboard v0.9.0
+	golang.design/x/clipboard v0.11.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
