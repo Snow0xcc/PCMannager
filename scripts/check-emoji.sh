@@ -44,6 +44,17 @@ if grep -Pq "$emoji_pattern" "$selftest_dir/good.go"; then
   exit 1
 fi
 
+# —— 符号区段自检：html 专属的 symbol_pattern 写错同样会静默放行 ——
+printf 'bad \xE2\x86\x92 arrow\n' > "$selftest_dir/bad.html"      # →（U+2192，仅落在符号区段）
+if ! grep -Pq "$symbol_pattern" "$selftest_dir/bad.html"; then
+  echo "自检失败：符号区段正则（symbol_pattern）无法命中 html 符号 fixture，闸门无效。"
+  exit 1
+fi
+if grep -Pq "$symbol_pattern" "$selftest_dir/good.go"; then
+  echo "自检失败：符号区段正则（symbol_pattern）误报了干净文件 good.go。"
+  exit 1
+fi
+
 # —— 扫描（仅 git 跟踪的文件；reference/ 是 submodule，不产出独立文件条目） ——
 while IFS= read -r f; do
   case "$f" in
