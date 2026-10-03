@@ -13,3 +13,6 @@ dist/
 
 # 工具/编辑器产生的目录（非项目源码）
 .rustcode/
+
+# RustCode local-scope configs (machine-specific)
+.rustcode/local/
