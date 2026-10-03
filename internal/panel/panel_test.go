@@ -59,3 +59,19 @@ func TestSubscribeRegistersTypedListeners(t *testing.T) {
 		t.Error("transport.subscribe 未按事件类型注册 addEventListener——具名 SSE 事件将无法到达 onEvent")
 	}
 }
+
+// TestDynamicInterpolationEscaped 回归（A6）：el() 走 innerHTML，动态数据
+// 插值必须走 esc()。全站唯一曾被漏掉的是 effective_data_dir。
+func TestDynamicInterpolationEscaped(t *testing.T) {
+	data, err := FS().ReadFile(IndexPath)
+	if err != nil {
+		t.Fatalf("读取内嵌面板失败: %v", err)
+	}
+	src := string(data)
+	if strings.Contains(src, "+ a.effective_data_dir +") {
+		t.Error("effective_data_dir 插值未走 esc()——innerHTML XSS 破口")
+	}
+	if !strings.Contains(src, "esc(a.effective_data_dir)") {
+		t.Error("effective_data_dir 应经 esc() 转义后再插值")
+	}
+}

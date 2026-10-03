@@ -461,7 +461,9 @@ function renderAppPage(root) {
   card.appendChild(el('<div class="row"><label>面板端口</label><div class="grow"><input type="number" id="f-port"></div></div>'));
   card.appendChild(el('<div class="row"><label>数据目录</label><div class="grow"><input type="text" id="f-dir"></div></div>'));
   if (a.effective_data_dir) {
-    card.appendChild(el('<div class="row"><label></label><span class="hint">实际生效目录：' + a.effective_data_dir + '</span></div>'));
+    // 数据目录来自配置，仍必须转义：el() 走 innerHTML，这是全站唯一
+    // 曾未走 esc() 的插值点（A6）。
+    card.appendChild(el('<div class="row"><label></label><span class="hint">实际生效目录：' + esc(a.effective_data_dir) + '</span></div>'));
   }
   card.appendChild(el('<div class="row"><label></label><button class="btn primary" id="f-save">' + icon("save") + '保存</button></div>'));
 
