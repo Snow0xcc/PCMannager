@@ -98,7 +98,7 @@ func (f *Feature) Description() string {
 // Options declares the module settings.
 func (f *Feature) Options() []core.Option {
 	return []core.Option{
-		{Key: optAutoCheck, Label: "自动检查更新", Kind: core.KindBool, Default: true,
+		{Key: optAutoCheck, Label: "自动检查更新", Kind: core.KindBool, Default: true, Restart: true,
 			Help: "按固定间隔检查 GitHub Releases；关闭后仅可手动检查"},
 		{Key: optIntervalH, Label: "检查间隔（小时）", Kind: core.KindInt, Default: 24, Min: 1, Max: 168, Step: 1,
 			Help: "两次自动检查之间的间隔，1-168 小时"},
@@ -126,7 +126,7 @@ func (f *Feature) Actions() []core.Action {
 // would make the default-off updater poll GitHub anyway (A4).
 func (f *Feature) Init(ctx *core.Context) error {
 	f.ctx = ctx
-	f.last.Current = f.currentVersion()
+	f.setCurrent(f.currentVersion())
 	// A stale staged file from a previous run is still applicable.
 	if p := filepath.Join(ctx.DataDir, stagedName); fileExists(p) {
 		f.staged = p
@@ -139,7 +139,7 @@ func (f *Feature) Init(ctx *core.Context) error {
 // periodic check loop (only reached for enabled modules — the app gates
 // Start on the enabled flag).
 func (f *Feature) Start() error {
-	f.last.Current = f.currentVersion()
+	f.setCurrent(f.currentVersion())
 	if f.ctx != nil {
 		f.ctx.Bus.State(moduleID, f.State())
 	}
@@ -154,7 +154,8 @@ func (f *Feature) Start() error {
 	return nil
 }
 
-// Stop implements core.Module: it closes the check loop and joins it. A
+// Stop implements core.Module: it closes the check loop's stop channel,
+// signaling the goroutine to exit (loop also honors ctx cancellation). A
 // staged download is intentionally kept: the user may apply it after
 // restarting into this or a later session.
 func (f *Feature) Stop() error {
@@ -208,6 +209,14 @@ func (f *Feature) interval() time.Duration {
 		return 24 * time.Hour
 	}
 	return time.Duration(h) * time.Hour
+}
+
+// setCurrent records the running version. f.last is read concurrently by
+// State() (panel polling), so every write must hold f.mu (review I-1).
+func (f *Feature) setCurrent(v string) {
+	f.mu.Lock()
+	f.last.Current = v
+	f.mu.Unlock()
 }
 
 // client returns the outbound HTTP client, honoring the test seam.

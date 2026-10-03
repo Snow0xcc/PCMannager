@@ -117,3 +117,40 @@ func TestAutoCheckOffMakesNoRequests(t *testing.T) {
 		t.Fatalf("auto_check=false 仍发出 %d 次请求", got)
 	}
 }
+
+// TestStartConcurrentWithStateReads（评审 I-1）：Start 写 f.last.Current 与
+// 面板 5s 轮询 State() 读并发可达，写侧必须持锁。仅在 -race 下有效。
+func TestStartConcurrentWithStateReads(t *testing.T) {
+	f, _ := newCountingFeature(t, false) // auto_check=false：不起轮询，专注竞态
+	if err := f.Init(f.ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			_ = f.State()
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		if err := f.Start(); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	}
+	<-done
+}
+
+// TestAutoCheckOptionRequiresRestart（评审 M-2）：轮询 goroutine 只在 Start
+// 创建，auto_check 运行时改值必须经模块重启才生效，应声明 Restart: true，
+// 由 ApplyOption 的既有机制承接。
+func TestAutoCheckOptionRequiresRestart(t *testing.T) {
+	for _, o := range (&Feature{}).Options() {
+		if o.Key == optAutoCheck {
+			if !o.Restart {
+				t.Fatal("auto_check 应声明 Restart: true")
+			}
+			return
+		}
+	}
+	t.Fatal("Options() 未声明 auto_check")
+}
