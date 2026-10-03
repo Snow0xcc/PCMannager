@@ -119,3 +119,29 @@ jobs:
       # 文档上的蝴蝶就会和托盘图标不一致——在这里拦下。
       - name: brand assets check
         run: bash scripts/gen-logo.sh --check
+
+  tray-dbus:
+    # Linux 托盘只在真实 D-Bus 会话总线上才能验证：单测覆盖不到对象导出、信号、
+    # 向 StatusNotifierWatcher 注册、dbusmenu 往返与角标 NewIcon。测试会自己拉一个
+    # 专用 dbus-daemon，不依赖桌面环境；PCM_REQUIRE_DBUS=1 让“跳过”变成失败，
+    # 避免出现“绿灯只是因为没执行”。
+    name: tray (linux dbus 集成)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      - name: install dbus
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus
+          dbus-daemon --version | head -1
+      - name: go test (tray dbus)
+        env:
+          PCM_REQUIRE_DBUS: '1'
+        run: go test -count=1 -v -run 'TestLinuxTrayDBus' ./internal/tray/

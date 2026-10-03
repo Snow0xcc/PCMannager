@@ -4,7 +4,6 @@ package sysutil
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -47,9 +46,15 @@ func TestAutostartRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAutostartEntryPointsAtExecutable 守护条目内容：自启的目的是"登录时把
-// 这个二进制跑起来"，所以条目里必须指向当前可执行文件的绝对路径。
+// TestAutostartEntryPointsAtExecutable 守护条目内容：自启的目的是“登录时把
+// 这个二进制跑起来”，所以条目里必须指向当前可执行文件的绝对路径。
+//
+// 这里只覆盖非 macOS 平台（XDG .desktop 路径）；macOS 的 launchd plist 断言在
+// sysutil_autostart_darwin_test.go，因为 autostartPlist 只在 darwin 构建中存在。
 func TestAutostartEntryPointsAtExecutable(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS 由 sysutil_autostart_darwin_test.go 覆盖")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -63,30 +68,13 @@ func TestAutostartEntryPointsAtExecutable(t *testing.T) {
 		t.Fatalf("os.Executable: %v", err)
 	}
 
-	var entry string
-	switch runtime.GOOS {
-	case "darwin":
-		path, label := autostartPlist(name)
-		entry = path
-		data, err := os.ReadFile(entry)
-		if err != nil {
-			t.Fatalf("读 plist: %v", err)
-		}
-		content := string(data)
-		for _, want := range []string{label, exe, "RunAtLoad"} {
-			if !strings.Contains(content, want) {
-				t.Errorf("plist 缺少 %q\n内容:\n%s", want, content)
-			}
-		}
-	default:
-		entry = filepath.Join(home, ".config", "autostart", name+".desktop")
-		data, err := os.ReadFile(entry)
-		if err != nil {
-			t.Fatalf("读 desktop 条目: %v", err)
-		}
-		if !strings.Contains(string(data), exe) {
-			t.Errorf("desktop 条目缺少可执行路径 %q\n内容:\n%s", exe, data)
-		}
+	entry := filepath.Join(home, ".config", "autostart", name+".desktop")
+	data, err := os.ReadFile(entry)
+	if err != nil {
+		t.Fatalf("读 desktop 条目: %v", err)
+	}
+	if !strings.Contains(string(data), exe) {
+		t.Errorf("desktop 条目缺少可执行路径 %q\n内容:\n%s", exe, data)
 	}
 	if entry == "" {
 		t.Fatal("条目路径为空")
@@ -96,26 +84,8 @@ func TestAutostartEntryPointsAtExecutable(t *testing.T) {
 	}
 }
 
-// TestPlistIsWellFormed 只在 macOS 上跑：plist 是 launchd 的输入，格式错误
-// 会导致自启静默失效（launchd 不弹错）。用系统的 plutil 做权威校验。
-func TestPlistIsWellFormed(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("仅 macOS 有 plutil")
-	}
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	const name = "GoBox"
-	if err := SetAutostart(name, true); err != nil {
-		t.Fatalf("SetAutostart: %v", err)
-	}
-	path, _ := autostartPlist(name)
-	if out, err := exec.Command("plutil", "-lint", path).CombinedOutput(); err != nil {
-		t.Fatalf("plutil -lint: %v\n%s", err, out)
-	}
-}
-
 // TestAutostartEmptyNameRejected 守护空名称被拒绝：Label/文件名来自 name，
-// 空字符串会生成无意义的 ".plist"。
+// 空字符串会生成无意义的“.plist”。
 func TestAutostartEmptyNameRejected(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := SetAutostart("", true); err == nil {

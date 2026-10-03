@@ -17,6 +17,11 @@ import (
 // On Linux this uses ~/.config/autostart (XDG), which keeps the feature
 // functional for development even though Windows is the primary target.
 func SetAutostart(name string, on bool) error {
+	// name 会直接拼成文件名，空值会生成一个匿名的“.desktop”条目：既没有
+	// Name= 也没有可识别的身份，属于写坏用户配置。macOS 已有同样校验，这里对齐。
+	if name == "" {
+		return fmt.Errorf("autostart: 名称为空")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
