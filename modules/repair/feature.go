@@ -83,20 +83,29 @@ func (f *Feature) Init(ctx *core.Context) error {
 // id; unknown ids are reported as errors so the panel can surface typos
 // instead of silently doing nothing.
 func (f *Feature) RunAction(id string, params map[string]string) error {
+	_, err := f.runActionEntry(id, params)
+	return err
+}
+
+// runActionEntry is RunAction with the captured command output; the walk
+// panel uses it to show the output in its log box. Both panels funnel through
+// here, so elevation, the execution budget and bus/log reporting behave
+// identically no matter which surface triggered the action.
+func (f *Feature) runActionEntry(id string, params map[string]string) (string, error) {
 	if id == "open_panel" {
-		return f.OpenUI()
+		return "", f.OpenUI()
 	}
 
 	e, ok := Lookup(id)
 	if !ok {
-		return &unknownActionError{id: id}
+		return "", &unknownActionError{id: id}
 	}
 
 	// Resolve the command line from the stored source preference.
 	source := f.preferSource()
 	cmd, ok := e.ResolveCommand(source)
 	if !ok {
-		return fmt.Errorf("无法为 %s 解析命令（包管理器未配置？）", e.Label)
+		return "", fmt.Errorf("无法为 %s 解析命令（包管理器未配置？）", e.Label)
 	}
 
 	// Destructive ops are gated on the client side (the walk panel pops a
@@ -105,16 +114,17 @@ func (f *Feature) RunAction(id string, params map[string]string) error {
 	//
 	// Admin entries need elevation. If we are already running as administrator
 	// we run directly; otherwise we relaunch the command elevated via the UAC
-	// prompt. Only entries flagged Admin are elevated -- ordinary actions keep
-	// running in the current (non-elevated) context.
+	// prompt (fire-and-forget: ShellExecuteW returns immediately). Only
+	// entries flagged Admin are elevated -- ordinary actions keep running in
+	// the current (non-elevated) context.
 	if e.Admin && !sysutil.IsElevated() {
-		if err := sysutil.RunElevated(cmd); err != nil {
-			return err
-		}
-		f.logRun(e.Label, "", nil)
-		return nil
+		err := sysutil.RunElevated(cmd)
+		f.logRun(e.Label, "", err)
+		return "", err
 	}
-	return f.Run(e.Label, cmd)
+	out, err := runCommand(id, cmd)
+	f.logRun(e.Label, out, err)
+	return out, err
 }
 
 // logRun records the outcome of a repair command to slog + bus without
@@ -215,24 +225,6 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		f.ctx.Bus.State(moduleID, f.State())
 	}
 	return nil
-}
-
-// Run executes one repair command line, logging the outcome to slog + bus.
-func (f *Feature) Run(name, cmdline string) error {
-	out, err := runCommand(cmdline)
-	if f.ctx != nil {
-		if f.ctx.Logger != nil {
-			if err != nil {
-				f.ctx.Logger.Error("repair 命令失败", "module", moduleID, "action", name, "err", err)
-			} else {
-				f.ctx.Logger.Info("repair 命令完成", "module", moduleID, "action", name)
-			}
-		}
-		if f.ctx.Bus != nil {
-			f.ctx.Bus.Progress(moduleID, name, 100, out)
-		}
-	}
-	return err
 }
 
 // confirmDanger reports whether dangerous actions must be confirmed first.
