@@ -1,7 +1,8 @@
 # 持续集成：推送到 main 或发起 PR 时运行。
 #
 # 与 release.yml 的分工：
-#   - 本文件：每次 push/PR 的快速门槛——lint、单测、四平台可编译性。
+#   - 本文件：每次 push/PR 的快速门槛——lint、单测、四平台可编译性、
+#     Windows 测试二进制编译闸门（ROADMAP B4）。
 #   - release.yml：打 tag 时才跑的发布流程（含产物上传与 GitHub Release）。
 #
 # 抽出来是因为 release.yml 只由 v* tag 触发；没有它，普通提交不会跑任何
@@ -114,3 +115,65 @@ jobs:
             exit 1
           fi
           echo "gofmt check passed (${#existing[@]} files)"
+
+  windows-compile-gate:
+    # ROADMAP B4：test/vet 跑在 ubuntu，GOOS 只在 build 矩阵里设置，
+    # 因此 windows build tag 的 _test.go（如 internal/tray/tray_windows_test.go）
+    # 在 CI 中从未被编译过——P0-1 托盘死锁、P0-2 热键线程这类 Windows 专属
+    # bug 恰好藏在闸门外。本 job 把每个含测试文件的包交叉编译成 Windows
+    # 测试二进制（只编译不执行），并补齐 GOOS=darwin/linux 的 vet。
+    # reference/ 下是独立 go.mod 的子模块，不参与 go list ./...，无需 checkout。
+    name: windows test-binary compile + cross-OS vet
+    runs-on: ubuntu-latest
+    env:
+      # 与 build 矩阵/scripts/build.sh 同源：本仓库全平台 CGO_ENABLED=0。
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      - name: cross-OS go vet (windows/darwin/linux)
+        run: |
+          set -euo pipefail
+          for os in windows darwin linux; do
+            echo "== GOOS=${os} go vet ./... =="
+            GOOS="${os}" go vet ./...
+          done
+      - name: compile windows test binaries (per package, no execution)
+        run: |
+          set -euo pipefail
+          # go test -c 不接受 ./... 多包，逐包编译；无 _test.go 的包跳过。
+          mapfile -t pkgs < <(go list ./...)
+          if [ "${#pkgs[@]}" -eq 0 ]; then
+            echo "::error::go list ./... 未返回任何包"
+            exit 1
+          fi
+          compiled=0
+          skipped=0
+          for pkg in "${pkgs[@]}"; do
+            dir=$(go list -f '{{.Dir}}' "${pkg}")
+            if ! compgen -G "${dir}/*_test.go" > /dev/null; then
+              echo "skip (no test files): ${pkg}"
+              skipped=$((skipped+1))
+              continue
+            fi
+            echo "compiling windows test binary: ${pkg}"
+            GOOS=windows go test -c -o /dev/null "${pkg}"
+            compiled=$((compiled+1))
+          done
+          echo "compiled=${compiled} skipped=${skipped}"
+          # 防闸门空转：一个测试包都没编译等于闸门失效，必须红。
+          if [ "${compiled}" -eq 0 ]; then
+            echo "::error::没有编译任何测试包，闸门配置失效"
+            exit 1
+          fi
+      - name: go mod tidy check
+        run: |
+          set -euo pipefail
+          # go.mod/go.sum 与模块依赖不一致时报差异（不落盘）。
+          go mod tidy -diff
+          echo "go.mod/go.sum consistent with tidy"

@@ -1,0 +1,13 @@
+# Dependabot 依赖更新（ROADMAP B4 顺带项）。
+# 只覆盖根模块 go.mod 与 workflow 内的 action 版本；
+# reference/ 下是独立 go.mod 的参考子模块，不在此维护、也不该被自动升级。
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
