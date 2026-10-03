@@ -76,9 +76,9 @@ func TestFeatureIdentity(t *testing.T) {
 func TestOptionsExposeEveryKey(t *testing.T) {
 	want := []string{
 		optInterval, optShowDown, optShowUp, optShowCPU, optShowMem, optShowDisk,
-		optShowUptime, optAlign, optOffsetX, optMarginTop, optMarginV, optLayout,
+		optShowUptime, optShowBattery, optAlign, optOffsetX, optWidth, optMarginTop, optMarginV, optLayout,
 		optNumAlign, optSpeedUnit, optUnitSpace, optFontFamily, optFontSize,
-		optFGColor, optBGMode, optBGColor, optFollowTheme, optSeparator, optRender,
+		optFGColor, optAutoFG, optBGMode, optBGColor, optFollowTheme, optSeparator, optRender,
 		optAvoidWidgets, optMultiMonitor,
 	}
 
@@ -265,12 +265,23 @@ func TestIntervalClampsToSafeBounds(t *testing.T) {
 
 // TestOffsetXReadsConfiguredValue 守护水平偏移：读配置值，缺失时回退默认 8。
 func TestOffsetXReadsConfiguredValue(t *testing.T) {
-	if got, want := newTestFeature(t, nil).offsetX(), defaultOffsetX; got != want {
-		t.Errorf("offsetX() = %d, 期望默认值 %d", got, want)
+	if got, want := newTestFeature(t, nil).intOpt(optOffsetX, defaultOffsetX), defaultOffsetX; got != want {
+		t.Errorf("intOpt(offset_x) = %d, 期望默认值 %d", got, want)
 	}
 	f := newTestFeature(t, map[string]any{optOffsetX: -16})
-	if got, want := f.offsetX(), -16; got != want {
-		t.Errorf("offsetX() = %d, 期望 %d", got, want)
+	if got, want := f.intOpt(optOffsetX, defaultOffsetX), -16; got != want {
+		t.Errorf("intOpt(offset_x) = %d, 期望 %d", got, want)
+	}
+}
+
+// TestWidthReadsConfiguredValue 守护宽度选项：缺失时回退默认 200。
+func TestWidthReadsConfiguredValue(t *testing.T) {
+	if got, want := newTestFeature(t, nil).intOpt(optWidth, defaultWidth), defaultWidth; got != want {
+		t.Errorf("intOpt(width) = %d, 期望默认值 %d", got, want)
+	}
+	f := newTestFeature(t, map[string]any{optWidth: 320})
+	if got, want := f.intOpt(optWidth, defaultWidth), 320; got != want {
+		t.Errorf("intOpt(width) = %d, 期望 %d", got, want)
 	}
 }
 
@@ -392,4 +403,18 @@ func TestStateReflectsStoppedAndHidden(t *testing.T) {
 	if got, ok := st["visible"].(bool); !ok || got {
 		t.Errorf("隐藏时 State[\"visible\"] = %v, 期望 false", st["visible"])
 	}
+}
+
+// （widget.parts 相关的两个电量测试已移到 widget_windows_test.go：parts 是
+// widget_windows.go 的方法，widget_other.go 没有它；放在平台无关测试文件
+// 会让 linux/darwin 的 go vet / go test 因 undefined 符号失败。）
+
+// containsPart 判断字段切片中是否存在完全匹配的字段。
+func containsPart(parts []string, want string) bool {
+	for _, p := range parts {
+		if p == want {
+			return true
+		}
+	}
+	return false
 }

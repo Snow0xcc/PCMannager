@@ -127,5 +127,16 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+          body: |
+            ## 下载（含国内加速镜像）
+
+            | 平台 | 官方源 | ghfast 加速 | ghproxy 加速 |
+            | :--- | :--- | :--- | :--- |
+            | Windows (amd64) | [下载](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-windows-amd64.exe) | [高速](https://ghfast.top/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-windows-amd64.exe) | [高速](https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-windows-amd64.exe) |
+            | Linux (amd64) | [下载](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-linux-amd64) | [高速](https://ghfast.top/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-linux-amd64) | [高速](https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-linux-amd64) |
+            | macOS (amd64) | [下载](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-darwin-amd64) | [高速](https://ghfast.top/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-darwin-amd64) | [高速](https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-darwin-amd64) |
+            | macOS (arm64) | [下载](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-darwin-arm64) | [高速](https://ghfast.top/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-darwin-arm64) | [高速](https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/pcmannager-darwin-arm64) |
+
+            > 某个加速站不可用时，请切换其它节点或官方源。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

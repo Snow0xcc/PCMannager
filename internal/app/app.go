@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -114,11 +115,24 @@ func New() (*App, error) {
 	}
 
 	bus := core.NewBus()
+
+	// Two log files, deliberately: the data directory is the canonical one, and a
+	// copy next to the executable means a GUI build (no console) can be inspected
+	// straight from the program directory. When app.data_dir points at the
+	// executable's own directory the two would be the same file, so it is only
+	// added when it is genuinely distinct.
+	dataLog := paths.LogFile(dataDir)
+	var extraLogs []string
+	if exeLog, err := paths.ExecutableLogFile(); err == nil && !sameLogFile(exeLog, dataLog) {
+		extraLogs = append(extraLogs, exeLog)
+	}
+
 	logger, closer, err := logx.New(logx.Options{
-		Level:   cfgMgr.Config().App.LogLevel,
-		File:    paths.LogFile(dataDir),
-		Sink:    busSink{bus: bus},
-		Console: true,
+		Level:      cfgMgr.Config().App.LogLevel,
+		File:       dataLog,
+		ExtraFiles: extraLogs,
+		Sink:       busSink{bus: bus},
+		Console:    true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("初始化日志失败: %w", err)
@@ -151,7 +165,32 @@ func New() (*App, error) {
 	a.errorWatch(bus)
 
 	winui.SetDPIAware()
+
+	// Record where this run logged to. On a -H windowsgui build there is no
+	// console, so this is how an operator finds the log at all.
+	logLocations := dataLog
+	if len(extraLogs) > 0 {
+		logLocations += ", " + strings.Join(extraLogs, ", ")
+	}
+	logger.Info("PCMannager 启动中",
+		"version", Version,
+		"data_dir", dataDir,
+		"logs", logLocations,
+	)
 	return a, nil
+}
+
+// sameLogFile reports whether two log paths refer to the same file, so the
+// executable-dir log is not registered twice when it coincides with the data
+// directory log.
+func sameLogFile(a, b string) bool {
+	if ap, err := filepath.Abs(a); err == nil {
+		a = ap
+	}
+	if bp, err := filepath.Abs(b); err == nil {
+		b = bp
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 // errorWatch mirrors error-level bus events into each module's error slot.
@@ -469,9 +508,44 @@ func hotkeyRefusedMsg(hk string) string {
 func (a *App) RebindHotkeys() {
 	for _, m := range a.Modules() {
 		a.bindHotkey(m)
+		a.bindExtraHotkeys(m)
 	}
 	for _, c := range a.hotkeys.Conflicts() {
 		a.bus.Log("hotkey", "warn", "热键冲突: "+c)
+	}
+}
+
+// bindExtraHotkeys registers a module's additional fixed hotkeys under
+// synthetic slots ("<module>/<index>"), so they cannot collide with the
+// module's primary binding or with each other.
+func (a *App) bindExtraHotkeys(m core.Module) {
+	p, ok := m.(core.ExtraHotkeysProvider)
+	if !ok {
+		return
+	}
+	base := m.ID() + "/"
+	// 先清掉本模块的全部旧扩展绑定：列表可能是动态的（例如按格式可用性变化）。
+	a.hotkeys.Unbind(base + "0")
+	a.hotkeys.Unbind(base + "1")
+	a.hotkeys.Unbind(base + "2")
+
+	for i, eh := range p.ExtraHotkeys() {
+		eh := eh
+		if eh.Hotkey == "" || eh.Fire == nil {
+			continue
+		}
+		slot := fmt.Sprintf("%s%d", base, i)
+		_, ok, err := core.ParseHotkey(eh.Hotkey)
+		if err != nil || !ok {
+			a.setHotkeyError(slot, fmt.Sprintf("扩展热键 %s 无效", eh.Hotkey))
+			continue
+		}
+		a.setHotkeyError(slot, hotkeyRefusedMsg(eh.Hotkey))
+		a.hotkeys.Bind(slot, eh.Hotkey, eh.Fire)
+		if _, bound := a.hotkeys.Combo(slot); bound {
+			a.setHotkeyError(slot, "")
+			a.bus.Log("hotkey", "info", m.Name()+" 扩展热键已绑定: "+eh.Label+" ("+eh.Hotkey+")")
+		}
 	}
 }
 
@@ -836,6 +910,11 @@ func (a *App) refreshTrayMenu() {
 		})
 	}
 
+	// 更新模块的专用菜单项：文字与颜色随 auto_check 配置变化——开启时“检
+	// 测自动更新”（默认黑），关闭时“执行自动更新”（强制橙色提醒用户当前
+	// 并不会自动检查，点这里可手动触发一次）。模块被禁用时置灰。
+	items = append(items, a.updaterTrayItem())
+
 	items = append(items,
 		tray.Item{ID: "autostart", Title: "开机自启", Checkable: true, Checked: a.cfgMgr.Config().App.Autostart},
 		tray.Item{Separator: true},
@@ -846,6 +925,42 @@ func (a *App) refreshTrayMenu() {
 		Tooltip: "PCMannager",
 		Items:   items,
 	})
+}
+
+// updater 托盘菜单项的 id 与动作 id。updaterActionCheck 必须与
+// modules/updater 的 actionCheck 保持一致（app 不能反向 import 模块包，
+// 所以用字符串常量对齐，改名时两处要同步）。
+const (
+	trayIDUpdaterCheck = "updater:check"
+	updaterActionCheck = "check_now"
+)
+
+// updaterTrayItem builds the updater's tray entry, mirroring its auto_check
+// option.
+//
+// 颜色约定：关闭 auto_check 时橙色（"orange"，提醒用户自动更新已停）；
+// 开启时默认色。tray 层把未知/空色值回退为系统默认，这里只传符号名。
+// 模块被禁用时置灰，文字仍按 auto_check 取，让用户能看出当前模式。
+func (a *App) updaterTrayItem() tray.Item {
+	it := tray.Item{ID: trayIDUpdaterCheck}
+	if _, ok := a.Module("updater"); !ok {
+		return it // 没装配 updater：点击时由 onTraySelect 忽略
+	}
+	mv := a.cfgMgr.Module("updater")
+	autoOn := true
+	if v, ok := mv.Get("auto_check", true).(bool); ok {
+		autoOn = v
+	}
+	if autoOn {
+		it.Title = "检测自动更新"
+	} else {
+		it.Title = "执行自动更新"
+		it.Color = "orange"
+	}
+	if !mv.Enabled() {
+		it.Disabled = true
+	}
+	return it
 }
 
 // onTraySelect dispatches a tray menu selection.
@@ -859,6 +974,8 @@ func (a *App) onTraySelect(id string) {
 		a.ShutdownAsync()
 	case id == "autostart":
 		a.toggleAutostart()
+	case id == trayIDUpdaterCheck:
+		a.runUpdaterCheck()
 	case strings.HasPrefix(id, "toggle:"):
 		a.toggleFromTray(strings.TrimPrefix(id, "toggle:"))
 	case strings.HasPrefix(id, "openui:"):
@@ -868,6 +985,28 @@ func (a *App) onTraySelect(id string) {
 		}
 	default:
 		a.log.Warn("未知的托盘菜单项", "id", id)
+	}
+}
+
+// runUpdaterCheck triggers the updater module's check_now action from the
+// tray. The module exposes the same RunAction contract the panel uses, so we
+// reuse it instead of importing the module package (依赖方向 modules→app，
+// app 反向 import 会成环)。
+func (a *App) runUpdaterCheck() {
+	m, ok := a.Module("updater")
+	if !ok {
+		a.log.Warn("托盘触发更新检查失败：未找到 updater 模块")
+		return
+	}
+	runner, ok := m.(actionRunner)
+	if !ok {
+		a.log.Warn("托盘触发更新检查失败：updater 不支持动作")
+		return
+	}
+	if err := a.safeCallErr("updater", "RunAction", func() error {
+		return runner.RunAction(updaterActionCheck, nil)
+	}); err != nil {
+		a.log.Warn("托盘触发更新检查失败", "err", err)
 	}
 }
 

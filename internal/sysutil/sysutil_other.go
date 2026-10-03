@@ -25,6 +25,41 @@ func Elevate([]string) error {
 // RunElevated is unsupported off Windows.
 func RunElevated(string) error { return fmt.Errorf("提权执行仅支持 Windows") }
 
+// RunElevatedPath is unsupported off Windows.
+func RunElevatedPath(path string, args []string) error {
+	return fmt.Errorf("以管理员身份运行仅支持 Windows")
+}
+
+// ShowInFolder reveals a file in the platform file manager.
+func ShowInFolder(path string) error {
+	var cmd string
+	var args []string
+	switch {
+	case fileExists("/usr/bin/xdg-open"):
+		cmd, args = "xdg-open", []string{filepath.Dir(path)}
+	case fileExists("/usr/bin/open"):
+		cmd, args = "open", []string{"-R", path}
+	default:
+		return fmt.Errorf("未找到文件管理器")
+	}
+	return exec.Command(cmd, args...).Start()
+}
+
+// OpenTerminalHere opens a terminal at dir off Windows.
+func OpenTerminalHere(dir string) error {
+	var cmd string
+	var args []string
+	switch {
+	case fileExists("/usr/bin/x-terminal-emulator"):
+		cmd, args = "x-terminal-emulator", []string{"--working-directory=" + dir}
+	case fileExists("/usr/bin/open"):
+		cmd, args = "open", []string{"-a", "Terminal", dir}
+	default:
+		return fmt.Errorf("未找到终端")
+	}
+	return exec.Command(cmd, args...).Start()
+}
+
 // SetAutostart writes/removes a desktop autostart entry.
 //
 // On Linux this uses ~/.config/autostart (XDG), which keeps the feature

@@ -14,6 +14,7 @@ import (
 	"github.com/snow0xcc/pcmannager/internal/app"
 	"github.com/snow0xcc/pcmannager/internal/sysutil"
 	"github.com/snow0xcc/pcmannager/modules/clipboard"
+	"github.com/snow0xcc/pcmannager/modules/launcher"
 	"github.com/snow0xcc/pcmannager/modules/repair"
 	"github.com/snow0xcc/pcmannager/modules/screenshot"
 	"github.com/snow0xcc/pcmannager/modules/selfcontext"
@@ -61,6 +62,11 @@ func main() {
 	a.MustRegister(selfcontext.NewFeature())
 	a.MustRegister(repair.NewFeature())
 	a.MustRegister(updater.NewFeature())
+	a.MustRegister(launcher.NewFeature())
+
+	// 快捷面板的命令表需要活模块列表：wiring 时把注册表递给它
+	// （core.Context 刻意不暴露 registry，见 launcher.SetModulesSource）。
+	launcher.SetModulesSource(a.Modules)
 
 	a.InitModules()
 	a.StartModules()

@@ -66,6 +66,133 @@ go vet ./...
       `Ctrl+\`` 在用户机器上已被其它程序占用，属**真实环境冲突而非代码缺陷**——当前已按设计降级
       （告警 + 面板/托盘仍可用）。待办：在面板热键编辑器里加"可用性检测"提示，并允许用户改绑。
 
+## 真实 Windows 实机反馈（第二轮，2026-09-27）
+
+针对实机使用反馈修复的问题（均已实测验证）：
+
+- [x] **22. 截图编辑器全屏黑屏（关键）**：`winui.Canvas.Image` 用 `StretchDIBits` 接收
+      **Go 堆**缓冲区，源图一大就静默失败（实测 512×512 成功、768×768 起返回 0）。
+      而截图编辑器正是把全屏捕获拉伸到窗口绘制，故整屏显示为纯黑。
+      现改用 `CreateDIBSection`（Windows 持有像素）+ `BitBlt`/`StretchBlt`，并新增
+      `ImageSubRect`（选区原图重绘）与 `FillAlpha`（半透明遮罩）。
+      回归测试 `internal/winui/draw_windows_test.go`（含 1920×1080 全屏尺寸用例）。
+- [x] **23. `AlphaBlend` 传参错误**：`BLENDFUNCTION` 是 4 字节结构体，x64 下**按值**传
+      （打包进寄存器），传指针会让调用静默失败——截图遮罩、任务栏半透明都受影响。
+      另修正其所在 DLL（`msimg32`，非 `gdi32`）。
+- [x] **24. 截图编辑器交互升级**：去掉了屏幕边缘的固定底栏，改为飞书/Snipaste 风格的
+      **选区下方浮动工具栏**（确认 / 复制 / 取消），并实时显示选区尺寸；未框选时提示
+      “拖动鼠标框选区域”并保留半透明桌面可见（不再整屏遮死）。
+- [x] **25. 剪贴板窗口不可移动**：`WS_POPUP` 无标题栏，新增 `winui.BeginDragWindow`
+      （`ReleaseCapture` + 合成 `WM_NCLBUTTONDOWN`/`HTCAPTION`）；窗口改为居中显示，
+      并在标题行提示“按住标题栏可拖动窗口”。
+- [x] **26. 任务栏文字颜色自适应**：新增 `winui.ContrastText`（Rec.709 亮度阈值），
+      背景为浅色主题色时自动改用黑色文字；新增 `auto_fg_color` 开关（默认开），
+      关闭后回退到手选的 `fg_color`。
+- [x] **27. 任务栏新增电量显示**：`winui.PowerStatus` 读 `GetSystemPowerStatus`，
+      新增 `show_battery` 开关（默认关）；无电池设备（台式机/VM）自动隐藏，不显示误导性的 0%。
+- [x] **28. 日志双写 + 兜底**（承接第一轮）：新增 `paths.ExecutableLogFile`，日志同时写入
+      **程序所在目录** `logs/gobox.log`；`logx` 用 `bestEffort` 多路写入器替换
+      `io.MultiWriter`（后者在 GUI 子系统下因 stderr 无效而连带丢掉文件日志）。
+- [x] **29. `SetBkMode`/`SetTextColor` 挂错 DLL**：从 `user32` 解析会 panic，导致任务栏
+      小组件首次绘制时崩掉整个进程；已改到 `gdi32`。
+- [x] **30. 热键 `close()` 死锁**：提前返回分支无界等待 `doneCh`，而它只由 `run()` 关闭，
+      “未 Start 就 Stop”时 `Stop()` 永久挂起；已抽出带超时的 `join()`。
+- [x] **31. 构建缺 `-tags production`**（第一轮根因）：Wails 退回桩实现，
+      `runtime.EventsEmit` 触发 `log.Fatalf` 导致 GUI 构建静默退出；`scripts/build.sh` 已固定。
+
+**仍待跟进**：`modules/repair` 的 walk 面板创建失败（`TTM_ADDTOOL failed`，属既有缺陷，
+日志已捕获——正是本轮日志能力发挥作用的例证）。
+
+## 真实 Windows 实机反馈（第三轮，2026-09-27）
+
+针对任务栏小组件问题的修复（均已实机验证）：
+
+- [x] **32. 任务栏卡死（关键）**：组件是 Explorer `Shell_TrayWnd` 的**跨进程子窗口**，
+      而 `widget.Run()` **缺少 `runtime.LockOSThread`**。goroutine 被 Go 调度器换线程后，
+      消息泵不再跑在窗口所属线程上，Explorer 在同步 `SendMessage`（`WM_PAINT` 等）里
+      **永久阻塞 → 整个任务栏卡死**。对比：`clipboard`/`screenshot` 的窗口早就锁了线程，
+      只有 taskbar 漏了。
+- [x] **33. 组件完全不可见**：Windows 11 任务栏内有一个铺满全条的 XAML 合成层
+      `Windows.UI.Composition.DesktopWindowContentBridge`，Z 序在普通子窗口**之上**。
+      实测证据：`IsWindowVisible=true` 但 `WindowFromPoint` 返回 0、截屏只见任务栏。
+      新增 `winui.BringToTop`（`SetWindowPos` + `HWND_TOP`），并在每次定时器 tick 重新提升。
+- [x] **34. 位置压在时钟上**：原定位 `x = 任务栏宽度 - 组件宽 - offset`（贴右边缘），
+      而 `TrayNotifyWnd`（时钟/托盘）实测占 `1111..1493`（任务栏宽 1493），
+      组件落在 1285 —— 正好压在时钟上。新增 `winui.TaskbarMetricsNow()` 读 `TrayNotifyWnd`
+      的**左边界**，组件锚定其左侧（TrafficMonitor 式）；托盘宽度随图标增减变化，
+      故用独立定时器（2s）重定位。
+- [x] **35. 背景不透明/文字看不清**：改为**真透明背景 + 加粗反色深色文字**：
+  - GDI 子窗口不合成，不画背景不会露出父窗口，故用 `WS_EX_LAYERED` + `LWA_COLORKEY`
+    （新增 `winui.SetColorKey`），背景填充色键 => 任务栏自身的像素直接透出。
+  - 但 **ClearType 亚像素边缘是与背景的混色**而非精确键值，会残留品红描边；
+    故透明模式必须用 `winui.NewFontQuality(..., NONANTIALIASED_QUAL)`（硬边缘）。
+  - 文字取**背景反色**（`winui.ContrastText`/`IsLightColor`，Rec.709 亮度）+ `FW_BOLD`。
+  - 采样点改到组件矩形**之外**（否则读回自己的键色）。新增测试守护反色契约。
+- [x] **36. 电量显示**：`winui.PowerStatus`（`GetSystemPowerStatus`），`show_battery` 开关；
+      无电池设备自动隐藏。（gopsutil v3.24.5 无电池 API，故自研。）
+- [x] **37. `SetBkMode`/`SetTextColor` 挂错 DLL**：从 `user32` 解析会 panic 导致进程崩溃，已改 `gdi32`。
+- [x] **38. 热键 `close()` 死锁**：“未 Start 就 Stop”时无界等待 `doneCh`，已加超时。
+
+## 真实 Windows 实机反馈（第四轮，2026-09-27）
+
+针对剪贴板粘贴、任务栏排版与截图标注的修复：
+
+- [x] **39. 剪贴板“选一条无法粘到目标窗口”**：真因不在剪贴板库（实测 `Read/Write/Watch` 均正常，
+      历史也能正确记录外部复制），而在**焦点归属**：查看器窗口在屏时会持有前台，写回后
+      直接关闭又不把焦点还回去，于是要么没有目标窗口、要么粘到已关闭的查看器上。
+      修法：`showViewer` 打开前记住 `winui.FocusedWindow()`，`writeBackSelected` 写回后关闭窗口
+      并由新增的 `restoreFocus`（等窗口真正消失后）恢复焦点；`paste_on_copy` 开启时再发 Ctrl+V，
+      关闭时用户手动 Ctrl+V 也能直接落到目标窗口。新增 `winui.SetForegroundWindow/FocusedWindow`。
+- [x] **40. 任务栏窗口潦漏（文字重叠的真正原因）**：实测发现同一位置堆了 **3 个 GoBoxTaskbar 窗口**。
+      两个原因：① `Stop()` 从模块 goroutine 调 `DestroyWindow`（必须同线程），静默失败；
+      ② `rebuildWidget` 的 stop+start 无互斥，并发时会丢掉旧窗口引用。
+      修法：`WM_CLOSE` 投递到窗口自己线程销毁 + 有界等待；新增 `rebuildMu` 串行化重建；
+      `spawnWidget` 先 `reapStaleWidgets()` 清理残留（含新增 `winui.ChildWindows`）。
+      实测：并发 6 次重建后仍只有 1 个窗口。
+- [x] **41. 任务栏字号与排版**：默认字号 9→**11**（上限放宽到 32），宽度默认 200→240；
+      两行排版按**字体实测高度**分配行高并居中，避免大字号时两行重叠；按**测量宽度**
+      均衡拆分字段（网络速率字段明显更宽），不再简单地按个数二分。
+- [x] **42. 截图标注（飞书式）**：新增矩形/椭圆/箭头/画笔、颜色与粗细选择、撤销（按钮 + Ctrl+Z）。
+      标注存于窗口坐标并按需重放，导出时用新增的 `winui.RenderOverlay` 合成进裁剪图；
+      选区下方浮动工具栏扩展为 8 个按钮，上方新增样式条。
+
+## 真实 Windows 实机反馈（第五轮，2026-09-27）
+
+录屏与滚动截图落地，并修复三处实测缺陷：
+
+- [x] **43. 录屏（GIF）**：`Alt+Shift` 无关，面板动作「录屏 (GIF)」打开编辑器进入框选模式，
+      工具栏为「开始录制 / 取消」；录制中浮现独立置顶控制条（停止并保存 / 丢弃）。
+      实现为 `modules/screenshot/recorder.go`（`frameEncoder`，共享 Plan9 调色板、帧上限 1200）
+      + `record_flow.go`（采样循环）。**格式仅 GIF**：纯 Go 无成熟 H.264 编码器，
+      项目约束零 cgo + 无 ffmpeg，MP4/音频/摄像头/麦克风均无法实现。
+- [x] **44. 滚动截图**：框选后手动滚动或自动滚动（注入滚轮），条带匹配拼接为长图。
+      算法在 `scroll.go`：从上一帧位置**向外辐射**搜索条带（纯色/重复行动内容有多解，
+      全帧扫描会选错位置），容差 4、最大高度 20000、连续 4 帧无新增即判定到底。
+      自动滚动会把光标移到选区中心再 `SendInput` 滚轮（新增 `winui.SetCursorPos/ScrollWheel`），
+      属“控制用户电脑”行为，已在日志与面板提示中说明。
+- [x] **45. 截图/录屏编辑器窗口遮挡与焦点**：
+  - 编辑器窗口本身会盖住选区，故录制/滚动开始前 `parkEditor()` 隐藏它；
+  - 控制条是**另一个窗口**（`WS_EX_TOPMOST|WS_EX_TOOLWINDOW`），与编辑器同线程，
+    `teardown` 里一并销毁（`DestroyWindow` 跨线程会静默失败）；
+  - 编辑器轮询 `captureStatus()` 识别“自然结束”（录屏到帧上限、滚动到底），自动收尾。
+- [x] **46. 非 Windows 降级成对补齐**：`editor_other.go` 的 `openEditor` 签名随模式/hooks 变化，
+      `input_other.go` 新增 `ScrollWheel`/`SetCursorPos` 空实现——否则 linux/darwin 构建会断。
+- [x] **47. 版本号注入失效（影响自动更新）**：`internal/app.Version` 原本是
+      `var Version = versionFromBuildInfo()`，**包初始化器在链接期 `-X` 之后运行**，
+      把注入的 tag 覆盖回内嵌 build info（实测日志显示 `v0.1.0-rc1.0.<日期>+dirty`
+      而非构建时的 `v0.1.0-rc1-8-gd412d3e-dirty`）。
+      修法：`var Version = devVersion` + `init()` 里“仅当仍等于 devVersion 才回退”。
+      实测注入 `PCM_VERSION=v9.9.9-test` 后日志正确显示 `v9.9.9-test`。
+      这是 #7 自动更新的前置条件：比较基准错了会导致误判“有新版本”。
+- [x] **48. 剪贴板面板动作无法自动粘贴**：`Feature.writeBack` 把 `winui.Invalid` 当粘贴目标
+      传给 `sendPaste`，后者校验目标无效直接返回错误 → 「写回最近一条」即使开启
+      `paste_on_copy` 也永远粘贴失败。修法：开启时取 `winui.FocusedWindow()`（写回前捕获）。
+- [x] **49. 任务栏字号偏小、排版拥挤（根因）**：网格的数值域/单位域/标签域/电池图标原本是
+      **固定像素常量**，只在某个字号下对齐；把字号调大后字段还不够宽，文字互相挤压。
+      改为按**字体实测**推导（`measureGrid` → `computeGridMetrics`），字段与行高随字号缩放，
+      默认字号 11→**13**、宽度 200→**230**（配置里写死的旧值仍可通过面板改回）。
+      新增 `grid_windows_test.go` 守护“字段随字号增长 / 不小于内容 / 零测量不塌陷”。
+
 ## P1 — 待验证与收尾
 
 - [ ] **1. 实际跑一次 CI 发布**：推送测试 tag（如 `v0.0.1-rc1`）验证 `.github/workflows/release.yml` 全流程，

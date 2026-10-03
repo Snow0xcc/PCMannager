@@ -278,7 +278,10 @@ func (b *winHotkeyBackend) close() {
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
-		<-b.doneCh // still join, so repeated Stop waits for the same exit
+		// A repeated Stop still joins, but only for a bounded time: doneCh is
+		// closed solely by run(), so if the pump never started (Stop before
+		// Start) an unbounded receive here would hang shutdown forever.
+		b.join()
 		return
 	}
 	b.closed = true
@@ -293,6 +296,15 @@ func (b *winHotkeyBackend) close() {
 		procPostThreadMessageW.Call(uintptr(tid), wmQuit, 0, 0)
 	}
 
+	b.join()
+}
+
+// join waits for the pump thread to exit, bounded by joinTimeout.
+//
+// The bound is load-bearing: doneCh is only ever closed by run(), so when the
+// pump was never started it stays open. Waiting without a timeout would hang
+// Stop — and therefore app shutdown — indefinitely.
+func (b *winHotkeyBackend) join() {
 	select {
 	case <-b.doneCh:
 	case <-time.After(joinTimeout):

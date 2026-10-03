@@ -188,7 +188,9 @@ func TestApplyOptionMaxHistoryPrunes(t *testing.T) {
 }
 
 // TestRecognizesModuleNaming documents the recognition rule used by the
-// cleaner: prefix screenshot_ + all-digit stem + .png/.jpg.
+// cleaner: a known prefix (screenshot_ / longshot_) + all-digit stem +
+// .png/.jpg. 长截图也是本模块写的文件，必须一并纳入 max_history 的清理，
+// 否则长截图跨重启堆积且无人回收。
 func TestRecognizesModuleNaming(t *testing.T) {
 	cases := []struct {
 		name string
@@ -203,6 +205,13 @@ func TestRecognizesModuleNaming(t *testing.T) {
 		{"shot_123.png", false},
 		{"other_screenshot_123.png", false},
 		{"screenshot_123.png.txt", false},
+		// 滚动长截图：同前缀规则，必须被识别为本模块文件
+		{"longshot_1736912345678.png", true},
+		{"longshot_1736912345678.jpg", true},
+		{"longshot_readme.png", false},
+		{"longshot_.png", false},
+		{"longshot_123.gif", false},
+		{"xlongshot_123.png", false},
 	}
 	for _, c := range cases {
 		if got := isModuleScreenshot(c.name); got != c.want {

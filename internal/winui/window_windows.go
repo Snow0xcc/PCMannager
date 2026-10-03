@@ -5,12 +5,16 @@ package winui
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
 )
 
 func platformCapabilities() CapabilitiesInfo {
+	// Fonts are enumerated once and carried with the capabilities blob: the
+	// list cannot change while the process runs, and the panel needs it for
+	// every font picker. Failing enumeration just omits the field.
 	return CapabilitiesInfo{
 		Native:           true,
 		TaskbarEmbedding: true,
@@ -18,6 +22,7 @@ func platformCapabilities() CapabilitiesInfo {
 		Toasts:           true,
 		Elevation:        true,
 		Hotkeys:          true,
+		Fonts:            FontFamilies(),
 	}
 }
 
@@ -91,6 +96,27 @@ func FindSecondaryTaskbars() []HWND {
 	return out
 }
 
+// ChildWindows returns every direct child of parent whose class name starts with
+// the given prefix.
+//
+// It exists so a caller can sweep up stale windows it created earlier: window
+// classes here carry a per-instance suffix (Foo_GoBox_N), so an exact match is
+// impossible, and a leaked window would otherwise sit on top of the new one.
+func ChildWindows(parent HWND, classPrefix string) []HWND {
+	var out []HWND
+	child := Invalid
+	for {
+		next, _, _ := procFindWindowExW.Call(uintptr(parent), uintptr(child), 0, 0)
+		if next == 0 {
+			return out
+		}
+		child = HWND(next)
+		if name := ClassName(child); strings.HasPrefix(name, classPrefix) {
+			out = append(out, child)
+		}
+	}
+}
+
 // ClassName returns a window's class name.
 func ClassName(h HWND) string {
 	buf := make([]uint16, 256)
@@ -143,6 +169,31 @@ func SetParent(child, parent HWND) HWND {
 	return HWND(r)
 }
 
+// SetColorKey makes every pixel of the given colour fully transparent, so the
+// parent's own pixels show through.
+//
+// A GDI child window does not composite: skipping the background fill would
+// leave stale pixels rather than reveal the taskbar, so a colour key is what
+// actually delivers a transparent background. The window must carry
+// WS_EX_LAYERED (supported for child windows on Windows 8+).
+func SetColorKey(h HWND, color uint32) bool {
+	r, _, _ := procSetLayeredWindowAttributes.Call(uintptr(h), uintptr(color), 0, LWA_COLORKEY)
+	return r != 0
+}
+
+// BringToTop moves h to the top of its Z-order among its siblings.
+//
+// On Windows 11 the taskbar hosts a Windows.UI.Composition.DesktopWindowContentBridge
+// child that spans the entire bar and sits above ordinary child windows, so an
+// embedded widget stays hidden unless it is raised above that layer.
+//
+// SWP_NOACTIVATE keeps the click-less widget from stealing focus.
+func BringToTop(h HWND) {
+	_, _, _ = procSetWindowPos.Call(uintptr(h), 0, /* HWND_TOP */
+		0, 0, 0, 0,
+		uintptr(SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE))
+}
+
 // ShowWindow changes a window's visibility.
 func ShowWindow(h HWND, cmd int32) bool {
 	r, _, _ := procShowWindow.Call(uintptr(h), uintptr(cmd))
@@ -188,6 +239,20 @@ func DestroyWindow(h HWND) bool {
 // PostMessage posts a message to a window's queue without blocking.
 func PostMessage(h HWND, msg uint32, wParam, lParam uintptr) {
 	_, _, _ = procPostMessageW.Call(uintptr(h), uintptr(msg), wParam, lParam)
+}
+
+// BeginDragWindow starts a modal move of h, driven by Windows itself.
+//
+// It releases the current mouse capture and hands the window a synthetic
+// title-bar press, so dragging the client area moves the window. This is the
+// standard way to make a borderless (WS_POPUP, no caption) window movable
+// without reimplementing hit-testing and the drag loop by hand.
+//
+// It must be called from the window's own message handler, in response to the
+// button press that should start the drag.
+func BeginDragWindow(h HWND) {
+	procReleaseCapture.Call()
+	SendMessage(h, WM_NCLBUTTONDOWN, HTCAPTION, 0)
 }
 
 // SendMessage sends a message and waits for it to be processed.
@@ -236,6 +301,32 @@ func CursorPos() POINT {
 func ForegroundWindow() HWND {
 	r, _, _ := procGetForegroundWindow.Call()
 	return HWND(r)
+}
+
+// SetForegroundWindow brings h to the foreground.
+//
+// Windows restricts this: the calling process normally cannot steal the
+// foreground unless it owns it, so it can silently fail after another window
+// took focus. Callers treat failure as non-fatal (the clipboard write itself
+// already succeeded) and report it rather than retrying.
+func SetForegroundWindow(h HWND) bool {
+	r, _, _ := procSetForegroundWindow.Call(uintptr(h))
+	return r != 0
+}
+
+// FocusedWindow returns the window that would receive a paste: the focused
+// control of the foreground window, falling back to the foreground window
+// itself (the focus call returns 0 when the foreground window is not the
+// calling thread's).
+func FocusedWindow() HWND {
+	fg := ForegroundWindow()
+	if !fg.Valid() {
+		return fg
+	}
+	if r, _, _ := procGetFocus.Call(); r != 0 {
+		return HWND(r)
+	}
+	return fg
 }
 
 // ProcessID returns the owning process id of a window.

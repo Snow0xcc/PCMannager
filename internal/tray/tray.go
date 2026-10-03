@@ -18,6 +18,12 @@ type Item struct {
 	Disabled bool
 	// Separator renders a divider instead of a clickable entry.
 	Separator bool
+	// Color tints the item's text. Empty means the default (system) color.
+	// Values are symbolic keys mapped to COLORREF by colorKeyToCOLORREF
+	// (e.g. "orange", "black"); an unknown key falls back to the default
+	// text color. Standard Win32 menus cannot color text, so colored items
+	// are rendered via owner-draw on Windows.
+	Color string
 }
 
 // Menu is an ordered list of tray menu items.

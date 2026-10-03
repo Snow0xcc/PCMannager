@@ -18,6 +18,7 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	shcore   = syscall.NewLazyDLL("shcore.dll")
 	dwmapi   = syscall.NewLazyDLL("dwmapi.dll")
+	msimg32  = syscall.NewLazyDLL("msimg32.dll")
 
 	procFindWindowW                = user32.NewProc("FindWindowW")
 	procFindWindowExW              = user32.NewProc("FindWindowExW")
@@ -57,6 +58,7 @@ var (
 	procDestroyMenu                = user32.NewProc("DestroyMenu")
 	procSetForegroundWindow        = user32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
+	procGetFocus                   = user32.NewProc("GetFocus")
 	procGetWindowTextW             = user32.NewProc("GetWindowTextW")
 	procGetClassNameW              = user32.NewProc("GetClassNameW")
 	procGetWindowThreadProcessId   = user32.NewProc("GetWindowThreadProcessId")
@@ -69,9 +71,16 @@ var (
 	procUpdateWindow               = user32.NewProc("UpdateWindow")
 	procFillRect                   = user32.NewProc("FillRect")
 	procDrawTextW                  = user32.NewProc("DrawTextW")
-	procSetBkMode                  = user32.NewProc("SetBkMode")
-	procSetTextColor               = user32.NewProc("SetTextColor")
 	procMessageBoxW                = user32.NewProc("MessageBoxW")
+	procReleaseCapture             = user32.NewProc("ReleaseCapture")
+	procGetWindowDC                = user32.NewProc("GetWindowDC")
+
+	// 剪贴板入口在 user32，GlobalAlloc 系列则在 kernel32。挂错 DLL 不会在启动时
+	// 报错，而是首次调用时 panic。
+	procOpenClipboard    = user32.NewProc("OpenClipboard")
+	procEmptyClipboard   = user32.NewProc("EmptyClipboard")
+	procSetClipboardData = user32.NewProc("SetClipboardData")
+	procCloseClipboard   = user32.NewProc("CloseClipboard")
 
 	procCreateSolidBrush      = gdi32.NewProc("CreateSolidBrush")
 	procCreateFontIndirectW   = gdi32.NewProc("CreateFontIndirectW")
@@ -84,8 +93,18 @@ var (
 	procSetDCBrushColor       = gdi32.NewProc("SetDCBrushColor")
 	procCreateCompatibleDC    = gdi32.NewProc("CreateCompatibleDC")
 	procDeleteDC              = gdi32.NewProc("DeleteDC")
+	// SetBkMode and SetTextColor live in gdi32, not user32. Resolving them
+	// from user32 makes LazyProc.Call panic ("Failed to find ... procedure")
+	// the first time text is drawn, which crashed the taskbar widget at boot.
+	procSetBkMode    = gdi32.NewProc("SetBkMode")
+	procSetTextColor = gdi32.NewProc("SetTextColor")
+	procGetPixel     = gdi32.NewProc("GetPixel")
 
 	procShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
+
+	// AlphaBlend lives in msimg32, not gdi32/user32: resolving it from the
+	// wrong DLL panics on the first call.
+	procAlphaBlend = msimg32.NewProc("AlphaBlend")
 
 	procSetProcessDpiAwareness        = shcore.NewProc("SetProcessDpiAwareness")
 	procSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
@@ -95,6 +114,15 @@ var (
 	procGetModuleHandleW    = kernel32.NewProc("GetModuleHandleW")
 	procGetCurrentProcessId = kernel32.NewProc("GetCurrentProcessId")
 	procGetModuleFileNameW  = kernel32.NewProc("GetModuleFileNameW")
+
+	procGetSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
+
+	procGlobalAlloc  = kernel32.NewProc("GlobalAlloc")
+	procGlobalLock   = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock = kernel32.NewProc("GlobalUnlock")
+	procGlobalFree   = kernel32.NewProc("GlobalFree")
+	// RtlMoveMemory 用于把数据写进 GlobalLock 返回的地址（见 copyToAddress）。
+	procRtlMoveMemory = kernel32.NewProc("RtlMoveMemory")
 )
 
 // Win32 constants used across the package.
@@ -104,6 +132,8 @@ const (
 	SWP_SHOWWINDOW   = 0x0040
 	SWP_HIDEWINDOW   = 0x0080
 	SWP_FRAMECHANGED = 0x0020
+	SWP_NOSIZE       = 0x0001
+	SWP_NOMOVE       = 0x0002
 
 	SW_HIDE   = 0
 	SW_SHOW   = 5
@@ -118,6 +148,13 @@ const (
 	WS_EX_NOACTIVATE = 0x08000000
 	WS_EX_LAYERED    = 0x00080000
 
+	// LWA_COLORKEY makes pixels of one exact colour fully transparent, letting
+	// the parent (the taskbar) show through. This is how a child window gets a
+	// genuinely transparent background: GDI child windows do not composite, so
+	// "not painting" would leave stale pixels rather than reveal the parent.
+	LWA_COLORKEY = 0x00000001
+	LWA_ALPHA    = 0x00000002
+
 	CS_HREDRAW = 0x0002
 	CS_VREDRAW = 0x0001
 	CS_DBLCLKS = 0x0008
@@ -129,14 +166,20 @@ const (
 	WM_ERASEBKGND    = 0x0014
 	WM_SETTINGCHANGE = 0x001A
 	WM_CONTEXTMENU   = 0x007B
+	WM_RBUTTONDOWN   = 0x0204
 	WM_RBUTTONUP     = 0x0205
 	WM_LBUTTONDBLCLK = 0x0203
 	WM_MOUSEMOVE     = 0x0200
 	WM_DISPLAYCHANGE = 0x007E
 	WM_DPICHANGED    = 0x02E0
 	WM_NCDESTROY     = 0x0082
+	WM_NCLBUTTONDOWN = 0x00A1
 	WM_APP           = 0x8000
 	WM_TRAYCALLBACK  = WM_APP + 1
+
+	// HTCAPTION makes DefWindowProc treat the press as a title-bar drag, which
+	// is how a borderless popup gets moved by dragging its client area.
+	HTCAPTION = 2
 
 	MF_STRING       = 0x00000000
 	MF_SEPARATOR    = 0x00000800
@@ -159,6 +202,20 @@ const (
 	NIF_ICON    = 0x00000002
 	NIF_TIP     = 0x00000004
 
+	// CF_HDROP 是 "粘贴一个文件" 的标准剪贴板格式（值为 15），内容是一块以
+	// DROPFILES 开头的 UTF-16 路径列表；聊天客户端据此把粘贴当成发送附件。
+	CF_HDROP = 15
+
+	// CF_UNICODETEXT 是纯文本剪贴板格式（值为 13），内容是一串以 NUL 结尾的
+	// UTF-16 文本。"复制文件路径"这类操作写入它，而不是 CF_HDROP。
+	CF_UNICODETEXT = 13
+
+	// 剪贴板载荷必须用可移动全局内存：SetClipboardData 接管的是一块可被系统
+	// 移动的 HGLOBAL，GMEM_MOVEABLE 是它的硬性要求；GMEM_ZEROINIT 则保证
+	// DROPFILES 头里用不到的字段（如 pt/fNC）是干净的 0，避免写入垃圾坐标。
+	GMEM_MOVEABLE = 0x0002
+	GMEM_ZEROINIT = 0x0040
+
 	DT_LEFT         = 0x00000000
 	DT_RIGHT        = 0x00000002
 	DT_CENTER       = 0x00000001
@@ -167,11 +224,24 @@ const (
 	DT_NOPREFIX     = 0x00000800
 	DT_END_ELLIPSIS = 0x00008000
 
-	FW_NORMAL         = 400
-	DEFAULT_CHARSET   = 1
-	DEFAULT_PITCH     = 0
-	FF_DONTCARE       = 0
-	CLEARTYPE_QUALITY = 5
+	FW_NORMAL       = 400
+	FW_SEMIBOLD     = 600
+	FW_BOLD         = 700
+	DEFAULT_CHARSET = 1
+	DEFAULT_PITCH   = 0
+	FF_DONTCARE     = 0
+
+	// Font quality. CLEARTYPE blends glyph edges against the DC background with
+	// coloured subpixel fringes; on a colour-key window those fringes are blends
+	// rather than the exact key colour, so they survive and leave magenta edges
+	// around every glyph. NONANTIALIASED_QUALITY draws hard-edged glyphs, whose
+	// pixels are either the key (keyed out) or the text colour (kept) — which is
+	// what makes transparent text work.
+	DRAFT_QUALITY       = 1
+	PROOF_QUALITY       = 2
+	NONANTIALIASED_QUAL = 3
+	ANTIALIASED_QUALITY = 4
+	CLEARTYPE_QUALITY   = 5
 
 	MB_OK            = 0x00000000
 	MB_ICONWARNING   = 0x00000030

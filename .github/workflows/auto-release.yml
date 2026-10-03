@@ -1,0 +1,106 @@
+# 自动版本递增 + 打 Tag。
+#
+# 每次推送到 main 时：
+#   1. 找到当前最新的 semver tag（如 v1.2.3），patch 位 +1 得到新 tag；
+#   2. 打 tag 并 push。
+#
+# push tag 会触发 release.yml（监听 v* tag）执行四平台构建与 GitHub Release
+# 发布——本文件只负责“递增版本号”，构建/发布复用 release.yml，避免两处
+# 构建参数漂移。
+#
+# 为什么之前没有 Release/Tag：release.yml 一直是被动等待“有人 push v* tag”，
+# 而从未有任何流程自动打 tag，所以流水线一次都没被触发过。本文件补上的就是
+# 缺失的“自动递增 + 自动打 tag”这一环。
+name: auto-release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # push tag 需要写权限
+
+jobs:
+  bump:
+    name: bump patch version and tag
+    runs-on: ubuntu-latest
+    # 打 tag 会再触发一次 push（refs/tags/v*），只监听 main 的 on.push 不会
+    # 因 tag push 再次进入本 job，故无需额外的并发/去重防护；但为稳妥仍加
+    # 并发取消，避免同一分支上的多次 push 竞态打 tag。
+    concurrency:
+      group: auto-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 必须完整历史才能读到历史 tag
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: compute next patch tag
+        id: versioning
+        run: |
+        		  set -euo pipefail
+        		  git fetch --tags --force
+
+		  # 基准 tag 分两级取：
+		  #   1) 正式的 vX.Y.Z（纯数字三段）——优先；
+		  #   2) 没有正式版时，退回预发布 tag（如 v0.1.0-rc1），取其数字三段
+		  #      作为基准，这样首个自动 tag 是 v0.1.1 而不是倒退成 v0.0.1。
+		  #
+		  # 关键：git tag -l 的 glob 里 [0-9]* 会连 "-rc1" 一起匹配进来，后面
+		  # cut -f3 得到 "0-rc1"，$((PATCH + 1)) 展开成 $((0-rc1 + 1))，在 set -u
+		  # 下报 "rc1: unbound variable" 并让整个 job 失败——这正是本 job 首次
+		  # 运行红掉的原因。故一律用 sed 抽出前导数字三段，并逐段做纯数字校验。
+		  ALL_TAGS="$(git tag -l 'v*' --sort=-v:refname || true)"
+
+		  LATEST_TAG="$(echo "$ALL_TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+		  if [ -z "$LATEST_TAG" ]; then
+		    # 无正式版：取任一 vX.Y.Z<后缀> 的数字三段（sed 只留前导数字）。
+		    LATEST_TAG="$(echo "$ALL_TAGS" |
+		      sed -n 's/^v\([0-9]*\)\.\([0-9]*\)\.\([0-9]*\).*/v\1.\2.\3/p' | head -n 1 || true)"
+		  fi
+
+		  if [ -z "$LATEST_TAG" ]; then
+		    NEW_TAG="v0.0.1"
+		  else
+		    VERSION="${LATEST_TAG#v}"
+		    MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+		    MINOR="$(echo "$VERSION" | cut -d. -f2)"
+		    PATCH="$(echo "$VERSION" | cut -d. -f3)"
+		    # 三重校验：三段都必须是纯数字才敢进算术运算（脏 tag 一律走兜底，
+		    # 宁可版本号保守也不能让流水线挂掉）。
+		    case "$MAJOR" in ''|*[!0-9]*) MAJOR=0 ;; esac
+		    case "$MINOR" in ''|*[!0-9]*) MINOR=0 ;; esac
+		    case "$PATCH" in ''|*[!0-9]*) PATCH=0 ;; esac
+		    NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+		  fi
+
+          # 若该 tag 已存在（罕见：手动打过），跳过，避免覆盖已有发布。
+          if git rev-parse -q --verify "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+            echo "::notice::tag $NEW_TAG 已存在，跳过"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "new_tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "previous tag: ${LATEST_TAG:-none}"
+          echo "new tag: $NEW_TAG"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: create and push tag
+        if: steps.versioning.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.versioning.outputs.new_tag }}"
+          git push origin "${{ steps.versioning.outputs.new_tag }}"
+
+      - name: sync GitHub Wiki
+        if: steps.versioning.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.versioning.outputs.new_tag }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/sync-wiki.sh

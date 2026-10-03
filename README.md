@@ -6,13 +6,25 @@
 
 > 规划代号（PRD 与代码内部曾用的 "GoBox"）与本仓库名 PCMannager 指代同一产品，本文档统一使用 **PCMannager**。
 
+## 文档
+
+| 入口 | 内容 |
+| :--- | :--- |
+| [项目主页](docs/site/index.html)（GitHub Pages） | 下载、功能概览、快捷键速查 |
+| [Wiki](https://github.com/Snow0xcc/PCMannager/wiki) | 快速开始、模块说明、快捷键、常见问题 |
+| [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | 工具链与本地调试 |
+| [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md) | 模块开发契约 |
+| [`AGENTS.md`](AGENTS.md) | 架构约定与硬约束 |
+
+Wiki 内容以 `docs/wiki/*.md` 为单一数据源，由 `scripts/sync-wiki.sh` 在发版时渲染并同步（`{TAG}`/`{REPO}` 占位符在此替换）。修改文档请直接编辑仓库内文件，不要在 Wiki 网页上改——那里的内容会被下次发版覆盖。
+
 ## 功能与状态
 
 | 模块 | ID | 说明 | 默认热键 | 默认开关 |
 | --- | --- | --- | --- | --- |
-| 任务栏状态 | `taskbar` | 任务栏 CPU/内存/网络/磁盘/运行时间小组件（Windows 真实嵌入窗口，其他平台仅采集日志） | `Ctrl+Alt+T` | 开 |
-| 剪贴板历史 | `clipboard` | 文本 + 图片历史、置顶、容量裁剪、保留期清理、Ctrl+V 回写（Windows 提供查看器窗口） | `` Ctrl+` `` | 开 |
-| 截图 | `screenshot` | 全屏抓取 + 框选编辑器，png/jpg 可选，可自动复制到剪贴板 | `F1` | 开 |
+| 任务栏状态 | `taskbar` | 任务栏 CPU/内存/网络/磁盘/运行时长/电量小组件（TrafficMonitor 式锚在通知区左侧，真透明背景），2×2 网格排版字段**随字号实测缩放**，文字颜色随背景明暗自适应（Windows 真实嵌入窗口，其他平台仅采集日志） | `Ctrl+Alt+T` | 开 |
+| 剪贴板历史 | `clipboard` | 文本 + 图片历史、置顶、容量裁剪、保留期清理（Windows 查看器可拖动，选中后恢复焦点并可选自动粘贴） | `` Ctrl+` `` | 开 |
+| 截图 | `screenshot` | 全屏抓取 + 框选编辑器（选区浮动工具栏：矩形/椭圆/箭头/画笔标注、颜色与粗细、撤销、确认/复制/取消），png/jpg 可选，可自动复制到剪贴板；另含 **GIF 录屏**（框选后录制，独立置顶控制条）与**滚动长截图**（手动或自动滚动 + 像素条带拼接，自动滚动会注入滚轮） | `F1` | 开 |
 | 上下文记录 | `selfcontext` | 记录活动窗口标题/进程名（不含截屏），可导出/清空 | `Ctrl+Alt+M` | **关**（隐私 opt-in） |
 | 电脑修复与工具 | `repair` | 声明式工具箱目录（7 大页、约 60 个工具：系统设置/网络排查/清理/运行环境/包管理器…） | — | 开 |
 | 自动更新 | `updater` | 定时检查 GitHub Releases 新版并提醒（SemVer/rc 排序、prerelease 开关）；下载走主机白名单 + sha256，经提权 helper 显式应用 | — | **关** |
@@ -54,10 +66,11 @@ bash scripts/check-emoji.sh     # 前端禁用 emoji 检查
 
 # 测试（用例数以实测为准，文档不手写具体数字）
 grep -rn "^func Test" --include=*_test.go internal/ modules/ | wc -l
-go test -race -count=1 ./internal/... ./modules/...
+go test -count=1 ./internal/... ./modules/...
+# 注：-race 需要 cgo，与项目 CGO_ENABLED=0 约束冲突，本机不可用
 ```
 
-> **Windows 发布必须走 `scripts/build.sh`**：Go 默认按 console 子系统构建，漏掉 `-H windowsgui` 会在启动时弹出黑色控制台窗口。代价是 GUI 子系统下 stdout/stderr 不可见，排障请看数据目录下的 `logs/gobox.log` 或面板的事件日志页。
+> **Windows 发布必须走 `scripts/build.sh`**：Go 默认按 console 子系统构建，漏掉 `-H windowsgui` 会在启动时弹出黑色控制台窗口；漏掉 `-tags production` 则会让 Wails 退回桩实现，进程在创建完 config 后静默退出。代价是 GUI 子系统下 stdout/stderr 不可见，排障请看数据目录下的 `logs/gobox.log`、**程序目录下的 `logs/gobox.log`** 或面板的事件日志页。
 
 四个目标平台 `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64` 均以 `CGO_ENABLED=0` 构建通过。更详细的工具链与本地调试见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
@@ -95,7 +108,7 @@ Windows 专用 UI 放 `_windows.go`（`//go:build windows`），非 Windows 由 
 ## 首选项面板
 
 - **跨平面板（全平台可用）**：`internal/server` 提供 JSON REST + SSE，前端为 `internal/panel/index.html`，仅监听回环地址。
-- **原生窗口（Windows，已接线）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。该包已实现 `API` 绑定层（`State`/`Modules`/`Module`/`PatchModule`…，是 `server.Provider` 的薄适配），**已在 `internal/app` 接线**（`main.go` 调 `runNativeWindow`：Windows 起独立 `LockOSThread` goroutine 跑 `wailsapp.Run`，托盘消息泵留在主线程；非 Windows 为 no-op，自动回退浏览器面板）。
+- **原生窗口（Windows，已接线）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。该包已实现 `API` 绑定层（`State`/`Modules`/`Module`/`PatchModule`…，是 `server.Provider` 的薄适配），**已在 `internal/app` 接线**（`main.go` 调 `runNativeWindow`：Windows 起独立 `LockOSThread` goroutine 跑 `wailsapp.Run`，托盘消息泵留在主线程；非 Windows 为 no-op，自动回退浏览器面板）。**必须带 `-tags production` 构建**（`scripts/build.sh` 已固定），否则 Wails 会退回 `app_default_windows.go` 桩实现、事件转发以无效 context 调 `runtime.EventsEmit` 触发 `log.Fatalf`，进程**在创建完 config 后静默退出**（GUI 子系统无控制台、无日志）。
 
 REST 接口：
 
@@ -130,6 +143,8 @@ REST 接口：
 
 配置文件为数据目录下的 `config.yaml`（首次运行按 `internal/config.Default()` 生成），数据目录解析见 `internal/paths`：Windows `%APPDATA%\GoBox`、Linux `$XDG_CONFIG_HOME/GoBox`，可由 `app.data_dir` 覆盖。调试时可用 `PCMANNAGER_CONFIG` 指向其它目录（也接受配置文件路径，取其父目录）。
 
+日志同时写入**两处**：数据目录 `logs/gobox.log` 与**程序所在目录** `logs/gobox.log`（后者用 `EvalSymlinks` 解析 exe 真实路径）。无控制台的 GUI 构建可就地查看程序目录的日志。
+
 ```yaml
 app:
   autostart: false
@@ -162,11 +177,13 @@ git push origin v1.0.0
 
 ## 已知限制
 
-- **真实 Windows 验收未完成**：托盘启退循环、热键触发、任务栏小组件嵌入、Explorer 重启恢复等，目前只在 Linux 下通过编译与自动化测试验证。
+- **真实 Windows 验收部分完成**：托盘启退循环、热键触发、任务栏小组件嵌入、Wails 原生窗口、截图编辑器、剪贴板历史窗口已在本机 Windows 实跑验证；Explorer 重启恢复等边界场景仍未覆盖。
 - **热键可能被占用**：`F1`、`` Ctrl+` `` 在部分机器已被其它程序占用，当前按设计降级（告警 + 面板/托盘仍可用）；面板尚未提供"可用性检测"与改绑引导。
+- **录屏仅支持 GIF**：纯 Go 无成熟 H.264 编码器，项目约束零 cgo + 无 ffmpeg，因此 MP4、音频、摄像头、麦克风均未实现（GIF 帧缓冲上限 1200 帧，约 2 分钟 @10fps）。
+- **滚动截图自动滚动会注入真实滚轮事件**并把光标移到选区中心，属“控制用户电脑”的行为；纯色背景/重复内容可能因条带多处匹配而拼接失败（会平滑停止并保留已拼部分）。
 - **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存；`modules/taskbar` 包名 `statusbar`、`modules/repair` 包名 `pcrepair` 与目录名不一致。
 - **托盘图标无可配置资源**：`defaultIcon()` 目前回退 shell 通用图标。
-- **测试覆盖缺口**：`internal/winui`、`internal/logx`、`internal/paths`、`internal/wailsapp` 尚无测试文件；`internal/tray` 仅有 Windows build-tag 的编译验证（`tray_windows_test.go`）。
+- **测试覆盖缺口**：`internal/tray`、`internal/winui`、`modules/launcher`、`modules/taskbar` 以及 `modules/screenshot` 的部分用例只有 Windows build tag 的测试文件，在 Linux/macOS runner 上不参与执行（仅由 `GOOS=windows` 编译闸门保证不腐烂）。`internal/wailsapp` 目前没有测试文件。用例总数以实测为准（见上）。
 
 完整待办与优先级见 [`TODO.md`](TODO.md)，变更历史见 [`CHANGELOG.md`](CHANGELOG.md)，模块开发前请读 [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md)。
 
@@ -175,7 +192,7 @@ git push origin v1.0.0
 ```
 main.go / main_{windows,other}.go   程序入口
 internal/{app,core,config,server,panel,wailsapp,winui,tray,sysutil,paths,logx}/
-modules/{taskbar,clipboard,screenshot,selfcontext,repair,updater,preferences}/
+modules/{launcher,taskbar,clipboard,screenshot,selfcontext,repair,preferences,updater}/
 scripts/{build.sh,check-emoji.sh}   构建与 emoji 检查脚本
 docs/                               DEVELOPMENT（开发指南）· MODULE-CONTRACT（模块契约）
                                     · AI-PHASE-A-PROMPT · HANDOVER · PROJECT-AUDIT · competitors

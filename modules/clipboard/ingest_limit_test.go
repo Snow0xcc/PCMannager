@@ -3,7 +3,6 @@ package clipboard
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"log/slog"
 	"strings"
 	"testing"
@@ -54,7 +53,7 @@ func TestIngestRejectsOversizedImage(t *testing.T) {
 		"max_image_bytes": 1024,
 	})
 	big := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 400) // 1600 > 1024
-	f.ingest(f.snapshot(), clip.Data{Format: clip.FmtImage, Bytes: big})
+	f.ingest(f.ctx.Ctx, f.snapshot(), clip.Data{Format: clip.FmtImage, Bytes: big})
 
 	if got := len(f.hist.All()); got != 0 {
 		t.Fatalf("超限图片被入库：历史 %d 条，期望 0", got)
@@ -70,7 +69,7 @@ func TestIngestAcceptsImageWithinLimit(t *testing.T) {
 		"store_images":    true,
 		"max_image_bytes": 8 * 1024 * 1024,
 	})
-	f.ingest(f.snapshot(), clip.Data{Format: clip.FmtImage, Bytes: bytes.Repeat([]byte{'x'}, 4096)})
+	f.ingest(f.ctx.Ctx, f.snapshot(), clip.Data{Format: clip.FmtImage, Bytes: bytes.Repeat([]byte{'x'}, 4096)})
 	if got := len(f.hist.All()); got != 1 {
 		t.Fatalf("上限内图片未入库：历史 %d 条，期望 1", got)
 	}
@@ -84,27 +83,28 @@ func TestIngestUnlimitedWhenCapNonPositive(t *testing.T) {
 			"store_images":    true,
 			"max_image_bytes": cap,
 		})
-		f.ingest(f.snapshot(), clip.Data{Format: clip.FmtImage, Bytes: bytes.Repeat([]byte{'y'}, 4096)})
+		f.ingest(f.ctx.Ctx, f.snapshot(), clip.Data{Format: clip.FmtImage, Bytes: bytes.Repeat([]byte{'y'}, 4096)})
 		if got := len(f.hist.All()); got != 1 {
 			t.Fatalf("cap=%d 应不限制：历史 %d 条，期望 1", cap, got)
 		}
 	}
 }
 
-// TestEchoSuppressionUsesHash（B3 附带）：写回回声抑制改为 32 字节哈希后
-// 行为不变——同负载命中、不同负载放行，且不再持有整份图片副本。
-func TestEchoSuppressionUsesHash(t *testing.T) {
+// TestEchoSuppressionUsesFingerprint（B3 附带）：写回回声抑制只记身份、不留
+// 整份图片副本——同负载命中、不同负载放行。合并后身份用采样指纹
+// （imageFingerprint）而非 32 字节 sha256，语义不变。
+func TestEchoSuppressionUsesFingerprint(t *testing.T) {
 	f, _ := newIngestFeature(t, map[string]any{"store_images": true})
 	img := []byte("fake-png-payload")
 	f.mu.Lock()
 	f.echoAt = time.Now()
-	f.echoImageHash = sha256.Sum256(img)
+	f.echoImage = imageFingerprint(img)
 	f.mu.Unlock()
 
-	if !f.isEcho(clip.FmtImage, img) {
+	if !f.isEchoImage(img) {
 		t.Fatal("同负载应判为回声")
 	}
-	if f.isEcho(clip.FmtImage, []byte("different")) {
+	if f.isEchoImage([]byte("different")) {
 		t.Fatal("不同负载不应判为回声")
 	}
 }

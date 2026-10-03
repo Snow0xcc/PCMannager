@@ -27,6 +27,8 @@ const (
 	optShowMem      = "show_mem"
 	optShowDisk     = "show_disk"
 	optShowUptime   = "show_uptime"
+	optShowBattery  = "show_battery"
+	optAutoFG       = "auto_fg_color"
 	optAlign        = "align"
 	optOffsetX      = "offset_x"
 	optMarginTop    = "margin_top"
@@ -45,35 +47,48 @@ const (
 	optRender       = "render"
 	optAvoidWidgets = "avoid_widgets"
 	optMultiMonitor = "multi_monitor"
+	optWidth        = "width"
 )
 
 // Option defaults, kept in sync with internal/config.Default().
 const (
-	defaultInterval     = 1000
-	defaultShowDown     = true
-	defaultShowUp       = true
-	defaultShowCPU      = false
-	defaultShowMem      = false
-	defaultShowDisk     = false
-	defaultShowUptime   = false
-	defaultAlign        = "right"
-	defaultOffsetX      = 8
-	defaultMarginTop    = 0
-	defaultMarginV      = 0
-	defaultLayout       = "two-line"
-	defaultNumAlign     = "left"
-	defaultSpeedUnit    = "B"
-	defaultUnitSpace    = true
-	defaultFontFamily   = "Microsoft YaHei"
-	defaultFontSize     = 9
+	defaultInterval    = 1000
+	defaultShowDown    = true
+	defaultShowUp      = true
+	defaultShowCPU     = false
+	defaultShowMem     = false
+	defaultShowDisk    = false
+	defaultShowUptime  = false
+	defaultShowBattery = false
+	// defaultAutoFG is ON: the accent-coloured taskbar can be light, and white
+	// text on it is unreadable. Auto contrast picks black or white to match.
+	defaultAutoFG     = true
+	defaultAlign      = "right"
+	defaultOffsetX    = 8
+	defaultMarginTop  = 0
+	defaultMarginV    = 0
+	defaultLayout     = "two-line"
+	defaultNumAlign   = "left"
+	defaultSpeedUnit  = "B"
+	defaultUnitSpace  = true
+	defaultFontFamily = "Microsoft YaHei"
+	// defaultFontSize is a point size. 13 reads clearly at typical taskbar
+	// heights and pairs with the measured layout: the fields now grow with the
+	// font, so a larger readout stays aligned instead of overlapping.
+	defaultFontSize = 13
+	// The size range also moves up: below 8 the readout is not legible, and the
+	// upper bound allows a large, prominent strip.
 	defaultFGColor      = "#FFFFFF"
-	defaultBGMode       = "theme"
+	defaultBGMode       = "transparent"
 	defaultBGColor      = "#1E1E1E"
 	defaultFollowTheme  = true
 	defaultSeparator    = "space"
 	defaultRender       = "gdi"
 	defaultAvoidWidgets = true
 	defaultMultiMonitor = false
+	// defaultWidth is wider than the old 200px because the readout is bigger and
+	// the two columns are now measured rather than squeezed into fixed fields.
+	defaultWidth = 230
 )
 
 // Sampling bounds: below 200ms the sampler costs more CPU than it reports on.
@@ -104,6 +119,11 @@ type Feature struct {
 	win     *widget
 	last    Stats
 	hidden  bool
+
+	// rebuildMu serialises widget rebuilds (see rebuildWidget). It is separate
+	// from mu because a rebuild blocks while the old window is destroyed, and
+	// holding mu across that would stall every State()/option read.
+	rebuildMu sync.Mutex
 }
 
 // NewFeature constructs the taskbar module.
@@ -132,6 +152,8 @@ func (f *Feature) Options() []core.Option {
 		{Key: optShowMem, Label: "显示内存占用", Kind: core.KindBool, Default: defaultShowMem},
 		{Key: optShowDisk, Label: "显示磁盘占用", Kind: core.KindBool, Default: defaultShowDisk},
 		{Key: optShowUptime, Label: "显示运行时长", Kind: core.KindBool, Default: defaultShowUptime},
+		{Key: optShowBattery, Label: "显示电量", Kind: core.KindBool, Default: defaultShowBattery,
+			Help: "仅笔记本电脑等有电池的设备会显示"},
 		{Key: optAlign, Label: "对齐方式", Kind: core.KindSelect, Default: defaultAlign,
 			Choices: []core.Choice{
 				{Value: "left", Label: "左对齐"},
@@ -140,7 +162,10 @@ func (f *Feature) Options() []core.Option {
 			}},
 		{Key: optOffsetX, Label: "水平偏移 (px)", Kind: core.KindInt,
 			Default: defaultOffsetX, Min: -400, Max: 400, Step: 1,
-			Help: "距离任务栏右侧的距离，用于避开其他托盘组件"},
+			Help: "相对通知区域左侧的距离；正值向左移，避免压住时钟"},
+		{Key: optWidth, Label: "宽度 (px)", Kind: core.KindInt,
+			Default: defaultWidth, Min: 60, Max: 600, Step: 10,
+			Help: "小组件宽度；太小会截断读数"},
 		{Key: optMarginTop, Label: "顶部留白 (px)", Kind: core.KindInt,
 			Default: defaultMarginTop, Min: -20, Max: 40, Step: 1},
 		{Key: optMarginV, Label: "垂直留白 (px)", Kind: core.KindInt,
@@ -163,18 +188,24 @@ func (f *Feature) Options() []core.Option {
 				{Value: "fixedKB", Label: "固定 KB/s"},
 			}},
 		{Key: optUnitSpace, Label: "数值与单位间加空格", Kind: core.KindBool, Default: defaultUnitSpace},
-		{Key: optFontFamily, Label: "字体", Kind: core.KindString, Default: defaultFontFamily},
+		{Key: optFontFamily, Label: "字体", Kind: core.KindFont, Default: defaultFontFamily,
+			Help: "选择系统已安装的字体；等宽字体的数字对齐效果最好"},
 		{Key: optFontSize, Label: "字号", Kind: core.KindInt,
-			Default: defaultFontSize, Min: 6, Max: 24, Step: 1},
-		{Key: optFGColor, Label: "文字颜色", Kind: core.KindColor, Default: defaultFGColor},
+			Default: defaultFontSize, Min: 8, Max: 32, Step: 1,
+			Help: "任务栏高度有限，过大可能被截断"},
+		{Key: optFGColor, Label: "文字颜色", Kind: core.KindColor, Default: defaultFGColor,
+			VisibleIf: &core.VisibleIf{Key: optAutoFG, Value: false}},
+		{Key: optAutoFG, Label: "文字颜色自动适配背景", Kind: core.KindBool, Default: defaultAutoFG,
+			Help: "根据背景明暗自动选择黑或白文字，避免浅色主题下看不清"},
 		{Key: optBGMode, Label: "背景模式", Kind: core.KindSelect, Default: defaultBGMode,
 			Choices: []core.Choice{
-				{Value: "theme", Label: "跟随系统主题"},
+				{Value: "transparent", Label: "透明（推荐，融入任务栏）"},
 				{Value: "solid", Label: "纯色"},
-			}},
+			},
+			Help: "透明时任务栏背景直接透出，仅绘制文字"},
 		{Key: optBGColor, Label: "背景颜色", Kind: core.KindColor, Default: defaultBGColor,
 			VisibleIf: &core.VisibleIf{Key: optBGMode, Value: "solid"}},
-		{Key: optFollowTheme, Label: "跟随明暗主题", Kind: core.KindBool, Default: defaultFollowTheme},
+		{Key: optFollowTheme, Label: "跟随明暗主题自动调整文字", Kind: core.KindBool, Default: defaultFollowTheme},
 		{Key: optSeparator, Label: "分隔符", Kind: core.KindSelect, Default: defaultSeparator,
 			Choices: []core.Choice{
 				{Value: "space", Label: "空格"},
@@ -187,7 +218,8 @@ func (f *Feature) Options() []core.Option {
 				{Value: "gdi", Label: "GDI"},
 			},
 			Help: "当前仅内置 GDI 渲染", Restart: true},
-		{Key: optAvoidWidgets, Label: "避开其他任务栏组件", Kind: core.KindBool, Default: defaultAvoidWidgets},
+		{Key: optAvoidWidgets, Label: "自动避开通知区域", Kind: core.KindBool, Default: defaultAvoidWidgets,
+			Help: "始终锚定在时钟左侧，不会压住托盘图标"},
 		{Key: optMultiMonitor, Label: "在副屏任务栏也显示", Kind: core.KindBool, Default: defaultMultiMonitor},
 	}
 }
@@ -293,6 +325,10 @@ func (f *Feature) State() core.State {
 		"uptime":        s.Uptime.Truncate(time.Second).String(),
 		"window":        describeWindow(),
 	}
+	if s.BatteryPresent {
+		state["battery_percent"] = s.BatteryPercent
+		state["battery_charging"] = s.BatteryCharging
+	}
 	return state
 }
 
@@ -352,6 +388,7 @@ func (f *Feature) ApplyOption(key string, value any) error {
 			f.collector.SetInterval(intervalOf(ms))
 		}
 	case optShowDown, optShowUp, optShowCPU, optShowMem, optShowDisk, optShowUptime,
+		optShowBattery, optAutoFG, optWidth,
 		optAlign, optOffsetX, optMarginTop, optMarginV, optNumAlign, optSpeedUnit,
 		optUnitSpace, optFontFamily, optFontSize, optFGColor, optBGMode, optBGColor,
 		optFollowTheme, optSeparator, optAvoidWidgets, optMultiMonitor:
@@ -411,10 +448,20 @@ func (f *Feature) pump() {
 }
 
 // rebuildWidget recreates the native widget so appearance changes apply.
+//
+// Serialised with rebuildMu: rebuild is a stop-then-start sequence, and two
+// settings changes arriving close together (panel edits, or a hotkey-driven
+// toggle) previously ran it concurrently. Each call captured f.win before the
+// other overwrote it, so the loser's window was never stopped — leaving stacked
+// widgets at the same coordinates, which read as jumbled, overlapping text.
 func (f *Feature) rebuildWidget() {
 	if !platformNative() {
 		return
 	}
+
+	f.rebuildMu.Lock()
+	defer f.rebuildMu.Unlock()
+
 	f.mu.Lock()
 	if !f.running || f.hidden {
 		f.mu.Unlock()
@@ -425,13 +472,29 @@ func (f *Feature) rebuildWidget() {
 	f.mu.Unlock()
 
 	if w != nil {
+		// Stop waits for the old window to actually disappear, so the
+		// replacement below cannot end up behind a lingering copy.
 		w.Stop()
 	}
 	f.spawnWidget()
 }
 
+// widgetClassPrefix is the window-class prefix every widget instance registers.
+//
+// Window classes here carry a per-instance suffix (GoBoxTaskbar_GoBox_N), so
+// finders must match on the prefix.
+const widgetClassPrefix = "GoBoxTaskbar"
+
 // spawnWidget creates the native widget on its own goroutine.
+//
+// Before creating the new window it closes any stale widget windows under the
+// taskbar (see reapStaleWidgets, implemented per platform). This is the
+// belt-and-braces guard for the destroy/recreate race: a leftover window from an
+// earlier failure would sit exactly on top of the new one, and the two readouts
+// would render as overlapping text.
 func (f *Feature) spawnWidget() {
+	reapStaleWidgets()
+
 	w := newWidget(f)
 	f.mu.Lock()
 	f.win = w
@@ -464,11 +527,6 @@ func intervalOf(ms int) time.Duration {
 		return maxInterval
 	}
 	return d
-}
-
-// offsetX reads the configured horizontal offset.
-func (f *Feature) offsetX() int {
-	return f.intOpt(optOffsetX, defaultOffsetX)
 }
 
 // intOpt reads an integer option, falling back to def when unset/invalid.
@@ -506,8 +564,10 @@ func (f *Feature) stringOpt(key string, def string) string {
 
 // rate formats a bytes/sec value according to the configured unit.
 //
-// "B" and "b" auto-scale the prefix (KB/MB/GB); "fixedKB" always reports KB/s,
-// which is what TrafficMonitor offers for users comparing against a router.
+// "B" and "b" auto-scale the numeric prefix (K/M/G) and pair it with the
+// conventional "B/s" / "b/s" suffix, so the reading stays a valid unit ("28K
+// B/s"). "fixedKB" always reports KB/s, which is what TrafficMonitor offers for
+// users comparing against a router.
 func (f *Feature) rate(bps float64) string {
 	if bps < 0 {
 		bps = 0
@@ -522,6 +582,31 @@ func (f *Feature) rate(bps float64) string {
 	default:
 		return humanScale(bps) + sep + "B/s"
 	}
+}
+
+// rateParts splits a formatted rate into its numeric part and its unit.
+//
+// The grid layout draws the number in the bold value font and the unit in the
+// smaller aux font, so the two need to be separable; rate() keeps returning the
+// joined form for the single-line layout.
+func (f *Feature) rateParts(bps float64) (value, unit string) {
+	full := f.rate(bps)
+	sep := f.unitSep()
+	if sep == "" {
+		// No space between value and unit: find the first letter and split there.
+		for i, r := range full {
+			if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+				return full[:i], full[i:]
+			}
+		}
+		return full, ""
+	}
+	for i := 0; i+len(sep) <= len(full); i++ {
+		if full[i:i+len(sep)] == sep {
+			return full[:i], full[i+len(sep):]
+		}
+	}
+	return full, ""
 }
 
 // unitSep returns the configured spacing between value and unit.

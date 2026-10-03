@@ -4,17 +4,20 @@ package updater
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
+	"github.com/snow0xcc/pcmannager/internal/paths"
 	"github.com/snow0xcc/pcmannager/internal/sysutil"
 )
 
@@ -92,7 +95,7 @@ func NewFeature() *Feature { return &Feature{} }
 func (f *Feature) ID() string   { return moduleID }
 func (f *Feature) Name() string { return "自动更新" }
 func (f *Feature) Description() string {
-	return "自动检查 GitHub Releases 新版本；可下载暂存更新包，应用更新需在面板显式触发（需管理员确认）"
+	return "静默检查 GitHub Releases 新版本（结果仅写入面板事件流，不打扰）；可下载暂存更新包，应用更新需在面板显式触发（需管理员确认）"
 }
 
 // Options declares the module settings.
@@ -104,8 +107,8 @@ func (f *Feature) Options() []core.Option {
 			Help: "两次自动检查之间的间隔，1-168 小时"},
 		{Key: optIncludePre, Label: "包含预发布版本", Kind: core.KindBool, Default: false,
 			Help: "是否将 rc/预发布 tag 视为可用更新"},
-		{Key: optNotify, Label: "发现新版本时弹系统通知", Kind: core.KindBool, Default: true,
-			Help: "同时写入面板事件日志；关闭后仅面板可见"},
+		{Key: optNotify, Label: "在面板事件流提示发现新版本", Kind: core.KindBool, Default: true,
+			Help: "检查/下载结果始终写入面板右上角事件流；本开关仅控制是否额外记录一条醒目的事件日志"},
 	}
 }
 
@@ -124,6 +127,9 @@ func (f *Feature) Actions() []core.Action {
 // Init stores the context and seeds state. The periodic check loop is NOT
 // started here: app only calls Start for enabled modules, so starting in Init
 // would make the default-off updater poll GitHub anyway (A4).
+//
+// consumeUpdateLog is safe to run here and needs no network: it only reads and
+// removes the local record left behind by the apply helper of a previous run.
 func (f *Feature) Init(ctx *core.Context) error {
 	f.ctx = ctx
 	f.setCurrent(f.currentVersion())
@@ -131,6 +137,7 @@ func (f *Feature) Init(ctx *core.Context) error {
 	if p := filepath.Join(ctx.DataDir, stagedName); fileExists(p) {
 		f.staged = p
 	}
+	f.consumeUpdateLog()
 	return nil
 }
 
@@ -227,15 +234,27 @@ func (f *Feature) client() *http.Client {
 	return newHTTPClient()
 }
 
-// currentVersion reports the running version via core.AppControl.Version()
-// (implemented by *App). The ldflags stamp only exists in internal/app, so
-// reading debug.ReadBuildInfo() here would return "(devel)" → 0.0.0-dev for
-// every release build and make isNewer flag the current tag itself as an
-// update (A3). The AppControl seam exists precisely to hand modules the
-// trusted version baseline without inverting the modules→app dependency.
+// currentVersion reports the running version, preferring the trusted baseline
+// from core.AppControl.Version() (implemented by *App).
+//
+// ctx.App.Version() is internal/app.Version — the tag stamped at link time — and
+// is the only trustworthy comparison baseline for auto-update. Reading
+// debug.ReadBuildInfo() directly used to yield bogus values like
+// "v0.1.0-rc1.0.<date>+dirty" instead of the injected tag, and made isNewer
+// flag the current tag itself as an update (A3). The AppControl seam exists so
+// modules get that baseline without importing internal/app, which would invert
+// the modules→app dependency.
+//
+// The build-info fallback below therefore only fires when App is unavailable
+// (unit tests, or a host that leaves App nil) — it is not on the release path.
 func (f *Feature) currentVersion() string {
 	if f.ctx != nil && f.ctx.App != nil {
-		return f.ctx.App.Version()
+		if v := f.ctx.App.Version(); v != "" {
+			return v
+		}
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
 	}
 	return "0.0.0-dev"
 }
@@ -258,6 +277,9 @@ func (f *Feature) Check(ctx context.Context) (CheckResult, error) {
 
 	rel, err := fetchLatest(ctx, f.client())
 	res := f.recordCheck(rel, err)
+	if f.ctx != nil {
+		f.ctx.Bus.State(moduleID, f.State())
+	}
 	return res, err
 }
 
@@ -288,9 +310,11 @@ func (f *Feature) recordCheck(rel *Release, err error) CheckResult {
 	if f.ctx != nil {
 		switch {
 		case f.last.UpdateAvailable:
-			f.ctx.Bus.Log(moduleID, "info", "发现新版本 "+rel.TagName+"（当前 "+f.last.Current+"）")
+			// 静默更新：不再弹系统通知。optNotify 的语义已反转为“在面板
+			// 事件流记录一条醒目提示”，面板右上角的事件流就是“界面角落的
+			// 无感提示”；关闭后仍写状态，只是不发这条事件。
 			if boolOpt(f.ctx.Config.Get(optNotify, true)) {
-				_ = sysutil.Notify("PCMannager", "发现新版本 "+rel.TagName+"，可到面板更新")
+				f.ctx.Bus.Log(moduleID, "info", "发现新版本 "+rel.TagName+"（当前 "+f.last.Current+"）")
 			}
 		default:
 			f.ctx.Bus.Log(moduleID, "info", "已是最新版本 "+f.last.Current)
@@ -422,6 +446,7 @@ func (f *Feature) Download(ctx context.Context) error {
 	f.last.Staged = dst
 	f.mu.Unlock()
 	f.ctx.Bus.Log(moduleID, "info", fmt.Sprintf("更新包已下载 (%s, %d 字节)，可在面板确认后应用", sum[:12], n))
+	f.ctx.Bus.State(moduleID, f.State())
 	return nil
 }
 
@@ -447,7 +472,8 @@ func (f *Feature) Apply() error {
 }
 
 // applyWindows writes a PowerShell helper that waits for this process to
-// exit, backs up the current exe, swaps in the staged update and restarts.
+// exit, backs up the current exe, swaps in the staged update, restarts with
+// the original command-line arguments and records the result in update.log.
 // The helper is launched elevated via RunElevated (cmd.exe /c powershell
 // -File), which sidesteps nested quoting of an inline -Command.
 func (f *Feature) applyWindows(staged string) error {
@@ -460,21 +486,74 @@ func (f *Feature) applyWindows(staged string) error {
 		exePath = exe
 	}
 	script := filepath.Join(f.ctx.DataDir, "apply_update.ps1")
-	body := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$src = '%s'
-$dst = '%s'
-$p = Get-Process -Id %d -ErrorAction SilentlyContinue
-if ($p) { $p.WaitForExit() }
-Move-Item -Force '%s' '%s'
-Move-Item -Force $src $dst
-Start-Process -FilePath $dst
-`,
-		exePath+".bak", exePath, os.Getpid(), exePath, staged)
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(buildUpdateScript(exePath, staged, argsPayload(os.Args[1:]), f.last.Latest)), 0o755); err != nil {
 		return fmt.Errorf("写入更新脚本失败: %w", err)
 	}
 	f.ctx.Bus.Log(moduleID, "info", "已请求管理员权限执行更新，应用将自动重启")
 	return sysutil.RunElevated(`powershell -NoProfile -ExecutionPolicy Bypass -File "` + script + `"`)
+}
+
+// argsPayload encodes the original process arguments for the update helper.
+//
+// 主程序是单一进程，面板/窗口都是它的窗口而非独立进程，所以重启这一个 exe
+// 就等于“唤醒用户之前在用的程序实体”；但要带着原参数——托盘常驻与测试
+// 运行可能依赖它们。os.Args[0] 已由 Start-Process -FilePath 指定，只透传
+// 下标 1 起的参数。base64 避开了 PowerShell 引号转义问题（其字符集
+// A-Za-z0-9+/= 不含引号，可安全地放入单引号字符串）。
+func argsPayload(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	// \n 作分隔符是安全的：CreateProcess 的命令行是单行字符串，Windows
+	// 进程参数不可能含原始换行，所以分隔符不会与参数内容冲突。
+	return base64.StdEncoding.EncodeToString([]byte(strings.Join(args, "\n")))
+}
+
+// argsFromPayload decodes an argsPayload back into the argument list.
+func argsFromPayload(s string) ([]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	dec, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(dec) == 0 {
+		return nil, nil
+	}
+	return strings.Split(string(dec), "\n"), nil
+}
+
+// buildUpdateScript renders the elevated PowerShell helper. Kept a pure
+// function so the quoting/base64 round-trip is unit-testable.
+func buildUpdateScript(exePath, staged, argsB64, latestTag string) string {
+	tag := latestTag
+	if tag == "" {
+		tag = "unknown"
+	}
+	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$src = '%s'
+$dst = '%s'
+$argsB64 = '%s'
+$p = Get-Process -Id %d -ErrorAction SilentlyContinue
+if ($p) { $p.WaitForExit() }
+Move-Item -Force '%s' '%s'
+Move-Item -Force $src $dst
+# 透传原进程命令行参数，让重启后的进程回到用户更新前正在使用的状态。
+$argList = @()
+if ($argsB64) {
+  $dec = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($argsB64))
+  if ($dec) { $argList = $dec -split "\n" }
+}
+if ($argList.Count -gt 0) { Start-Process -FilePath $dst -ArgumentList $argList }
+else { Start-Process -FilePath $dst }
+# 写一行完成记录：新进程启动时消费它并在面板报“更新完成”。
+$logDir = Join-Path $env:APPDATA 'GoBox\logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$stamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+Add-Content -Path (Join-Path $logDir 'update.log') -Value ($stamp + [char]9 + '%s' + [char]9 + $dst) -Encoding UTF8
+`,
+		staged, exePath, argsB64, os.Getpid(), exePath+".bak", exePath, tag)
 }
 
 // applyUnix swaps via a shell helper, mirroring applyWindows semantics.
@@ -537,6 +616,80 @@ func (f *Feature) OnHotkey() error {
 func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
+}
+
+// updateDoneLog resolves the update.log path the elevated helper writes.
+//
+// helper 固定写默认数据根（%APPDATA%\GoBox\logs\update.log），这里用同一个
+// 解析（paths.DataDir("")），保证“写”与“读”落盘位置一致，即使用户自定义
+// 了 data_dir 也只是留下一条未消费的旧记录，不会误报。
+func updateDoneLog() (string, error) {
+	root, err := paths.DataDir("")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "logs", "update.log"), nil
+}
+
+// consumeUpdateLog reports a completed update from the previous run and
+// consumes the record file.
+//
+// 记录由 applyWindows 的 helper 在替换+重启后写入；新进程 Init 时若发现
+// 带当天时间戳的成功记录，就在面板事件流报“已更新到 vX.Y.Z”，然后删除
+// 文件。非当天的记录视为残留（例如用户改过系统时间），直接删除不提示。
+// 解析失败同样删除：宁可丢一次提示，也不让旧文件每次启动都重复报喜。
+func (f *Feature) consumeUpdateLog() {
+	if f.ctx == nil {
+		return
+	}
+	p, err := updateDoneLog()
+	if err != nil || !fileExists(p) {
+		return
+	}
+	data, readErr := os.ReadFile(p)
+	// 先消费再决定提示，避免提前 return 泄漏旧记录。
+	defer func() {
+		_ = os.Remove(p) // best-effort; a leftover record only risks a stale notice
+	}()
+	if readErr != nil {
+		return
+	}
+	tag := parseUpdateLogEntry(string(data))
+	if tag == "" {
+		return
+	}
+	if tag == "unknown" {
+		f.ctx.Bus.Log(moduleID, "info", "更新已完成，程序已重启到新版本")
+	} else {
+		f.ctx.Bus.Log(moduleID, "info", "更新已完成：已更新到 "+tag)
+	}
+}
+
+// parseUpdateLogEntry validates the last success record in update.log.
+// Format per line: <RFC3339>\t<tag>\t<exe>. It returns the tag only when the
+// record is from today; "" means no valid entry (caller must not report).
+func parseUpdateLogEntry(data string) string {
+	lines := strings.Split(strings.TrimSpace(data), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	line := strings.TrimRight(lines[len(lines)-1], "\r")
+	parts := strings.SplitN(line, "\t", 3)
+	if len(parts) < 3 {
+		return ""
+	}
+	stamp, err := time.Parse(time.RFC3339, parts[0])
+	if err != nil {
+		return ""
+	}
+	// RFC3339 自带偏移，Parse 返回固定偏移 Location；“当天”以本机时区的
+	// 日历日为准，所以先归一到 Local 再比。
+	local := stamp.Local()
+	today := time.Now()
+	if local.Year() != today.Year() || local.YearDay() != today.YearDay() {
+		return ""
+	}
+	return parts[1]
 }
 
 // boolOpt coerces a config option value (any) to bool, defaulting to false.

@@ -29,6 +29,11 @@ const (
 	optRetentionDays = "retention_days"
 	optCaptureMode   = "capture_mode"
 	optPauseOnLock   = "pause_on_lock"
+
+	// 阶段一/二：屏幕捕获 + VLM 语义解析（MineContext 完整形态）。
+	optVLMBaseURL = "vlm_base_url"
+	optVLMModel   = "vlm_model"
+	optVLMKey     = "vlm_api_key"
 )
 
 // Option defaults (mirrors internal/config.Default()).
@@ -45,6 +50,9 @@ const (
 	modeTitle = "title"
 	// modePrimary records the active window title plus the owning process.
 	modePrimary = "primary"
+	// modeScreen 周期性截屏并交给 VLM 生成一句话语义描述（隐私最重，
+	// 因此默认关闭 + 仅在用户显式选择该模式时才请求屏幕内容）。
+	modeScreen = "screen"
 )
 
 // Sampling bounds: the configured interval is clamped so a mistyped value
@@ -98,6 +106,9 @@ type Entry struct {
 	Title     string    `json:"title"`
 	Process   string    `json:"process,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
+	// Summary 是 modeScreen 下 VLM 生成的画面描述（阶段二产物），
+	// 其余模式为空。截图本体不落盘也不入库（阶段二的向量库留给后续）。
+	Summary string `json:"summary,omitempty"`
 }
 
 // NewFeature constructs the selfcontext module.
@@ -131,8 +142,18 @@ func (f *Feature) Options() []core.Option {
 			Choices: []core.Choice{
 				{Value: modePrimary, Label: "窗口 + 进程名"},
 				{Value: modeTitle, Label: "仅窗口标题"},
+				{Value: modeScreen, Label: "屏幕画面 + AI 描述（需配置 VLM）"},
 			},
-			Help: "采样记录的详细程度；从不采集屏幕图像"},
+			Help: "屏幕模式会周期性截屏并发给 VLM 解析，隐私敏感，请谨慎开启"},
+		{Key: optVLMBaseURL, Label: "VLM 服务地址", Kind: core.KindString, Default: "",
+			VisibleIf: &core.VisibleIf{Key: optCaptureMode, Value: modeScreen},
+			Help:      "OpenAI 兼容端点，如 http://127.0.0.1:1234/v1（LM Studio）"},
+		{Key: optVLMModel, Label: "VLM 模型名", Kind: core.KindString, Default: "",
+			VisibleIf: &core.VisibleIf{Key: optCaptureMode, Value: modeScreen},
+			Help:      "视觉模型，如 qwen2-vl-7b-instruct / gpt-4o-mini"},
+		{Key: optVLMKey, Label: "VLM API Key", Kind: core.KindString, Default: "",
+			VisibleIf: &core.VisibleIf{Key: optCaptureMode, Value: modeScreen},
+			Help:      "本地服务可留空；云端服务必填"},
 		{Key: optPauseOnLock, Label: "锁屏时暂停", Kind: core.KindBool,
 			Default: defaultPauseOnLock,
 			Help:    "会话锁定时停止记录，避免采集锁屏内容"},
@@ -373,11 +394,13 @@ func (f *Feature) record() {
 		return
 	}
 	f.last = title
-	if f.captureMode() == modeTitle {
+	mode := f.captureMode()
+	if mode == modeTitle {
 		// "title" mode records nothing but the window caption.
 		process = ""
 	}
-	f.entries = append(f.entries, Entry{Title: title, Process: process, Timestamp: time.Now()})
+	e := Entry{Title: title, Process: process, Timestamp: time.Now()}
+	f.entries = append(f.entries, e)
 	if len(f.entries) > maxEntries {
 		f.entries = append(f.entries[:0], f.entries[len(f.entries)-maxEntries:]...)
 	}
@@ -387,6 +410,15 @@ func (f *Feature) record() {
 	f.pruneLocked()
 	f.saveLocked()
 	f.mu.Unlock()
+
+	// 阶段一/二：screen 模式在同一 tick 里追加一次截图 + VLM 解析。
+	// 放在锁外（网络调用最长 60s，不能阻塞采样循环与 State 查询），
+	// 解析完成后由 recordSummary 把描述补写到对应条目上。
+	// 注：prune 不用在这里再调一次——上面的 pruneLocked 已在同一临界区里
+	// 裁剪过环形缓冲，重复调用既多余又会在锁外二次改 entries。
+	if mode == modeScreen {
+		go f.recordSummary(title)
+	}
 }
 
 // setPaused records whether sampling is currently suspended.

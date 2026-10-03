@@ -27,23 +27,27 @@ const (
 var (
 	pasteUser32    = syscall.NewLazyDLL("user32.dll")
 	procKeybdEvent = pasteUser32.NewProc("keybd_event")
-	procSetFG      = pasteUser32.NewProc("SetForegroundWindow")
 	procSleep      = syscall.NewLazyDLL("kernel32.dll").NewProc("Sleep")
 )
 
-// sendPaste synthesises Ctrl+V into the currently focused window.
+// sendPaste synthesises Ctrl+V into hwnd.
+//
+// hwnd is the window the user was working in BEFORE the history window opened.
+// Passing it explicitly matters: the history viewer itself holds the foreground
+// while it is on screen, so reading the current foreground at paste time would
+// target the viewer (which is about to close) instead of the user's editor.
 //
 // This is best-effort: the target must accept synthetic input, which elevated
 // or otherwise secured windows may refuse. A failure is returned so the caller
 // can log a warning without losing the write-back itself.
-func sendPaste() error {
-	hwnd := winui.ForegroundWindow()
-	if !hwnd.Valid() {
-		return fmt.Errorf("sendPaste: 没有前台窗口")
+func sendPaste(hwnd winui.HWND) error {
+	if !hwnd.Valid() || !winui.IsWindow(hwnd) {
+		return fmt.Errorf("sendPaste: 目标窗口不可用")
 	}
-	if r, _, _ := procSetFG.Call(uintptr(hwnd)); r == 0 {
-		return fmt.Errorf("sendPaste: SetForegroundWindow 失败")
-	}
+	// Restore focus first. Windows may refuse this when another process owns
+	// the foreground; that is reported rather than retried (the clipboard write
+	// has already succeeded, so the user can still paste manually).
+	winui.SetForegroundWindow(hwnd)
 	// Activation is asynchronous; give it a moment so the keystrokes land in
 	// the window the user was actually working in.
 	sleep(pasteKeyDelayMS)
