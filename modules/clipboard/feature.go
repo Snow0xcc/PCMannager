@@ -23,9 +23,6 @@ import (
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
-// Action id for writing the newest entry back (declared by Actions()).
-const actionWriteLast = "write_last"
-
 // Timings.
 const (
 	// echoWindow is how long a write-back is ignored by the watcher, so the
@@ -113,6 +110,12 @@ func (f *Feature) Actions() []core.Action {
 			Description: "显示最近复制的内容，可写回任意一条"},
 		{ID: actionWriteLast, Label: "写回最近一条", Kind: core.ActionNormal,
 			Description: "把最新一条历史写回系统剪贴板"},
+		{ID: actionWriteEntry, Label: "写回指定条目", Kind: core.ActionNormal, Group: groupHistory,
+			Description: "按 ID 把一条历史写回系统剪贴板（条目 ID 见下方历史记录列表）",
+			Params:      []core.Param{{Key: paramID, Label: "条目 ID", Required: true}}},
+		{ID: actionDeleteEntry, Label: "删除历史条目", Kind: core.ActionDanger, Group: groupHistory, Confirm: true,
+			Description: "按 ID 删除一条历史（图片条目会连同缓存文件一起删除）",
+			Params:      []core.Param{{Key: paramID, Label: "条目 ID", Required: true}}},
 		{ID: actionClear, Label: "清空剪贴板历史", Kind: core.ActionDanger, Confirm: true,
 			Description: "删除全部未固定的条目"},
 	}
@@ -206,17 +209,20 @@ func (f *Feature) State() core.State {
 	entries := f.hist.All()
 	last, lastKind := "", string(KindText)
 	if n := len(entries); n > 0 {
-		last = summary(entrySummary(entries[n-1]), maxPreview)
+		last = entrySummary(entries[n-1])
 		lastKind = string(entries[n-1].Kind)
 	}
 	f.mu.Lock()
 	running := f.running
 	f.mu.Unlock()
 	return core.State{
-		"running":         running,
-		"count":           len(entries),
-		"last":            last,
-		"last_kind":       lastKind,
+		"running":   running,
+		"count":     len(entries),
+		"last":      last,
+		"last_kind": lastKind,
+		// C2-1：最近条目视图（有界、只含元数据），供面板浏览/写回/删除；
+		// 非 Windows 平台没有原生查看器窗口，这是唯一的历史入口。
+		"entries":         panelEntryViews(entries),
 		"max_items":       cfg.MaxItems,
 		"store_images":    cfg.StoreImages,
 		"paste_on_copy":   cfg.PasteOnCopy,
@@ -281,6 +287,10 @@ func (f *Feature) RunAction(id string, params map[string]string) error {
 			return errors.New("clipboard: 暂无历史条目")
 		}
 		return f.writeBack(entries[len(entries)-1])
+	case actionWriteEntry:
+		return f.writeEntryFromParams(params)
+	case actionDeleteEntry:
+		return f.deleteEntryFromParams(params)
 	case actionClear:
 		f.hist.Clear()
 		f.ctx.Logger.Info("已清空剪贴板历史", "module", moduleID)
@@ -551,15 +561,18 @@ func imageFingerprint(buf []byte) string {
 	return b.String()
 }
 
-// entrySummary renders one entry for the panel's "last" preview.
+// entrySummary renders one entry as a single-line excerpt for the panel: the
+// "last" state field and each row of the entries list share this rendering, so
+// the two views can never drift apart. Excerpts are capped at maxPreview
+// characters regardless of how large the original payload was.
 func entrySummary(e Entry) string {
 	switch e.Kind {
 	case KindImage:
-		return fmt.Sprintf("[图片 %d KB]", e.Size/1024)
+		return fmt.Sprintf("[图片 %.1f KB]", float64(e.Size)/1024)
 	case KindFile:
-		return "[文件] " + e.Text
+		return "[文件] " + singleLine(e.Text)
 	}
-	return e.Text
+	return summary(e.Text, maxPreview)
 }
 
 // cacheDir returns the directory holding image cache files (the module data

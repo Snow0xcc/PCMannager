@@ -193,6 +193,21 @@
   .group-head:focus-visible { border-radius: 4px; box-shadow: 0 0 0 2px var(--accent); }
   .group-name { font-size: 13px; font-weight: 600; flex: 1; }
   .group-count { flex: none; }
+
+  /* ---- 剪贴板历史列表（clipboard 模块页，C2-1） ---- */
+  .clip-rows { display: flex; flex-direction: column; gap: 6px; }
+  .clip-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  }
+  .clip-row .clip-kind { color: var(--muted); flex: none; display: inline-flex; }
+  .clip-row .clip-preview {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 13px;
+  }
+  .clip-row .clip-time { color: var(--muted); font-size: 11px; flex: none; }
+  .clip-row button.btn { padding: 3px 9px; font-size: 12px; }
+  .clip-empty { color: var(--muted); font-size: 12px; padding: 10px 2px; }
 </style>
 </head>
 <body>
@@ -256,6 +271,14 @@ const ICONS = {
   open: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/>',
   // 磁盘：保存
   save: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3"/><path d="M8 14h8"/>',
+  // 剪贴板：写回指定历史条目
+  paste: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4a3 3 0 0 1 6 0"/><path d="M9 11h6"/><path d="M9 15h6"/>',
+  // 垃圾桶：删除历史条目
+  trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 14h10l1-14"/>',
+  // 画框山景：图片条目
+  image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M5 17l4.5-4.5 3 3L17 11l4 4"/>',
+  // 折角纸张：文件条目
+  file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
 };
 
 // icon returns an inline <svg> markup string; unknown names fall back to a dot.
@@ -878,6 +901,10 @@ function renderModulePage(root, m) {
     drawActions();
   }
 
+  // ---- 剪贴板历史列表（C2-1）：非 Windows 平台没有原生查看器窗口，
+  // 这里的列表是唯一可浏览/写回/删除历史的入口；Windows 上与原生窗口互补。 ----
+  if (m.id === "clipboard") card.appendChild(renderClipboardHistoryCard(m));
+
   const ui = el('<div class="row"><label>模块界面</label><button class="btn" id="m-ui">' + icon("open") + '打开窗口</button></div>');
   ui.querySelector("#m-ui").onclick = async () => {
     try { await transport.call("ui", m.id); }
@@ -905,6 +932,7 @@ const STATE_LABELS = {
   max_items: "最大条目", store_images: "保存图片", paste_on_copy: "复制后粘贴",
   retention_days: "保留天数", capture_mode: "采集模式", pause_on_lock: "锁屏时暂停",
   source: "修复来源", options: "已保存选项",
+  max_image_bytes: "单图上限（字节）", cache_dir: "缓存目录", cache_bytes: "缓存占用（字节）",
 };
 
 // formatScalar renders one scalar state value in a human readable form.
@@ -936,7 +964,9 @@ function renderStateValue(v) {
 // renderStateCard replaces the old raw JSON dump with a "键：值" list plus an
 // opt-in raw view (collapsed by default) for troubleshooting.
 function renderStateCard(m) {
-  const keys = Object.keys(m.state);
+  // clipboard 的 entries 由模块页的历史列表卡片渲染，运行状态里跳过，
+  // 避免同一份数据在页面上出现两遍。
+  const keys = Object.keys(m.state).filter(k => !(m.id === "clipboard" && k === "entries"));
   const st = el('<div class="card"><h2>运行状态</h2>' +
     '<div class="desc">模块自报的运行时信息。</div><div class="sub-list"></div></div>');
   const list = st.querySelector(".sub-list");
@@ -956,6 +986,111 @@ function renderStateCard(m) {
   raw.appendChild(det);
   list.appendChild(raw);
   return st;
+}
+
+// clipKindIcon maps an entry kind from the backend to an icon name;
+// unknown kinds fall back to the text-lines glyph.
+function clipKindIcon(kind) {
+  if (kind === "image") return "image";
+  if (kind === "file") return "file";
+  return "log";
+}
+
+// clipTime renders the backend's RFC3339 timestamp for the list: today shows
+// the time only, older entries get a date prefix.
+function clipTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const hm = d.toLocaleTimeString([], { hour12: false });
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? hm : d.toLocaleDateString() + " " + hm;
+}
+
+// renderClipboardHistoryCard renders the clipboard module's history section.
+//
+// Data comes from m.state.entries (newest first, metadata-only previews,
+// bounded by the backend) and each row offers 「写回」/「删除」 via
+// transport.call("action", ...), which transparently covers both the HTTP and
+// the Wails transport. After a successful operation the module is reloaded so
+// the list reflects the new state. The backend caps previews at 120 chars,
+// but everything user-copied is still inserted via textContent/esc() — it is
+// arbitrary clipboard content, never trusted markup.
+function renderClipboardHistoryCard(m) {
+  const st = m.state || {};
+  const entries = Array.isArray(st.entries) ? st.entries : [];
+  const count = typeof st.count === "number" ? st.count : entries.length;
+  const card = el('<div class="card sub"><h2>历史记录</h2>' +
+    '<div class="desc">共 ' + esc(count) + ' 条，显示最近 ' + esc(entries.length) +
+    ' 条（最新在最上）。写回后在目标窗口按 Ctrl+V 粘贴；文件条目仅 Windows 支持写回。</div>' +
+    '<div class="clip-rows"></div></div>');
+  const rows = card.querySelector(".clip-rows");
+
+  if (!entries.length) {
+    rows.appendChild(el('<div class="clip-empty">暂无历史记录：复制文本、图片或文件后会自动出现在这里。</div>'));
+    return card;
+  }
+
+  entries.forEach(e => {
+    if (!e || typeof e.id !== "number") return; // 契约之外的形态直接跳过
+    const row = el('<div class="clip-row">' +
+      '<span class="clip-kind" title="' + esc(e.kind || "") + '">' + icon(clipKindIcon(e.kind)) + '</span>' +
+      '<span class="clip-preview"></span>' +
+      '<span class="clip-time">' + esc(clipTime(e.time)) + '</span>' +
+      '</div>');
+    // 预览是用户复制的内容：用 textContent 插入，绝不走 innerHTML。
+    row.querySelector(".clip-preview").textContent = e.preview || "";
+
+    const writeBtn = el('<button class="btn" title="把该条写回系统剪贴板">' + icon("paste") + '写回</button>');
+    writeBtn.onclick = async () => {
+      writeBtn.disabled = true;
+      try {
+        await transport.call("action", m.id, "write_entry", { id: String(e.id) });
+        toast("已写回：" + (e.preview || ("条目 " + e.id)));
+        await reload();
+      } catch (err) {
+        toast(err.message, true);
+        writeBtn.disabled = false;
+      }
+    };
+    row.appendChild(writeBtn);
+
+    const delBtn = el('<button class="btn danger" title="从历史中删除该条（图片条目连同缓存文件）">' + icon("trash") + '删除</button>');
+    // 与 runAction 的就地铁确认一致（ARM_TIMEOUT 后自动复位；dataset.label
+    // 供 disarmAll 恢复原文案）：第一次点击进入“确认删除”态，第二次才执行。
+    delBtn.onclick = async () => {
+      if (delBtn.dataset.armed !== "1") {
+        delBtn.dataset.armed = "1";
+        delBtn.dataset.label = delBtn.innerHTML;
+        delBtn.classList.add("armed");
+        delBtn.innerHTML = icon("warn") + "确认删除";
+        setTimeout(() => {
+          if (delBtn.dataset.armed === "1") {
+            delBtn.dataset.armed = "0";
+            delBtn.classList.remove("armed");
+            delBtn.innerHTML = delBtn.dataset.label || delBtn.innerHTML;
+          }
+        }, ARM_TIMEOUT);
+        return;
+      }
+      delBtn.disabled = true;
+      try {
+        await transport.call("action", m.id, "delete_entry", { id: String(e.id) });
+        toast("已删除该条目");
+        await reload();
+      } catch (err) {
+        toast(err.message, true);
+        delBtn.disabled = false;
+      }
+    };
+    row.appendChild(delBtn);
+
+    rows.appendChild(row);
+  });
+
+  return card;
 }
 
 // ARM_TIMEOUT is how long a danger button stays in its "确认执行？" state.
