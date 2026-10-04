@@ -201,6 +201,12 @@ Windows 专属代码在 CI 里从未被编译过。建议**先止损（阶段 A�
 
 ### C2. 面板缺失的关键能力
 
+> **状态（2026-10-04）**：第 1/2/3/4 项均已完成。第 3 项（需重启标记）经核实**代码早已接线**
+> ——`internal/app/provider.go:139` 以 `restartRequiredKeys` 暴露 `restart_required`
+> DTO，`index.html:609` 消费并提示"重启应用后生效"，`server_test.go:284` 有契约测试；
+> 机制说明：这三项是应用级设置而非模块 option，故用应用级等价物（DTO 列表）而非
+> `core.Option.Restart`。第 5 项（C2-5）进行中。
+
 按用户价值排序：
 
 1. **剪贴板历史浏览**（最大缺口）：`State()` 只暴露 `count/last/last_kind`
