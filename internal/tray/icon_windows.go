@@ -72,10 +72,10 @@ func iconFromShell(string) uintptr {
 //
 // The cached handle is deliberately NOT DestroyIcon'd in Destroy(): it is a
 // single handle held for the process lifetime (the tray is a singleton), and
-// Destroy() runs while the shell may still be drawing it. Freeing it would
-// add a teardown ordering hazard for no measurable gain. Same policy as the
-// package-level brandIcon, which is shared across winTray instances and
-// therefore cannot be owned by any one of them.
+// Destroy() runs after Hide()'s NIM_DELETE, so the shell no longer holds it —
+// freeing would still add a teardown ordering hazard for no measurable gain.
+// Same policy as the package-level brandIcon, which is shared across winTray
+// instances and therefore cannot be owned by any one of them.
 func (t *winTray) iconHandle() uintptr {
 	t.iconOnce.Do(func() {
 		h, src := resolveIcon(t.iconPath,

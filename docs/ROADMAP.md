@@ -206,23 +206,29 @@ Windows 专属代码在 CI 里从未被编译过。建议**先止损（阶段 A�
 ### C2. 面板缺失的关键能力
 
 > **状态（2026-10-04）**：**5 项均已完成**。第 3 项（需重启标记）经核实**代码早已接线**
-> ——`internal/app/provider.go:139` 以 `restartRequiredKeys` 暴露 `restart_required`
-> DTO，`index.html:609` 消费并提示"重启应用后生效"，`server_test.go:284` 有契约测试；
+> ——`internal/app/provider.go:142` 以 `restartRequiredKeys` 暴露 `restart_required`
+> DTO，`index.html:613` 消费并提示"重启应用后生效"，`server_test.go:348` 有契约测试；
 > 机制说明：这三项是应用级设置而非模块 option，故用应用级等价物（DTO 列表）而非
 > `core.Option.Restart`。第 5 项（C2-5）已于 `caa368a` 落地（截图历史 + 上下文记录
 > 条目列表面板化，三模块 `State()` 暴露 entries + REST 透传 + 面板页）。
 
-按用户价值排序：
+按用户价值排序（**下列缺口描述是立项时的原始问题**，供追溯；括号内为落地位置）：
 
-1. **剪贴板历史浏览**（最大缺口）：`State()` 只暴露 `count/last/last_kind`
-   （`clipboard/feature.go:189`），**不返回条目列表**，也没有对应 REST 端点。
-   非 Windows 用户因此**完全无法查看或写回历史**（`viewer_other.go:9` 的注释与事实不符）。
-2. **热键冲突可视化**：`core.HotkeyManager.Conflicts()`（`core/hotkey.go:323`）已实现，
-   但**只被 `app.go:412` 拿去打日志**，面板看不到 → **TODO #21 无法关闭**。
-   需要 Provider 暴露冲突列表。
-3. **需重启标记**：`server_port`/`data_dir`/`log_level` 保存后无提示（见 A7）。
-4. **日志页**：无过滤/清空/导出；`theme` 开关（`index.html:450`）**无任何消费者**，是假开关。
-5. **截图历史 / selfcontext 条目列表**：目前只能开原生窗口查看。
+1. **剪贴板历史浏览**（原最大缺口）：立项时 `State()` 只暴露 `count/last/last_kind`、
+   不返回条目，非 Windows 用户无法查看或写回历史 —— **已修**：`State()` 现返回
+   `entries: panelEntryViews(...)`（`clipboard/feature.go:225`）+ 面板条目列表页。
+2. **热键冲突可视化** —— **已修**：`panelProvider.Conflicts()`（`app/provider.go:196`）
+   经 `/api/state` 顶层 `conflicts` 键透出（`server/server.go:292`），面板
+   `index.html:629` 渲染冲突行。
+   注意这**不关闭 TODO #21**：#21 的待办是热键**可用性检测 + 改绑引导**，
+   与冲突可视化是两件事。
+3. **需重启标记**：`server_port`/`data_dir`/`log_level`（见 A7）—— **已修**：
+   `restartRequiredKeys` 暴露 `restart_required` DTO，面板保存后提示"重启应用后生效"。
+4. **日志页**：无过滤/清空/导出，`theme` 开关无消费者 —— **已修**：日志页有搜索过滤
+   （`index.html:1421`）与 `#log-export` 导出 .log（`:1446`）；`theme` 由 `applyTheme()`
+   消费（`:451`/`:611`），非假开关。
+5. **截图历史 / selfcontext 条目列表**：立项时只能开原生窗口查看 —— **已修**
+   （`caa368a`）：两模块 `State()` 暴露 entries + REST 透传 + 面板页。
 
 ### C3. 功能持久化缺陷
 
@@ -363,9 +369,10 @@ C2-1/C2-2/C2-4、C3、C4、D1、D2、F 均已完成（B5 属外部硬件依赖�
   `screenshot` 编辑器非 Windows、`repair` 非 Windows）存在「宣称有、实际无」的问题，
   加第 7 个只会放大信任损耗。
 - 不动 `GoBox` → `PCMannager` 代码改名（破坏配置路径，需迁移方案）。
-- 不重构 `App` god-struct（阶段 E）。C2-5 与本轮 TODO #9/#11/#12/#13 均已完成，
-  前置条件已解除；仍建议在 Windows 实机验收（B5）之后再动——功能补齐期重构
-  会放大回归面。
+- 不重构 `App` god-struct（阶段 E）。本轮交付均已落地——#9 实现（`- [x]`）、
+  #11 迁移设计稿、#12/#13 对账结论（TODO 里 #11/#12/#13 仍为 `- [ ]`：#11 的代码
+  改名执行待排期，#12/#13 的复选框留待维护者按对账结论关闭）——前置条件已解除；
+  仍建议在 Windows 实机验收（B5）之后再动——功能补齐期重构会放大回归面。
 
 ---
 

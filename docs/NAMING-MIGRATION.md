@@ -16,11 +16,11 @@
 | 1 | `internal/paths/paths.go:12` | `AppName = "GoBox"` | **数据目录名**：Windows `%APPDATA%\GoBox`、Linux `$XDG_CONFIG_HOME/GoBox`；也是 `os.UserConfigDir` 失败时的 `os.TempDir()/GoBox` 兜底 | **最高**——直接决定配置/历史/日志的落盘位置 |
 | 2 | `internal/paths/paths.go:15` | `LogFileName = "gobox.log"` | 数据目录与程序目录两处日志文件名 | 高——改名后旧轮转备份成孤儿，用户按文档找不到日志 |
 | 3 | `internal/winui/window_windows.go:454` | `fmt.Sprintf("%s_GoBox_%d", className, nextClassID())` | **所有窗口类名的实例后缀**（`Foo_GoBox_N`） | 高——`ChildWindows(parent, prefix)` 靠前缀清扫陈旧窗口（见 #4） |
-| 4 | `modules/taskbar/feature.go:468` | `widgetClassPrefix = "GoBoxTaskbar"` | `platform_windows.go:51,61` 用它清扫上一轮遗留的任务栏小组件窗口 | 高——改名后新版本扫不到**旧版本**进程留下的窗口，AGENTS.md 记载的"文字重叠堆叠 3 个窗口"故障会复发 |
+| 4 | `modules/taskbar/feature.go:468` | `widgetClassPrefix = "GoBoxTaskbar"` | `platform_windows.go:51,61` 用它清扫上一轮遗留的任务栏小组件窗口（与 #8 的 `GoBoxTaskbar` 是**同一字符串的两种用途**，改名须同批改） | 高——改名后新版本扫不到**旧版本**进程留下的窗口，AGENTS.md 记载的"文字重叠堆叠 3 个窗口"故障会复发 |
 | 5 | `internal/tray/tray_windows.go:170` | `"GoBoxTray"` | 托盘隐藏窗口类名 | 中——跨版本共存时无法按类名识别旧托盘窗口 |
 | 6 | `modules/updater/feature.go:551` | PS helper 内 `$env:APPDATA 'GoBox\logs'` | 更新完成记录 `update.log` 的**硬编码**写入路径 | 中——**与 #1 是双端耦合**：读取端 `updateDoneLog()` 走 `paths.DataDir("")`，改 #1 而漏改此处 → 写读路径分叉，更新完成永远不被消费 |
 | 7 | `modules/updater/proxy_test.go:91` | `"C:\\Program Files\\GoBox\\config.yaml"` | 测试夹具（仅作为含空格路径样本） | 低——夹具，语义无关 |
-| 8 | 其余窗口类名（11 个，`GoBoxTray` 已在 #5 单列故不重复计） | `GoBoxClipboard`、`GoBoxLauncher`、`GoBoxSuperPanel`、`GoBoxCaptureCtrl`、`GoBoxScreenshot`、`GoBoxPin`、`GoBoxContext`、`GoBoxTaskbar`、`GoBoxInputDialog`、`GoBoxTrayTest` | 各窗口的 `RegisterClassW` 类名（含测试窗口类） | 中——同 #5，跨版本共存/查找 |
+| 8 | 全部窗口类名 11 个（含 #5 单列的 `GoBoxTray`，此处列其余 10 个） | `GoBoxClipboard`、`GoBoxLauncher`、`GoBoxSuperPanel`、`GoBoxCaptureCtrl`、`GoBoxScreenshot`、`GoBoxPin`、`GoBoxContext`、`GoBoxTaskbar`、`GoBoxInputDialog`、`GoBoxTrayTest` | 各窗口的 `RegisterClassW` 类名（含测试窗口类） | 中——同 #5，跨版本共存/查找 |
 | 9 | `internal/tray/tray_windows.go:391`、`modules/taskbar/widget_windows.go:466` | `tip = "GoBox"`、`parts = []string{"GoBox"}` | 托盘 tooltip、任务栏小组件文字回显 | 低——纯显示文本 |
 
 **已无耦合**：单实例互斥量是 `Local\pcmannager`（`main.go:42`），不是 GoBox。
