@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 为 `$ARGUMENTS` 新建功能模块。全程以 `AGENTS.md` 的"关键开发约定"为准，依次完成：
 
-1. 在 `modules/<name>/` 建包，实现 `internal/core.Module` 接口；构造函数命名 `NewFeature()`。注意历史包名可能与目录名不同（如 `statusbar`/`pcrepair`），保持同类命名风格。
+1. 在 `modules/<name>/` 建包，实现 `internal/core.Module` 接口；构造函数命名 `NewFeature()`。**包名必须等于目录名**（早年 `statusbar`/`pcrepair` 的旧名已改齐，见 TODO #12），不要引入新的目录名/包名不一致。
 2. 模块 id 必须稳定（Registry 与配置/热键按 id 查找），并同步 `internal/config` 的模块列表结构。
 3. 用 `internal/core/registry` 的 `Register` 注册，并在 `main.go` 组装。
 4. Windows 专用实现放 `*_windows.go`（`//go:build windows`），非 Windows 必须提供同名 `*_other.go` no-op；非 Windows 端不得 import `walk`/`w32`。
