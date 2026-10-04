@@ -485,8 +485,14 @@ func (f *Feature) applyWindows(staged string) error {
 	if err != nil {
 		exePath = exe
 	}
+	// 完成记录必须与 consumeUpdateLog 读同一处：目录走同一个 updateDoneLog，
+	// 不把目录名写死在脚本里（TODO #11 的“改名别漏改”要求）。
+	doneLog, err := updateDoneLog()
+	if err != nil {
+		return fmt.Errorf("解析更新日志路径失败: %w", err)
+	}
 	script := filepath.Join(f.ctx.DataDir, "apply_update.ps1")
-	if err := os.WriteFile(script, []byte(buildUpdateScript(exePath, staged, argsPayload(os.Args[1:]), f.last.Latest)), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(buildUpdateScript(exePath, staged, argsPayload(os.Args[1:]), f.last.Latest, filepath.Dir(doneLog))), 0o755); err != nil {
 		return fmt.Errorf("写入更新脚本失败: %w", err)
 	}
 	f.ctx.Bus.Log(moduleID, "info", "已请求管理员权限执行更新，应用将自动重启")
@@ -526,7 +532,11 @@ func argsFromPayload(s string) ([]string, error) {
 
 // buildUpdateScript renders the elevated PowerShell helper. Kept a pure
 // function so the quoting/base64 round-trip is unit-testable.
-func buildUpdateScript(exePath, staged, argsB64, latestTag string) string {
+//
+// logDir is passed in rather than hard-coded: the elevated helper and
+// updateDoneLog() must resolve the same directory from one source, so a rename
+// of paths.AppName (TODO #11) cannot silently split the write from the read.
+func buildUpdateScript(exePath, staged, argsB64, latestTag, logDir string) string {
 	tag := latestTag
 	if tag == "" {
 		tag = "unknown"
@@ -548,12 +558,13 @@ if ($argsB64) {
 if ($argList.Count -gt 0) { Start-Process -FilePath $dst -ArgumentList $argList }
 else { Start-Process -FilePath $dst }
 # 写一行完成记录：新进程启动时消费它并在面板报“更新完成”。
-$logDir = Join-Path $env:APPDATA 'GoBox\logs'
+# 目录由 Go 侧经 updateDoneLog() 传入，与读取端同源。
+$logDir = '%s'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $stamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
 Add-Content -Path (Join-Path $logDir 'update.log') -Value ($stamp + [char]9 + '%s' + [char]9 + $dst) -Encoding UTF8
 `,
-		staged, exePath, argsB64, os.Getpid(), exePath+".bak", exePath, tag)
+		staged, exePath, argsB64, os.Getpid(), exePath+".bak", exePath, logDir, tag)
 }
 
 // applyUnix swaps via a shell helper, mirroring applyWindows semantics.
@@ -620,9 +631,8 @@ func fileExists(p string) bool {
 
 // updateDoneLog resolves the update.log path the elevated helper writes.
 //
-// helper 固定写默认数据根（%APPDATA%\GoBox\logs\update.log），这里用同一个
-// 解析（paths.DataDir("")），保证“写”与“读”落盘位置一致，即使用户自定义
-// 了 data_dir 也只是留下一条未消费的旧记录，不会误报。
+// 这是 update.log 的唯一解析点：applyWindows 把这里的目录传给 helper 脚本的
+// $logDir，保证“写”与“读”永远同源（改名 paths.AppName 也不会分叉，见 TODO #11）。
 func updateDoneLog() (string, error) {
 	root, err := paths.DataDir("")
 	if err != nil {

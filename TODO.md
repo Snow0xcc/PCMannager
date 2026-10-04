@@ -267,9 +267,10 @@ go vet ./...
 - [ ] **11. 命名不一致**：代码内部代号 `GoBox`（`paths.AppName`、`tray` 窗口类名 `GoBoxTray`、日志 `gobox.log`、
       `internal/core` 注释）与仓库名 `PCMannager` 并存。文档已统一用 PCMannager，**代码待改**。
       迁移设计已建 `docs/NAMING-MIGRATION.md`（全量盘点表 + 迁移方案 + 不迁移的后果 + 建议排期），
-      **执行待排期**——建议在自动更新（#7）Windows 实机验证完成、且 updater 的
-      `update.log` 硬编码路径（`feature.go:551`，与 `paths.AppName` 双端耦合）改为参数传入之后，
-      单独一个 PR 执行。改名即等同重置用户配置，必须带迁移逻辑，不可裸改。
+      **执行待排期**——前置的 `update.log` 双端耦合已解除：helper 脚本的 `$logDir` 改由
+      `updateDoneLog()` 传参（不再硬编码 `GoBox\logs`，回归测试见 `TestBuildUpdateScript`）。
+      建议在自动更新（#7）Windows 实机验证完成后，单独一个 PR 执行改名。
+      改名即等同重置用户配置，必须带迁移逻辑，不可裸改。
 - [ ] **12. 模块目录名/包名核对**：迁移后应为 `taskbar`/`repair`（原 `statusbar`/`pcrepair`），
       已改但需确认无残留引用；`preferences` 非模块（注册表视图）。
       **对账完成**：代码零残留（`grep "statusbar"|"pcrepair"` 无命中，8 个模块包名均等于目录名，

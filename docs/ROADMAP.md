@@ -326,10 +326,12 @@ README 主打跨平台，但按代码逐模块核实，**非 Windows 上多数�
   需提供迁移逻辑——建议单独排期，不要顺手改。
   **迁移设计已交付**：见 `docs/NAMING-MIGRATION.md`（全量盘点表：9 类运行时身份
   + 40 余处注释、迁移方案、不迁移的后果、建议排期）。盘点中发现一处**双端耦合**：
-  `modules/updater/feature.go:551` 的 PowerShell helper 硬编码 `GoBox\logs`，
+  `modules/updater/feature.go` 的 PowerShell helper 硬编码 `GoBox\logs`，
   而读取端 `updateDoneLog()` 走 `paths.DataDir("")`——改 `paths.AppName` 时
-  若漏改此处，写读路径分叉、更新完成记录永不被消费。设计稿要求改名前先把它
-  改成参数传入。
+  若漏改此处，写读路径分叉、更新完成记录永不被消费。
+  **已完成（本次）**：helper 脚本的 `$logDir` 改由 `updateDoneLog()` 传入（不再硬编码），
+  写读同源；`TestBuildUpdateScript` 断言目录来自入参且脚本不再出现 `$env:APPDATA`。
+  改名前置条件已解除，可单独排期。
 
 ---
 

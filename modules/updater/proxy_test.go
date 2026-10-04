@@ -161,7 +161,8 @@ func TestParseUpdateLogEntry(t *testing.T) {
 // TestBuildUpdateScript 验证 helper 脚本包含参数透传、完成日志与重启要素。
 func TestBuildUpdateScript(t *testing.T) {
 	argsB64 := argsPayload([]string{"--panel"})
-	script := buildUpdateScript(`C:\app\pcmannager.exe`, `C:\app\data\pcmannager.update`, argsB64, "v1.2.3")
+	logDir := `C:\Users\u\AppData\Roaming\GoBox\logs`
+	script := buildUpdateScript(`C:\app\pcmannager.exe`, `C:\app\data\pcmannager.update`, argsB64, "v1.2.3", logDir)
 
 	for _, want := range []string{
 		argsB64,
@@ -170,13 +171,19 @@ func TestBuildUpdateScript(t *testing.T) {
 		"update.log",
 		"v1.2.3",
 		"WaitForExit",
+		// 完成记录目录必须来自入参（与 updateDoneLog 同源），不能写死。
+		"$logDir = '" + logDir + "'",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("脚本缺少要素 %q", want)
 		}
 	}
+	// 目录名不再硬编码：改名 paths.AppName 时读写不会分叉（TODO #11）。
+	if strings.Contains(script, "$env:APPDATA") {
+		t.Error("脚本不应再把日志目录写死为 $env:APPDATA")
+	}
 	// 空参数时也要有“无参数也启动”的兜底分支。
-	noArgs := buildUpdateScript(`C:\app\pcmannager.exe`, `C:\x`, "", "v9.9.9")
+	noArgs := buildUpdateScript(`C:\app\pcmannager.exe`, `C:\x`, "", "v9.9.9", `C:\logs`)
 	if !strings.Contains(noArgs, "else { Start-Process -FilePath $dst }") {
 		t.Error("脚本缺少无参数重启兜底分支")
 	}
