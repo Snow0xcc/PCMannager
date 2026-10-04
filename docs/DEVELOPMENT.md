@@ -96,4 +96,4 @@ Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心
 
 - 提交信息使用 Conventional Commits 风格（如 `feat:`、`fix:`、`docs:`、`chore:`）。
 - 若改动涉及 `reference/` 子模块版本，请单独提交 `.gitmodules` 与子模块指针变更，并注明所引用的上游 commit。
-- 不要将 `bin/`、`*.exe`、本地日志提交进仓库（已由 `.gitignore` 排除）。
+- 不要将 `dist/`、`*.exe`、本地日志提交进仓库（已由 `.gitignore` 排除）。macOS 上 Finder 生成的 `.DS_Store` 也已加入 `.gitignore`，避免在 `git status` 里堆成未跟踪文件。

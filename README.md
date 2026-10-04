@@ -33,6 +33,8 @@ Wiki 内容以 `docs/wiki/*.md` 为单一数据源，由 `scripts/sync-wiki.sh` 
 | 截图 | `screenshot` | 全屏抓取 + 框选编辑器（选区浮动工具栏：矩形/椭圆/箭头/画笔标注、颜色与粗细、撤销、确认/复制/取消），png/jpg 可选，可自动复制到剪贴板；另含 **GIF 录屏**（框选后录制，独立置顶控制条）与**滚动长截图**（手动或自动滚动 + 像素条带拼接，自动滚动会注入滚轮） | `F1` | 开 |
 | 上下文记录 | `selfcontext` | 记录活动窗口标题/进程名（不含截屏），可导出/清空 | `Ctrl+Alt+M` | **关**（隐私 opt-in） |
 | 电脑修复与工具 | `repair` | 声明式工具箱目录（7 大页、约 60 个工具：系统设置/网络排查/清理/运行环境/包管理器…） | — | 开 |
+| 自动更新 | `updater` | 定时比对 GitHub Releases 版本并下载匹配平台资产；镜像池轮询（ghfast/ghproxy/moeyy → 直连），主机白名单校验、原子暂存 + sha256；应用需显式确认，经提权脚本替换并重启，**绝不自动执行下载物** | — | **关** |
+| 快捷面板 | `launcher` | Alt+Space 唤起的全局搜索面板：模块动作/界面入口/网页捷径/本地应用统一候选，拼音首字母缩写，别名/拼音关键字可编辑，置顶与打开次数驱动排序；另有 Alt+P 超级面板（悬浮磁贴池） | `Alt+Space` | 开 |
 | 首选项 | `preferences` | 统一设置面板；**非功能模块**，是注册表的视图 | — | — |
 
 模块 ID 是稳定契约，被配置、热键绑定与 REST API 按 ID 查找，新增 ID 须同步 `internal/config`。
@@ -69,9 +71,11 @@ go vet ./...
 gofmt -l .                      # 格式化：gofmt -w .
 bash scripts/check-emoji.sh     # 前端禁用 emoji 检查
 
-# 测试（当前 197 个用例，含子测试）
+# 测试（当前 297 个顶层用例，含子测试约 294 条 PASS 断言）
 go test -count=1 ./internal/... ./modules/...
 ```
+
+> `internal/server` 与 `modules/updater` 的部分用例用 `httptest.NewServer` 监听回环端口，在禁止监听套接字的环境（如受限沙箱）会失败；这是环境限制而非代码缺陷。`modules/preferences` 的用例走 `app.New()` 读配置目录，可用 `PCMANNAGER_CONFIG` 指向可写目录后运行。
 
 > **Windows 发布必须走 `scripts/build.sh`**：Go 默认按 console 子系统构建，漏掉 `-H windowsgui` 会在启动时弹出黑色控制台窗口；漏掉 `-tags production` 则会让 Wails 退回桩实现，进程在创建完 config 后静默退出。代价是 GUI 子系统下 stdout/stderr 不可见，排障请看数据目录下的 `logs/gobox.log`、**程序目录下的 `logs/gobox.log`** 或面板的事件日志页。
 
@@ -80,7 +84,7 @@ go test -count=1 ./internal/... ./modules/...
 ## 架构
 
 ```
-main.go                  注册 5 个模块 → app.New() → StartPanel/StartTray → Run() 阻塞
+main.go                  注册 7 个模块 → app.New() → StartPanel/StartTray → Run() 阻塞
   │
   ├─ internal/app        装配层：config / logx / Bus / HotkeyManager / tray / panel
   │                      实现 server.Provider（依赖方向 app → server，反向会成环）
@@ -89,7 +93,7 @@ main.go                  注册 5 个模块 → app.New() → StartPanel/StartTr
   ├─ internal/server     HTTP REST + SSE，仅监听 127.0.0.1
   │    └─ internal/panel/index.html   面板唯一前端资源（embed 内置，两种传输共用）
   ├─ internal/wailsapp   原生窗口（Wails/WebView2，Windows only；其它平台返回 ErrUnsupported）
-  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · preferences
+  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · updater · launcher
 平台层：internal/winui（自研免 cgo Win32：窗口/任务栏嵌入/DPI/托盘/注册表）
         internal/tray · internal/sysutil（提权/自启/单实例/通知）· internal/paths · internal/logx
 ```
@@ -157,9 +161,15 @@ REST 接口：
 
 **开机自启**：`sysutil.SetAutostart/IsAutostart` 已实现，并在三条路径接线——启动时 `App.SyncAutostart()` 对齐配置与系统状态、托盘菜单开关、面板 `PATCH /api/app`。Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，Linux 写 `~/.config/autostart/*.desktop`（XDG），macOS 写 `~/Library/LaunchAgents/cc.snow0xcc.<name>.plist`（launchd 用户代理，登录时自动加载；Label 为 `cc.snow0xcc.gobox`）。三平台共用同一条接线，语义一致：开启幂等、关闭幂等、关闭不存在的条目不算错误。
 
-## 自动更新（规划）
+## 自动更新
 
-代码中**完全没有**。规划用 GitHub Releases API 比对版本 + 自更新库完成差分下载与替换，托盘菜单加"检查更新"入口，与开机自启等设置同处首选项面板。
+由 `modules/updater` 实现（**模块默认关闭**，需在面板中开启 `updater` 后 `auto_check` 才生效）：定时检查 GitHub Releases，SemVer 比较含 rc 排序，`include_prerelease` 为 opt-in。下载走**主机白名单**（`api.github.com`/`github.com`/`objects.githubusercontent.com`，per-dial `Control` 钩子校验，重定向同样受控）+ 原子暂存 + sha256 校验，单个资产上限 128 MiB。
+
+**应用更新必须显式确认**：`apply_update` 经 `sysutil.RunElevated` 执行 PowerShell helper（等进程退出 → 备份 → 替换 → 重启），绝不自动执行下载物。版本基准来自 `core.AppControl.Version()`，与构建注入的 `internal/app.Version` 同源。
+
+镜像池按优先级轮询（ghfast.top → ghproxy.net → github.moeyy.xyz → 直连兜底），便于国内访问。
+
+配置项：`auto_check`（默认**开**，1–168 小时间隔）、`include_prerelease`（默认关）、`notify`（面板事件流提示）。
 
 ## 配置
 
@@ -182,6 +192,8 @@ modules:
   screenshot:  { enabled: true,  hotkey: "F1",         options: { format: png, jpg_quality: 90, ... } }
   selfcontext: { enabled: false, hotkey: "Ctrl+Alt+M", options: { interval: 300, retention_days: 7, ... } }
   repair:      { enabled: true,  hotkey: "",           options: { prefer_source: auto, confirm_danger: true } }
+  updater:     { enabled: false, hotkey: "",           options: { auto_check: true, interval_hours: 24, include_prerelease: false } }
+  launcher:    { enabled: true,  hotkey: "Alt+Space",  options: { hotkey: alt+space, max_results: 8 } }
 ```
 
 写入是原子的（临时文件 + rename），缺省值在加载时合并，旧配置缺键会自动回填。可在面板中修改，也可手动编辑后重启。
@@ -200,13 +212,13 @@ git push origin v1.0.0
 ## 已知限制
 
 - **真实 Windows 验收部分完成**：托盘启退循环、热键触发、任务栏小组件嵌入、Wails 原生窗口、截图编辑器、剪贴板历史窗口已在本机 Windows 实跑验证；Explorer 重启恢复等边界场景仍未覆盖。
-- **热键可能被占用**：`F1`、`` Ctrl+` `` 在部分机器已被其它程序占用，当前按设计降级（告警 + 面板/托盘仍可用）；面板尚未提供"可用性检测"与改绑引导。
+- **热键可能被占用**：`F1`、`` Ctrl+` ``、`Alt+Space` 在部分机器已被其它程序占用（如 PowerToys Run 抢占 Alt+Space），当前按设计降级（告警 + 面板/托盘仍可用）；面板尚未提供"可用性检测"与改绑引导。
 - **录屏仅支持 GIF**：纯 Go 无成熟 H.264 编码器，项目约束零 cgo + 无 ffmpeg，因此 MP4、音频、摄像头、麦克风均未实现（GIF 帧缓冲上限 1200 帧，约 2 分钟 @10fps）。
 - **滚动截图自动滚动会注入真实滚轮事件**并把光标移到选区中心，属“控制用户电脑”的行为；纯色背景/重复内容可能因条带多处匹配而拼接失败（会平滑停止并保留已拼部分）。
 - **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存；`modules/taskbar` 包名 `statusbar`、`modules/repair` 包名 `pcrepair` 与目录名不一致。
 - **托盘图标不可配置**：三平台托盘都用 `internal/logo` 程序化渲染的品牌蝴蝶（Windows 经 `winui.IconFromRGBA` 转 HICON，macOS/Linux 转 NSImage / IconPixmap），不再回退系统通用图标；但没有配置项可换成自定义图标路径。
 - **Linux 托盘未做真机验证**：StatusNotifierItem + dbusmenu 仅通过交叉编译与单测（菜单树、点击事件映射、图标字节序），未在真实桌面环境（GNOME/KDE）上验证显示与交互。
-- **测试覆盖缺口**：`internal/tray`、`internal/winui`、`modules/preferences` 尚无测试文件。
+- **测试覆盖缺口**：平台专属测试（`internal/winui` 5 个、`internal/tray` 7 个文件均为 Windows/macOS/Linux build tag）无法在非对应平台执行，跨平台逻辑缺少非平台无关的单测；`modules/preferences` 仅覆盖 `Manager` 与 `ModuleIDs`，未覆盖面板 UI。
 
 完整待办与优先级见 [`TODO.md`](TODO.md)，变更历史见 [`CHANGELOG.md`](CHANGELOG.md)，模块开发前请读 [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md)。
 
@@ -215,8 +227,8 @@ git push origin v1.0.0
 ```
 main.go / main_{windows,other}.go   程序入口
 internal/{app,core,config,server,panel,wailsapp,winui,tray,sysutil,paths,logx}/
-modules/{taskbar,clipboard,screenshot,selfcontext,repair,preferences,updater}/
-scripts/{build.sh,check-emoji.sh}   构建与 emoji 检查脚本
+modules/{taskbar,clipboard,screenshot,selfcontext,repair,updater,launcher,preferences}/
+scripts/{build.sh,check-emoji.sh,gen-logo.sh,sync-wiki.sh,test-linux-tray-dbus.sh}   构建、emoji 检查、品牌校验、Wiki 同步、Linux 托盘 D-Bus 测试
 docs/                               DEVELOPMENT（开发指南）· MODULE-CONTRACT（模块契约）
                                     · AI-PHASE-A-PROMPT · HANDOVER · PROJECT-AUDIT · competitors
 reference/                          5 个第三方参考仓库（git submodule，不参与主构建，勿从中 import）

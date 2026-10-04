@@ -14,5 +14,8 @@ dist/
 # 工具/编辑器产生的目录（非项目源码）
 .rustcode/
 
+# macOS Finder 元数据（会在 git status 里冒成未跟踪文件）
+.DS_Store
+
 # 本地临时笔记（需求草稿/报错分析），不入库
 /prompt.txt
