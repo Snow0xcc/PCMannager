@@ -263,10 +263,23 @@ go vet ./...
       后续仍应补 `modules/*` 的单测。
 - [ ] **11. 命名不一致**：代码内部代号 `GoBox`（`paths.AppName`、`tray` 窗口类名 `GoBoxTray`、日志 `gobox.log`、
       `internal/core` 注释）与仓库名 `PCMannager` 并存。文档已统一用 PCMannager，**代码待改**。
+      迁移设计已建 `docs/NAMING-MIGRATION.md`（全量盘点表 + 迁移方案 + 不迁移的后果 + 建议排期），
+      **执行待排期**——建议在自动更新（#7）Windows 实机验证完成、且 updater 的
+      `update.log` 硬编码路径（`feature.go:551`，与 `paths.AppName` 双端耦合）改为参数传入之后，
+      单独一个 PR 执行。改名即等同重置用户配置，必须带迁移逻辑，不可裸改。
 - [ ] **12. 模块目录名/包名核对**：迁移后应为 `taskbar`/`repair`（原 `statusbar`/`pcrepair`），
       已改但需确认无残留引用；`preferences` 非模块（注册表视图）。
+      **对账完成**：代码零残留（`grep "statusbar"|"pcrepair"` 无命中，8 个模块包名均等于目录名，
+      `preferences` 确认未在 `main.go` 注册）；陈旧文档陈述已修
+      （`AGENTS.md`、`README.md`、`.rustcode/skills/new-module/SKILL.md`）。
+      结论可关闭。
 - [ ] **13. `modules/*` 中仍存在的平台差异**：确认为 `_windows.go`/`_other.go` 成对且签名一致，
       非 Windows 端不得 import `walk`/`w32`/`systray`/`gohook`。
+      **对账完成，三项检查全绿**：成对文件交集签名 0 不一致；中立代码实际调用的成对函数
+      0 不一致；非 Windows 端违禁 import 0（`repair/panel_other.go` 命中的是注释 "walk cannot
+      render"）。6 个仅 Windows 有的文件均只定义小写私有符号且仅被 Windows 文件引用
+      （Linux 构建通过即为证），无需补 `_other` 空文件。核对表见
+      `.superpowers/sdd/ROADMAP/task-4-report.md`。结论可关闭。
 - [x] **14. 电脑修复工具箱完善**：`modules/repair/catalog.go` 已抽成声明式目录（7 大页、~60 工具：
       Windows 设置/网络排查/系统清理/浏览器/安全软件/开发工具/WSL/.NET/git/node/python/vscode/sublime/winget/choco/
       网络诊断工具），`Actions()` 全量暴露、`RunAction` 经 `Lookup`+`ResolveCommand` 分派、
