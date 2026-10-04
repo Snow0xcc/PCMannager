@@ -181,11 +181,11 @@ git push origin v1.0.0
 - **跨平台成色差异大（D1 如实标注）**：四平台构建均通过，但功能不等价——全局热键与托盘在非 Windows 不可用；`screenshot`/`selfcontext`/`repair`/`launcher` 核心能力不可用，`taskbar`/`clipboard` 部分可用，`updater`/`preferences` 全平台可用。逐模块实测结论见上方功能表「平台可用性」列。
 - **真实 Windows 验收部分完成**：托盘启退循环、热键触发、任务栏小组件嵌入、Wails 原生窗口、截图编辑器、剪贴板历史窗口已在本机 Windows 实跑验证；Explorer 重启恢复等边界场景仍未覆盖。
 - **热键可能被占用**：`F1`、`` Ctrl+` `` 在部分机器已被其它程序占用，当前按设计降级（告警 + 面板/托盘仍可用）；面板尚未提供"可用性检测"与改绑引导。
-- **录屏仅支持 GIF**：纯 Go 无成熟 H.264 编码器，项目约束零 cgo + 无 ffmpeg，因此 MP4、音频、摄像头、麦克风均未实现（GIF 帧缓冲上限 1200 帧，约 2 分钟 @10fps）。
+- **录屏默认 GIF，装了 ffmpeg 才有 MP4**：纯 Go 无成熟 H.264 编码器，故 GIF 是默认且无外部依赖（帧缓冲上限 1200 帧，约 2 分钟 @10fps）；MP4 为 opt-in，仅在检测到外部 `ffmpeg` 时出现在选项里（可带扬声器/麦克风音频）。摄像头与麦克风**画面采集**未实现。
 - **滚动截图自动滚动会注入真实滚轮事件**并把光标移到选区中心，属“控制用户电脑”的行为；纯色背景/重复内容可能因条带多处匹配而拼接失败（会平滑停止并保留已拼部分）。
 - **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存（迁移设计见 [`docs/NAMING-MIGRATION.md`](docs/NAMING-MIGRATION.md)）；各 `modules/*` 包名已与目录名一致（早年 `statusbar`/`pcrepair` 旧名已改齐）。
 - **托盘图标**：已支持多尺寸品牌 `.ico` 内嵌资源与 `tray_icon_path` 自定义路径（留空用内置图标，见 TODO #9）；但非 Windows 托盘不可用，此项无从生效。
-- **测试覆盖缺口**：`internal/tray`、`internal/winui`、`modules/launcher`、`modules/taskbar` 以及 `modules/screenshot` 的部分用例只有 Windows build tag 的测试文件，在 Linux/macOS runner 上不参与执行（仅由 `GOOS=windows` 编译闸门保证不腐烂）。`internal/wailsapp` 目前没有测试文件。用例总数以实测为准（见上）。
+- **测试覆盖缺口**：`internal/winui`、`modules/launcher`、`modules/taskbar` 以及 `modules/screenshot` 的部分用例只有 Windows build tag 的测试文件，在 Linux/macOS runner 上不参与执行（仅由 `GOOS=windows` 编译闸门保证不腐烂）；`internal/tray` 亦有 `*_windows_test.go` 不参与执行，但其图标资产解析与回退链用例（`icon_test.go`）无 tag、Linux 实跑。`internal/wailsapp` 目前没有测试文件。用例总数以实测为准（见上）。
 
 完整待办与优先级见 [`TODO.md`](TODO.md)，变更历史见 [`CHANGELOG.md`](CHANGELOG.md)，模块开发前请读 [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md)。
 

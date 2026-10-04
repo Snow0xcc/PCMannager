@@ -69,6 +69,13 @@ func iconFromShell(string) uintptr {
 // invalidate. A configured path that fails to load is logged once — the
 // fallback still gives the user an icon, but the misconfiguration would
 // otherwise be invisible (GUI builds have no console to notice on).
+//
+// The cached handle is deliberately NOT DestroyIcon'd in Destroy(): it is a
+// single handle held for the process lifetime (the tray is a singleton), and
+// Destroy() runs while the shell may still be drawing it. Freeing it would
+// add a teardown ordering hazard for no measurable gain. Same policy as the
+// package-level brandIcon, which is shared across winTray instances and
+// therefore cannot be owned by any one of them.
 func (t *winTray) iconHandle() uintptr {
 	t.iconOnce.Do(func() {
 		h, src := resolveIcon(t.iconPath,

@@ -26,9 +26,21 @@ func (f *fakeModule) Stop() error              { return nil }
 
 // newTestApp builds an app rooted in a temp dir so no test touches the real
 // user data directory.
+//
+// HOME/XDG_CONFIG_HOME must be overridden too, not just the working dir:
+// app.New() resolves the data dir through paths.DataDir("") → os.UserConfigDir(),
+// which reads the environment, and config.Load() closes with an unconditional
+// Save(). Chdir alone therefore Load+Save'd the *real* ~/.config/GoBox/config.yaml
+// on every run — polluting it with test fixtures (e.g. "orphan") and making
+// results depend on whatever the machine's config happened to contain. Linux
+// reads XDG_CONFIG_HOME, macOS reads $HOME, so both are covered; there is no
+// t.Parallel() here, so t.Setenv is safe.
 func newTestApp(t *testing.T) *app.App {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Chdir(tmp)
 	a, err := app.New()
 	if err != nil {
 		t.Fatalf("app.New() 失败: %v", err)

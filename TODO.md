@@ -250,8 +250,12 @@ go vet ./...
       若运行时缺失会回退到浏览器面板。
       - [ ] 建 `frontend/` 后**必须**加 emoji 检查（正则 `[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]`）——
             客户端界面禁用 emoji，一律用 icon 资源替代。
-- [ ] **9. 托盘图标资源**：`defaultIcon()` 目前硬编码回退 shell 通用图标，无自定义图标文件、无配置项。
-      需补图标资源与（可选）配置化路径，并与前端 icon 规范一致。
+- [x] **9. 托盘图标资源** ✅ 已落地：交付 16/32/48/64/256 五档品牌 `.ico`
+      （`internal/tray/assets/icon.ico`，由 `scripts/genicon.go` 从 `internal/logo` 生成并提交），
+      四级回退链 `app.tray_icon_path` → 内嵌 .ico → 程序化蝴蝶标 → shell 通用图标，
+      配置项面板可改（空串用内置），重启语义挂 `restartRequiredKeys`。
+      回退逻辑在中立文件 `internal/tray/icon.go` 跨平台单测。
+      设计说明见 `AGENTS.md`「托盘图标加载链」，详见 `.superpowers/sdd/ROADMAP/task-4-report.md`。
 
 ## P3 — 卫生与规范
 

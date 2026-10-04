@@ -89,7 +89,16 @@ func (t *winTray) SetMenu(m Menu) {
 // It must NOT hold mu while calling into the shell: shellNotify used to take
 // mu itself, so Show deadlocked against its own lock (P0-1). The notify icon
 // data is copied under the lock and the Win32 call runs outside it.
+//
+// The icon handle is resolved *before* taking mu for the same reason: the
+// first call reads a .ico from disk and rasterises it (file IO + LoadImageW +
+// CreateIconIndirect), none of which belongs in the critical section — a slow
+// or unreachable tray_icon_path would otherwise stall the message thread that
+// every other mu-taking branch runs on. sync.Once makes the call idempotent
+// and its result independent of anything under mu.
 func (t *winTray) Show() error {
+	icon := t.iconHandle()
+
 	t.mu.Lock()
 	if t.added {
 		t.mu.Unlock()
@@ -106,7 +115,7 @@ func (t *winTray) Show() error {
 		ID:       1,
 		Flags:    winui.NIF_MESSAGE | winui.NIF_ICON | winui.NIF_TIP,
 		Callback: winui.WM_TRAYCALLBACK,
-		Icon:     t.iconHandle(),
+		Icon:     icon,
 	}
 	copyTip(&t.nid, t.menu.Tooltip)
 	nid := t.nid

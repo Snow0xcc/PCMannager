@@ -20,7 +20,7 @@
 | 5 | `internal/tray/tray_windows.go:170` | `"GoBoxTray"` | 托盘隐藏窗口类名 | 中——跨版本共存时无法按类名识别旧托盘窗口 |
 | 6 | `modules/updater/feature.go:551` | PS helper 内 `$env:APPDATA 'GoBox\logs'` | 更新完成记录 `update.log` 的**硬编码**写入路径 | 中——**与 #1 是双端耦合**：读取端 `updateDoneLog()` 走 `paths.DataDir("")`，改 #1 而漏改此处 → 写读路径分叉，更新完成永远不被消费 |
 | 7 | `modules/updater/proxy_test.go:91` | `"C:\\Program Files\\GoBox\\config.yaml"` | 测试夹具（仅作为含空格路径样本） | 低——夹具，语义无关 |
-| 8 | 其余窗口类名（10 个） | `GoBoxTray`、`GoBoxClipboard`、`GoBoxLauncher`、`GoBoxSuperPanel`、`GoBoxCaptureCtrl`、`GoBoxScreenshot`、`GoBoxPin`、`GoBoxContext`、`GoBoxTaskbar`、`GoBoxInputDialog`、`GoBoxTrayTest` | 各窗口的 `RegisterClassW` 类名 | 中——同 #5，跨版本共存/查找 |
+| 8 | 其余窗口类名（11 个，`GoBoxTray` 已在 #5 单列故不重复计） | `GoBoxClipboard`、`GoBoxLauncher`、`GoBoxSuperPanel`、`GoBoxCaptureCtrl`、`GoBoxScreenshot`、`GoBoxPin`、`GoBoxContext`、`GoBoxTaskbar`、`GoBoxInputDialog`、`GoBoxTrayTest` | 各窗口的 `RegisterClassW` 类名（含测试窗口类） | 中——同 #5，跨版本共存/查找 |
 | 9 | `internal/tray/tray_windows.go:391`、`modules/taskbar/widget_windows.go:466` | `tip = "GoBox"`、`parts = []string{"GoBox"}` | 托盘 tooltip、任务栏小组件文字回显 | 低——纯显示文本 |
 
 **已无耦合**：单实例互斥量是 `Local\pcmannager`（`main.go:42`），不是 GoBox。
