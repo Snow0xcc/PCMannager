@@ -231,6 +231,71 @@ func TestHandleStateReturnsFullSnapshot(t *testing.T) {
 	}
 }
 
+// entriesProvider 在 fakeProvider 之上仅替换模块状态，用于断言 State 里的
+// entries 列表（C2-5 截图历史 / 上下文记录的条目视图）能原样穿过 /api/state。
+type entriesProvider struct {
+	*fakeProvider
+}
+
+func (p *entriesProvider) withEntries(id string) ModuleInfo {
+	m := p.fakeProvider.module(id)
+	m.State = core.State{
+		"ok": true,
+		"entries": []map[string]any{{
+			"name": "screenshot_1700000000000.png",
+			"kind": "screenshot",
+			"size": 2048,
+			"time": "2026-01-02T15:04:05+08:00",
+		}},
+	}
+	return m
+}
+
+func (p *entriesProvider) Modules() []ModuleInfo { return []ModuleInfo{p.withEntries("screenshot")} }
+
+func (p *entriesProvider) Module(id string) (ModuleInfo, bool) { return p.withEntries(id), true }
+
+// TestHandleStatePassthroughEntries（C2-5）：HTTP 层对模块 State 不做键过滤/
+// 白名单，entries 数组必须原样到达面板。这条回归防止将来引入过滤后把历史
+// 卡片的数据静默掐断。
+func TestHandleStatePassthroughEntries(t *testing.T) {
+	ts := newTestServer(t, &entriesProvider{fakeProvider: newFakeProvider()})
+
+	var body struct {
+		Modules []ModuleInfo `json:"modules"`
+	}
+	if err := getJSON(ts.URL+"/api/state", &body); err != nil {
+		t.Fatalf("获取 /api/state 失败: %v", err)
+	}
+	if len(body.Modules) != 1 {
+		t.Fatalf("模块数 = %d, 期望 1", len(body.Modules))
+	}
+	raw, ok := body.Modules[0].State["entries"]
+	if !ok {
+		t.Fatal("entries 键未透传")
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("entries 类型不符：期望数组，实际 %T", raw)
+	}
+	if len(list) != 1 {
+		t.Fatalf("entries 条数 = %d, 期望 1", len(list))
+	}
+	row, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatalf("entries[0] 类型不符：期望对象，实际 %T", list[0])
+	}
+	if row["name"] != "screenshot_1700000000000.png" {
+		t.Errorf("entries[0].name = %v", row["name"])
+	}
+	if row["kind"] != "screenshot" {
+		t.Errorf("entries[0].kind = %v", row["kind"])
+	}
+	if n, ok := row["size"].(float64); !ok || n != 2048 {
+		t.Errorf("entries[0].size = %v, 期望 2048", row["size"])
+	}
+}
+
 // TestHandleStateIncludesConflicts（C2-2）：/api/state 必须在顶层下发热键
 // 冲突列表（与 capabilities 同级），应用设置页的警告条才有数据源。
 func TestHandleStateIncludesConflicts(t *testing.T) {

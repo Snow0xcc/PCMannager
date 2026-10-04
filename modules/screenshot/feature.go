@@ -284,6 +284,9 @@ func (f *Feature) State() core.State {
 	if count > 0 {
 		last = f.saved[count-1]
 	}
+	// C2-5：锁内只拷贝路径快照，文件元数据（Stat）由 panelShotViews 在锁外
+	// 补齐——I/O 不进临界区。
+	saved := append([]string(nil), f.saved...)
 	f.mu.Unlock()
 
 	rec := f.activeRecorder()
@@ -300,6 +303,9 @@ func (f *Feature) State() core.State {
 		"format":      f.format(),
 		"max_history": max,
 		"record_fps":  f.recordingFPS(),
+		// C2-5：最近保存的条目视图（仅元数据：文件名/类别/大小/时间，不含
+		// 绝对路径），供面板浏览历史；这是非 Windows 平台唯一的历史入口。
+		"entries": panelShotViews(saved),
 	}
 	// Reporting the in-flight jobs is what lets the panel offer a stop button and
 	// show elapsed progress; a bare boolean would leave the user guessing.

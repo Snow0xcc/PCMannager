@@ -283,6 +283,8 @@ const ICONS = {
   image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M5 17l4.5-4.5 3 3L17 11l4 4"/>',
   // 折角纸张：文件条目
   file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  // 摄像机：录屏条目（截图历史用）
+  video: '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>',
 };
 
 // icon returns an inline <svg> markup string; unknown names fall back to a dot.
@@ -940,6 +942,10 @@ function renderModulePage(root, m) {
   // ---- 剪贴板历史列表（C2-1）：非 Windows 平台没有原生查看器窗口，
   // 这里的列表是唯一可浏览/写回/删除历史的入口；Windows 上与原生窗口互补。 ----
   if (m.id === "clipboard") card.appendChild(renderClipboardHistoryCard(m));
+  // ---- 截图历史 / 上下文记录列表（C2-5）：同一思路，两个模块的历史此前
+  // 只能开原生窗口查看，非 Windows 平台这里是唯一入口（只读，无逐条操作）。 ----
+  if (m.id === "screenshot") card.appendChild(renderScreenshotHistoryCard(m));
+  if (m.id === "selfcontext") card.appendChild(renderSelfcontextHistoryCard(m));
 
   const ui = el('<div class="row"><label>模块界面</label><button class="btn" id="m-ui">' + icon("open") + '打开窗口</button></div>');
   ui.querySelector("#m-ui").onclick = async () => {
@@ -1000,9 +1006,10 @@ function renderStateValue(v) {
 // renderStateCard replaces the old raw JSON dump with a "键：值" list plus an
 // opt-in raw view (collapsed by default) for troubleshooting.
 function renderStateCard(m) {
-  // clipboard 的 entries 由模块页的历史列表卡片渲染，运行状态里跳过，
-  // 避免同一份数据在页面上出现两遍。
-  const keys = Object.keys(m.state).filter(k => !(m.id === "clipboard" && k === "entries"));
+  // clipboard/screenshot/selfcontext 的 entries 由各自模块页的历史卡片渲染，
+  // 运行状态里跳过，避免同一份数据在页面上出现两遍（原始视图里仍可查看）。
+  const entriesHidden = m.id === "clipboard" || m.id === "screenshot" || m.id === "selfcontext";
+  const keys = Object.keys(m.state).filter(k => !(entriesHidden && k === "entries"));
   const st = el('<div class="card"><h2>运行状态</h2>' +
     '<div class="desc">模块自报的运行时信息。</div><div class="sub-list"></div></div>');
   const list = st.querySelector(".sub-list");
@@ -1123,6 +1130,102 @@ function renderClipboardHistoryCard(m) {
     };
     row.appendChild(delBtn);
 
+    rows.appendChild(row);
+  });
+
+  return card;
+}
+
+// shotKindIcon maps a screenshot entry kind to an icon name; unknown kinds
+// fall back to the image glyph.
+function shotKindIcon(kind) {
+  if (kind === "recording") return "video";
+  return "image";
+}
+
+// fmtBytes renders a byte count as B/KB/MB so the history rows read the same
+// way the module's own notices do. Anything that is not a sane number renders
+// empty (the size column then just disappears from that row).
+function fmtBytes(n) {
+  if (typeof n !== "number" || !(n >= 0) || !isFinite(n)) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+// renderScreenshotHistoryCard renders the screenshot module's history section
+// (C2-5).
+//
+// Data comes from m.state.entries (newest first, metadata-only: file name,
+// category, byte size, RFC3339 time — no absolute path). Rows are read-only:
+// the module has no per-entry actions by design, the directory-wide ones live
+// in the actions list above. The name is module-generated data but still
+// inserted via textContent — the panel never builds markup from state.
+function renderScreenshotHistoryCard(m) {
+  const st = m.state || {};
+  const entries = Array.isArray(st.entries) ? st.entries : [];
+  const count = typeof st.saved_count === "number" ? st.saved_count : entries.length;
+  const card = el('<div class="card sub"><h2>历史记录</h2>' +
+    '<div class="desc">共 ' + esc(count) + ' 张，显示最近 ' + esc(entries.length) +
+    ' 张（最新在最上）。文件保存在截图保存目录，超出上限的旧文件已自动清理。</div>' +
+    '<div class="clip-rows"></div></div>');
+  const rows = card.querySelector(".clip-rows");
+
+  if (!entries.length) {
+    rows.appendChild(el('<div class="clip-empty">暂无截图：按热键或「立即截图」保存后，文件会出现在这里。</div>'));
+    return card;
+  }
+
+  entries.forEach(e => {
+    if (!e || typeof e.name !== "string" || !e.name) return; // 契约之外的形态直接跳过
+    const size = fmtBytes(e.size);
+    const row = el('<div class="clip-row">' +
+      '<span class="clip-kind" title="' + esc(e.kind || "") + '">' + icon(shotKindIcon(e.kind)) + '</span>' +
+      '<span class="clip-preview"></span>' +
+      '<span class="clip-time">' + esc(clipTime(e.time)) + '</span>' +
+      '</div>');
+    // textContent 注入：文件名与大小拼接后依然不经过 innerHTML。
+    row.querySelector(".clip-preview").textContent =
+      e.name + (size ? "（" + size + "）" : "");
+    rows.appendChild(row);
+  });
+
+  return card;
+}
+
+// renderSelfcontextHistoryCard renders the context recorder's history section
+// (C2-5).
+//
+// Entries are sampled window titles (plus the AI summary in screen mode) —
+// user content by definition, so every field goes through textContent; the
+// backend already caps each field at 120 characters. Rows are read-only like
+// the screenshot card; aggregate actions (导出/清空) live in the actions list.
+function renderSelfcontextHistoryCard(m) {
+  const st = m.state || {};
+  const entries = Array.isArray(st.entries) ? st.entries : [];
+  const count = typeof st.count === "number" ? st.count : entries.length;
+  const card = el('<div class="card sub"><h2>上下文记录</h2>' +
+    '<div class="desc">共 ' + esc(count) + ' 条，显示最近 ' + esc(entries.length) +
+    ' 条（最新在最上）。内容为活动窗口标题采样，仅在本机面板展示。</div>' +
+    '<div class="clip-rows"></div></div>');
+  const rows = card.querySelector(".clip-rows");
+
+  if (!entries.length) {
+    rows.appendChild(el('<div class="clip-empty">暂无记录：启用模块并开始采样后，活动窗口标题会出现在这里。</div>'));
+    return card;
+  }
+
+  entries.forEach(e => {
+    if (!e || typeof e.title !== "string") return; // 契约之外的形态直接跳过
+    const tip = e.process ? "进程：" + e.process : "";
+    const row = el('<div class="clip-row">' +
+      '<span class="clip-kind" title="' + esc(tip) + '">' + icon("log") + '</span>' +
+      '<span class="clip-preview"></span>' +
+      '<span class="clip-time">' + esc(clipTime(e.time)) + '</span>' +
+      '</div>');
+    // 标题与 AI 摘要都是采集内容：textContent 注入，绝不走 innerHTML。
+    row.querySelector(".clip-preview").textContent =
+      e.title + (e.summary ? "（" + e.summary + "）" : "");
     rows.appendChild(row);
   });
 

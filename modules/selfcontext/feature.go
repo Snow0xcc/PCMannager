@@ -238,6 +238,8 @@ func (f *Feature) State() core.State {
 	running := f.running
 	paused := f.paused
 	last := f.last
+	// C2-5：锁内拷贝条目快照（Snapshot 语义），锁外构造面板视图。
+	entries := append([]Entry(nil), f.entries...)
 	f.mu.Unlock()
 	return core.State{
 		"running":        running,
@@ -248,6 +250,9 @@ func (f *Feature) State() core.State {
 		"capture_mode":   f.captureMode(),
 		"retention_days": f.retentionDays(),
 		"pause_on_lock":  f.boolOpt(optPauseOnLock, defaultPauseOnLock),
+		// C2-5：最近采样的只读视图（标题/进程/摘要截断，RFC3339 时间），
+		// 供面板浏览；非 Windows 平台没有原生查看器，这是唯一的历史入口。
+		"entries": panelEntryViews(entries),
 	}
 }
 
