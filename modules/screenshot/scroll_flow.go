@@ -7,8 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kbinani/screenshot"
-
 	"github.com/snow0xcc/pcmannager/internal/core"
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
@@ -126,7 +124,7 @@ func (s *scrollCapture) loop(loopCtx context.Context) {
 	defer s.feat.wg.Done()
 	defer s.feat.clearScroller(s)
 
-	first, err := screenshot.CaptureRect(s.region)
+	first, err := grabRegion(s.region)
 	if err != nil {
 		s.finishWith("首帧捕获失败：" + err.Error())
 		s.ctx.Logger.Error("滚动截图首帧失败", "module", moduleID, "err", err)
@@ -168,7 +166,7 @@ func (s *scrollCapture) loop(loopCtx context.Context) {
 				time.Sleep(scrollSettle)
 			}
 
-			img, err := screenshot.CaptureRect(s.region)
+			img, err := grabRegion(s.region)
 			if err != nil {
 				// A dropped frame loses nothing: the stitcher picks up from the
 				// last good position on the next tick.
@@ -342,8 +340,5 @@ func (f *Feature) scrollInterval() time.Duration {
 
 // displayHeight returns the primary display height, or 0 when unknown.
 func (f *Feature) displayHeight() int {
-	if screenshot.NumActiveDisplays() <= 0 {
-		return 0
-	}
-	return screenshot.GetDisplayBounds(0).Dy()
+	return primaryDisplayHeight()
 }

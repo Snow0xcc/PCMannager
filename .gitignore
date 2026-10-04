@@ -11,11 +11,33 @@ dist/
 # （正常位置是 %APPDATA%\GoBox/config.yaml，见 internal/paths）
 /config.yaml
 
-# 工具/编辑器产生的目录（非项目源码）
-.rustcode/
+# RustCode 配置：skills/ 与 commands/ 是项目共享资产（自定义 skill、审查提示词、
+# slash 命令），须随仓库分发；settings.json 含本机 hook 与权限，保持忽略。
+# 注意：material 化的第三方 skill 目录带 root 属主，提交前用 ls -la 确认属主正确。
+# 顺序要紧：裸的 `.rustcode/` 规则若放在下面这些 `!` 反选之后，会把它们全部重新盖掉。
+.rustcode/*
+!.rustcode/skills/
+!.rustcode/commands/
+.rustcode/skills/*
+!.rustcode/skills/*/SKILL.md
+!.rustcode/skills/*/
+# codebase-design 是第三方 marketplace 物化出来的副本（目录属 root），
+# 不由本仓库维护；协作者各自从 marketplace 安装即可。
+.rustcode/skills/codebase-design/
+.rustcode/local/
+
+# 执行计划的过程台账（技能工作区，不入库）
+.superpowers/
+
+# zcode2api/ 是另一个独立的 Python 项目（自带 .git、12343 个文件、含 .env），
+# 只是碰巧放在本仓库目录下。既不属于本项目，且 .env 含密钥——绝不入库。
+zcode2api/
 
 # macOS Finder 元数据（会在 git status 里冒成未跟踪文件）
 .DS_Store
 
 # 本地临时笔记（需求草稿/报错分析），不入库
 /prompt.txt
+
+# 本机 MCP 工具配置（环境变量引用，无密钥明文，但属个人开发环境），不入库
+/.mcp.json

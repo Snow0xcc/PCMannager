@@ -48,6 +48,8 @@ go vet ./...
       `go test -race -count=5` 稳定通过。
 - [ ] **真实 Windows 验收**（承接阶段 A）：需在 Windows 机器上跑托盘启退循环、热键触发、
       Explorer 重启恢复、截图/剪贴板/任务栏嵌入实机验证。当前环境为 Linux，无法执行。
+      **前置交付已落地**：`docs/RELEASE-CHECKLIST.md`（可勾选清单：机械发版步骤 + 实机验收
+      2.1–2.8 + 发版记录模板，2026-10-04）；本项保持未勾选——验收本身必须等真实 Windows 机器执行后留档。
 
 ## 真实 Windows 实机反馈（2026-09-24，v0.1.0-rc1 之后）
 
@@ -205,7 +207,7 @@ go vet ./...
       `modules/preferences/panel_windows.go` 与 `modules/repair/panel_windows.go` 在用。
 - [x] **4. 确认 `internal/server/` 的作用** ✅ 已落地：面板服务端已接入 `app`。
       `internal/server` 提供 JSON REST（`/api/state`、`/api/modules[/id]`、`/api/app`、`/api/events` SSE）+ `embed`
-      内置的 `web/index.html` 单页面板；`internal/app/provider.go` 实现 `server.Provider`
+      内置的 `internal/panel/index.html` 单页面板；`internal/app/provider.go` 实现 `server.Provider`
       （依赖方向 `app -> server`，反向会成环）。`App.StartPanel()` 仅监听 `127.0.0.1`，端口取自 `app.server_port`
       （0 = 由 OS 分配），绑定失败只告警不 fatal。
 
@@ -247,8 +249,12 @@ go vet ./...
       若运行时缺失会回退到浏览器面板。
       - [ ] 建 `frontend/` 后**必须**加 emoji 检查（正则 `[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]`）——
             客户端界面禁用 emoji，一律用 icon 资源替代。
-- [x] **9. 托盘图标资源**：`defaultIcon()` 已优先用 `internal/logo` 程序化渲染的品牌蝴蝶（`logo.Render(32)` → `winui.IconFromRGBA`），不再回退 shell 通用图标；文档侧 `docs/site/assets/{logo,icon}.svg` 是同一几何的 SVG 镜像。
-      - [ ] 剩余可选项：配置化自定义图标路径（目前仍无配置项）。
+- [x] **9. 托盘图标资源** ✅ 已落地：交付 16/32/48/64/256 五档品牌 `.ico`
+      （`internal/tray/assets/icon.ico`，由 `scripts/genicon.go` 从 `internal/logo` 生成并提交），
+      四级回退链 `app.tray_icon_path` → 内嵌 .ico → 程序化蝴蝶标 → shell 通用图标，
+      配置项面板可改（空串用内置），重启语义挂 `restartRequiredKeys`。
+      回退逻辑在中立文件 `internal/tray/icon.go` 跨平台单测；文档侧 `docs/site/assets/{logo,icon}.svg` 是同一几何的 SVG 镜像。
+      设计说明见 `AGENTS.md`「托盘图标加载链」。
 
 ## P3 — 卫生与规范
 
@@ -260,10 +266,23 @@ go vet ./...
       后续仍应补 `modules/*` 的单测。
 - [ ] **11. 命名不一致**：代码内部代号 `GoBox`（`paths.AppName`、`tray` 窗口类名 `GoBoxTray`、日志 `gobox.log`、
       `internal/core` 注释）与仓库名 `PCMannager` 并存。文档已统一用 PCMannager，**代码待改**。
+      迁移设计已建 `docs/NAMING-MIGRATION.md`（全量盘点表 + 迁移方案 + 不迁移的后果 + 建议排期），
+      **执行待排期**——建议在自动更新（#7）Windows 实机验证完成、且 updater 的
+      `update.log` 硬编码路径（`feature.go:551`，与 `paths.AppName` 双端耦合）改为参数传入之后，
+      单独一个 PR 执行。改名即等同重置用户配置，必须带迁移逻辑，不可裸改。
 - [ ] **12. 模块目录名/包名核对**：迁移后应为 `taskbar`/`repair`（原 `statusbar`/`pcrepair`），
       已改但需确认无残留引用；`preferences` 非模块（注册表视图）。
+      **对账完成**：代码零残留（`grep "statusbar"|"pcrepair"` 无命中，8 个模块包名均等于目录名，
+      `preferences` 确认未在 `main.go` 注册）；陈旧文档陈述已修
+      （`AGENTS.md`、`README.md`、`.rustcode/skills/new-module/SKILL.md`）。
+      结论可关闭。
 - [ ] **13. `modules/*` 中仍存在的平台差异**：确认为 `_windows.go`/`_other.go` 成对且签名一致，
       非 Windows 端不得 import `walk`/`w32`/`systray`/`gohook`。
+      **对账完成，三项检查全绿**：成对文件交集签名 0 不一致；中立代码实际调用的成对函数
+      0 不一致；非 Windows 端违禁 import 0（`repair/panel_other.go` 命中的是注释 "walk cannot
+      render"）。6 个仅 Windows 有的文件均只定义小写私有符号且仅被 Windows 文件引用
+      （Linux 构建通过即为证），无需补 `_other` 空文件。核对表见
+      `.superpowers/sdd/ROADMAP/task-4-report.md`。结论可关闭。
 - [x] **14. 电脑修复工具箱完善**：`modules/repair/catalog.go` 已抽成声明式目录（7 大页、~60 工具：
       Windows 设置/网络排查/系统清理/浏览器/安全软件/开发工具/WSL/.NET/git/node/python/vscode/sublime/winget/choco/
       网络诊断工具），`Actions()` 全量暴露、`RunAction` 经 `Lookup`+`ResolveCommand` 分派、
@@ -279,10 +298,10 @@ go vet ./...
       无效热键拒绝且不落盘、`LastError` 记录与清除、Shutdown 幂等、模块注册顺序、`Version` 非空；
       **`modules/preferences`** ✅（TODO #15 点名的最后一块）：nil Manager 容错、
       ModuleIDs 顺序与去重、仅存在于配置的模块仍出现、`Show` 在非 Windows 与 nil 下均不 panic。
-      全仓共 **202 个用例**，`go test -race -count=1 ./internal/... ./modules/...` 全绿。
+      全仓用例数以实测为准（`grep -rn "^func Test" --include=*_test.go internal/ modules/ | wc -l`，勿手写具体数字），`go test -race -count=1 ./internal/... ./modules/...` 全绿。
       **仍缺**：`internal/tray`（Windows build-tag 仅验证可编译）、`internal/winui`、
       `internal/logx`、`internal/paths`、`internal/wailsapp`（均为平台 UI/IO，收益低）。
-- [ ] **18. 消除 `[restart]` 元数据 hack** ✅ 已修复：原先 `app.go` 用
+- [x] **18. 消除 `[restart]` 元数据 hack** ✅ 已修复：原先 `app.go` 用
       `strings.HasPrefix(o.Help, "[restart]")` 判断改配置后是否需重启模块——改一次帮助文案
       就会静默丢失重启语义，且面板上会显示 `[restart]` 脏字符。已新增
       `core.Option.Restart bool` 字段，迁移 4 处声明（clipboard 记录图片、taskbar 布局/渲染、
@@ -294,7 +313,7 @@ go vet ./...
 - [x] **17. 统一面板配置回显 + 操作分组**：`internal/app/provider.go` 的 `moduleInfo()` 会把配置中
       **当前生效的 option 值**合并进 `State.options`（此前各模块 `State()` 不含 options，
       导致面板表单永远显示声明式默认值、保存后看不出当前值）。
-      前端 `web/index.html` 已按 `Action.Group` **分组渲染**操作按钮（repair 约 60 个工具
+      前端 `internal/panel/index.html` 已按 `Action.Group` **分组渲染**操作按钮（repair 约 60 个工具
       不再平铺成一堵墙），并新增 `.card.sub` / `.btn.install` 样式。
 
 ## 交接须知

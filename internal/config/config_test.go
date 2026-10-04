@@ -135,6 +135,43 @@ func TestLoadBackfillsNewModules(t *testing.T) {
 	}
 }
 
+// TestLoadBackfillsTrayIconPath（TODO #9）：旧配置没有 tray_icon_path 字段时
+// 必须回填默认值（空串 = 用内嵌图标），且既有字段不被破坏。加载路径是
+// yaml.Unmarshal 叠在 Default() 之上，新字段的零值合并正是要守护的行为。
+func TestLoadBackfillsTrayIconPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	old := "app:\n  theme: dark\nmodules:\n  taskbar:\n    enabled: true\n    hotkey: ctrl+alt+9\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatalf("写入旧配置失败: %v", err)
+	}
+
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	app := m.App()
+	if app.TrayIconPath != "" {
+		t.Fatalf("TrayIconPath = %q, 期望空串（内嵌图标）", app.TrayIconPath)
+	}
+	if app.Theme != "dark" {
+		t.Fatalf("theme = %q, 期望 dark（旧字段不被回填破坏）", app.Theme)
+	}
+
+	// 设置后必须随 Save 持久化并能重载回来。
+	if err := m.UpdateApp(func(c *App) { c.TrayIconPath = `C:\pics\my.ico` }); err != nil {
+		t.Fatalf("UpdateApp 失败: %v", err)
+	}
+	reloaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("重新加载失败: %v", err)
+	}
+	if got := reloaded.App().TrayIconPath; got != `C:\pics\my.ico` {
+		t.Fatalf("重载后 TrayIconPath = %q", got)
+	}
+}
+
 // TestSaveIsAtomic guards against a temporary file being left behind and
 // against the config becoming unreadable after a save.
 func TestSaveIsAtomic(t *testing.T) {

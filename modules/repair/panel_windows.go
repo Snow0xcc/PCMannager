@@ -131,43 +131,53 @@ func closeRepairPanel() {
 	go func() { _ = mw.Close() }()
 }
 
-// runAction executes a catalogue entry, confirming dangerous ones first, and
-// appends the captured output to the panel log. The command line is resolved
-// from the stored package-manager preference so winget/choco stay switchable.
+// runAction kicks off a catalogue entry from the UI thread. Confirmation
+// stays synchronous (the MsgBox needs the UI thread); execution goes through
+// Feature.runActionEntry on a goroutine -- the same elevation + execution
+// budget + bus/log path the web panel uses, so Admin entries no longer run
+// silently non-elevated -- and the result is marshalled back onto the UI
+// thread with MainWindow.Synchronize. The message loop is never blocked by a
+// running command; the UI thread only starts the run and appends the result.
 func runAction(f *Feature, logEdit *walk.TextEdit, e Entry) {
-	source := ""
-	if f != nil {
-		source = f.preferSource()
-	}
-	cmdline, ok := e.ResolveCommand(source)
-	if !ok {
-		cmdline = e.Command
-	}
-
-	if e.Danger && f != nil && f.confirmDanger() && !confirm(f, e.Label) {
+	if f == nil {
 		return
 	}
-
-	out, err := runCommand(cmdline)
-	if f != nil && f.ctx != nil {
-		if f.ctx.Logger != nil {
-			f.ctx.Logger.Info("repair 执行动作", "module", moduleID, "action", e.ID, "cmd", cmdline)
-		}
-		if f.ctx.Bus != nil {
-			if err != nil {
-				f.ctx.Bus.Log(moduleID, "error", e.Label+": "+err.Error())
-			} else {
-				f.ctx.Bus.Progress(moduleID, e.ID, 100, out)
-			}
-		}
+	if e.Danger && f.confirmDanger() && !confirm(f, e.Label) {
+		return
 	}
-	if logEdit != nil {
-		line := appendLogf(e.Label, out, err)
-		if cur := logEdit.Text(); cur == "" {
-			_ = logEdit.SetText(line)
-		} else {
-			_ = logEdit.SetText(cur + "\n" + line)
+	appendPanelLog(logEdit, "=== "+e.Label+" ===\n已开始执行…")
+
+	go func() {
+		out, err := f.runActionEntry(e.ID, nil)
+		mw := currentPanel()
+		if mw == nil {
+			// The panel closed while running; the outcome is still recorded
+			// to slog and the bus by runActionEntry.
+			return
 		}
+		// Synchronize only queues the callback (safe from any goroutine); it
+		// runs on the window's message loop. The currentPanel() re-check
+		// inside keeps a stale callback from writing into a closed window's
+		// TextEdit if the panel was replaced in the meantime.
+		mw.Synchronize(func() {
+			if currentPanel() == mw {
+				appendPanelLog(logEdit, appendLogf(e.Label, out, err))
+			}
+		})
+	}()
+}
+
+// appendPanelLog appends one line to the panel log. walk widgets are not
+// thread-safe, so this must run on the UI thread (directly or via
+// MainWindow.Synchronize).
+func appendPanelLog(logEdit *walk.TextEdit, line string) {
+	if logEdit == nil {
+		return
+	}
+	if cur := logEdit.Text(); cur == "" {
+		_ = logEdit.SetText(line)
+	} else {
+		_ = logEdit.SetText(cur + "\n" + line)
 	}
 }
 

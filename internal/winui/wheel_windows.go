@@ -19,10 +19,6 @@ func GET_WHEEL_DELTA_WPARAM(wParam uintptr) int16 {
 	return int16((wParam >> 16) & 0xFFFF)
 }
 
-// HIWORD 提取 32 位参数的高 16 位（GET_WHEEL_DELTA_WPARAM 的底层宏形式，
-// 保留命名形式便于调用点与 Win32 文档对照）。
-func HIWORD(v uintptr) uint16 { return uint16(v >> 16) }
-
 // WM_MOUSEWHEEL 的 lParam 坐标语义与换算方法：
 //
 // 与 WM_MOUSEMOVE 等 WM_*BUTTON* 消息不同，WM_MOUSEWHEEL 的 lParam 给的是

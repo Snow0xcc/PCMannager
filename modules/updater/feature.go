@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -55,6 +56,17 @@ type Feature struct {
 	staged string
 	// last is the most recent check result surfaced in the panel state.
 	last CheckResult
+
+	// —— 测试 seam（零值 = 生产行为）——
+	// firstCheckDelay 覆盖 loop 的首检延迟（默认 1 分钟）。
+	firstCheckDelay time.Duration
+	// checkInterval 覆盖 loop 的后续间隔（默认读 interval_hours 配置）。
+	checkInterval time.Duration
+	// httpClientFn 覆盖出站 HTTP 客户端（默认 newHTTPClient 白名单客户端）。
+	httpClientFn func() *http.Client
+
+	// stopCh 关闭即终止轮询 goroutine；Start 创建、Stop 关闭并置 nil。
+	stopCh chan struct{}
 }
 
 // CheckResult is the panel-facing snapshot of the most recent check/download.
@@ -89,7 +101,7 @@ func (f *Feature) Description() string {
 // Options declares the module settings.
 func (f *Feature) Options() []core.Option {
 	return []core.Option{
-		{Key: optAutoCheck, Label: "自动检查更新", Kind: core.KindBool, Default: true,
+		{Key: optAutoCheck, Label: "自动检查更新", Kind: core.KindBool, Default: true, Restart: true,
 			Help: "按固定间隔检查 GitHub Releases；关闭后仅可手动检查"},
 		{Key: optIntervalH, Label: "检查间隔（小时）", Kind: core.KindInt, Default: 24, Min: 1, Max: 168, Step: 1,
 			Help: "两次自动检查之间的间隔，1-168 小时"},
@@ -112,49 +124,74 @@ func (f *Feature) Actions() []core.Action {
 	}
 }
 
-// Init stores the context, seeds state and starts the periodic check loop.
+// Init stores the context and seeds state. The periodic check loop is NOT
+// started here: app only calls Start for enabled modules, so starting in Init
+// would make the default-off updater poll GitHub anyway (A4).
 //
-// The loop re-checks auto_check every round, so a value flipped later is
-// honored without a module restart; Init only decides whether the goroutine
-// runs at all.
+// consumeUpdateLog is safe to run here and needs no network: it only reads and
+// removes the local record left behind by the apply helper of a previous run.
 func (f *Feature) Init(ctx *core.Context) error {
 	f.ctx = ctx
-	f.last.Current = f.currentVersion()
+	f.setCurrent(f.currentVersion())
 	// A stale staged file from a previous run is still applicable.
 	if p := filepath.Join(ctx.DataDir, stagedName); fileExists(p) {
 		f.staged = p
 	}
 	f.consumeUpdateLog()
-	if boolOpt(f.ctx.Config.Get(optAutoCheck, true)) {
-		go f.loop()
-	}
 	return nil
 }
 
 // Start implements core.Module: it publishes the initial state so the panel
-// shows the module as running with the detected version. The periodic check
-// loop was already started in Init.
+// shows the module as running with the detected version, and opens the
+// periodic check loop (only reached for enabled modules — the app gates
+// Start on the enabled flag).
 func (f *Feature) Start() error {
-	f.last.Current = f.currentVersion()
+	f.setCurrent(f.currentVersion())
 	if f.ctx != nil {
 		f.ctx.Bus.State(moduleID, f.State())
+	}
+	if boolOpt(f.ctx.Config.Get(optAutoCheck, true)) {
+		f.mu.Lock()
+		if f.stopCh == nil { // 已在轮询则不重复起 goroutine
+			f.stopCh = make(chan struct{})
+			go f.loop(f.stopCh)
+		}
+		f.mu.Unlock()
 	}
 	return nil
 }
 
-// Stop implements core.Module. The check loop exits via ctx cancellation;
-// nothing to stop here. A staged download is intentionally kept: the user may
-// apply it after restarting into this or a later session.
-func (f *Feature) Stop() error { return nil }
+// Stop implements core.Module: it closes the check loop's stop channel,
+// signaling the goroutine to exit (loop also honors ctx cancellation). A
+// staged download is intentionally kept: the user may apply it after
+// restarting into this or a later session.
+func (f *Feature) Stop() error {
+	f.mu.Lock()
+	ch := f.stopCh
+	f.stopCh = nil
+	f.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+	return nil
+}
 
-// loop runs the periodic check until app shutdown.
-func (f *Feature) loop() {
+// loop runs the periodic check until app shutdown or the module is stopped.
+// stop is owned by the caller (Start/Stop lifecycle); ctx cancellation still
+// exits for shutdown.
+func (f *Feature) loop(stop <-chan struct{}) {
 	// First check shortly after boot so a fresh release is noticed promptly;
 	// later checks follow the configured interval.
-	t := time.NewTimer(time.Minute)
+	first := f.firstCheckDelay
+	if first <= 0 {
+		first = time.Minute
+	}
+	t := time.NewTimer(first)
 	defer t.Stop()
 	for {
 		select {
+		case <-stop:
+			return
 		case <-f.ctx.Ctx.Done():
 			return
 		case <-t.C:
@@ -163,7 +200,11 @@ func (f *Feature) loop() {
 					f.ctx.Logger.Warn("自动检查更新失败", "err", err)
 				}
 			}
-			t.Reset(f.interval())
+			next := f.checkInterval
+			if next <= 0 {
+				next = f.interval()
+			}
+			t.Reset(next)
 		}
 	}
 }
@@ -177,14 +218,35 @@ func (f *Feature) interval() time.Duration {
 	return time.Duration(h) * time.Hour
 }
 
-// currentVersion reports the running version.
+// setCurrent records the running version. f.last is read concurrently by
+// State() (panel polling), so every write must hold f.mu (review I-1).
+func (f *Feature) setCurrent(v string) {
+	f.mu.Lock()
+	f.last.Current = v
+	f.mu.Unlock()
+}
+
+// client returns the outbound HTTP client, honoring the test seam.
+func (f *Feature) client() *http.Client {
+	if f.httpClientFn != nil {
+		return f.httpClientFn()
+	}
+	return newHTTPClient()
+}
+
+// currentVersion reports the running version, preferring the trusted baseline
+// from core.AppControl.Version() (implemented by *App).
 //
-// 优先走 ctx.App.Version()——那是 internal/app.Version（链接期 -X 注入的 tag），
-// 是自动更新唯一可信的比较基准。曾在这里直接 debug.ReadBuildInfo()，结果
-// 本地构建拿到的是 "v0.1.0-rc1.0.<日期>+dirty" 这种伪版本而非注入的 tag；
-// 与 version.go 的同步要求靠接口消除了（读 app 包会反转 modules→app 依赖，
-// 而 core.AppControl 正是为这条路径存在的）。
-// App 不可用（单测）时才回退到 build info → "0.0.0-dev"。
+// ctx.App.Version() is internal/app.Version — the tag stamped at link time — and
+// is the only trustworthy comparison baseline for auto-update. Reading
+// debug.ReadBuildInfo() directly used to yield bogus values like
+// "v0.1.0-rc1.0.<date>+dirty" instead of the injected tag, and made isNewer
+// flag the current tag itself as an update (A3). The AppControl seam exists so
+// modules get that baseline without importing internal/app, which would invert
+// the modules→app dependency.
+//
+// The build-info fallback below therefore only fires when App is unavailable
+// (unit tests, or a host that leaves App nil) — it is not on the release path.
 func (f *Feature) currentVersion() string {
 	if f.ctx != nil && f.ctx.App != nil {
 		if v := f.ctx.App.Version(); v != "" {
@@ -213,7 +275,7 @@ func (f *Feature) Check(ctx context.Context) (CheckResult, error) {
 		f.mu.Unlock()
 	}()
 
-	rel, err := fetchLatest(ctx, newHTTPClient())
+	rel, err := fetchLatest(ctx, f.client())
 	res := f.recordCheck(rel, err)
 	if f.ctx != nil {
 		f.ctx.Bus.State(moduleID, f.State())
@@ -362,7 +424,7 @@ func (f *Feature) Download(ctx context.Context) error {
 	}
 
 	// Resolve the download URL fresh: the check step only stores the name.
-	hc := newHTTPClient()
+	hc := f.client()
 	rel, err := fetchLatest(ctx, hc)
 	if err != nil {
 		return err

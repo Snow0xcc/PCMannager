@@ -123,6 +123,10 @@ func (p panelProvider) RunHotkey(id string) error { return p.a.RunHotkey(id) }
 // OpenUI opens a module's dedicated window.
 func (p panelProvider) OpenUI(id string) error { return p.a.OpenUI(id) }
 
+// restartRequiredKeys are app settings read only during startup: saving
+// them succeeds but takes no effect until the next launch (A7).
+var restartRequiredKeys = []string{"server_port", "data_dir", "log_level", "tray_icon_path"}
+
 // AppConfig returns the application settings.
 func (p panelProvider) AppConfig() server.AppConfig {
 	c := p.a.Config().App()
@@ -134,7 +138,9 @@ func (p panelProvider) AppConfig() server.AppConfig {
 		ServerPort:       c.ServerPort,
 		OpenInWebview:    c.OpenInWebview,
 		Language:         c.Language,
+		TrayIconPath:     c.TrayIconPath,
 		EffectiveDataDir: p.a.DataDir(),
+		RestartRequired:  restartRequiredKeys,
 	}
 }
 
@@ -167,6 +173,9 @@ func (p panelProvider) PatchAppConfig(patch server.AppConfigPatch) error {
 		if patch.Language != nil {
 			c.Language = *patch.Language
 		}
+		if patch.TrayIconPath != nil {
+			c.TrayIconPath = *patch.TrayIconPath
+		}
 	})
 }
 
@@ -179,6 +188,42 @@ func (p panelProvider) Capabilities() any {
 	caps := winui.Capabilities()
 	caps.TrayIcon = tray.Supported()
 	return caps
+}
+
+// Conflicts reports global hotkey combos claimed by more than one module,
+// grouped from the modules' *configured* hotkeys (C2-2).
+//
+// Why not core.HotkeyManager.Conflicts()? That method groups h.combos, which
+// can never hold the same combo twice: Bind rejects an in-process duplicate
+// before inserting it and rolls back registrations the OS refused, so its
+// result is structurally always empty. The conflict a user can actually fix
+// is "two modules configured the same combo" — the manager silently drops
+// the second binding, so the panel detects it here at the configuration
+// layer, using the same canonical parsing (core.ParseHotkey) the manager
+// binds from. Holders keep registration order; disabled modules are included
+// because RebindHotkeys binds them the same way.
+func (p panelProvider) Conflicts() []server.HotkeyConflict {
+	mods := p.a.Modules()
+	cfg := p.a.Config()
+	groups := make(map[string][]string, len(mods))
+	var order []string // canonical combo texts in first-seen order
+	for _, m := range mods {
+		combo, ok, err := core.ParseHotkey(cfg.Module(m.ID()).Hotkey())
+		if err != nil || !ok {
+			continue // "" (unbound) and unparseable strings cannot conflict
+		}
+		if _, seen := groups[combo.Text]; !seen {
+			order = append(order, combo.Text)
+		}
+		groups[combo.Text] = append(groups[combo.Text], m.ID())
+	}
+	out := make([]server.HotkeyConflict, 0)
+	for _, text := range order {
+		if holders := groups[text]; len(holders) > 1 {
+			out = append(out, server.HotkeyConflict{Hotkey: text, Holders: holders})
+		}
+	}
+	return out
 }
 
 // ValidateHotkey checks a hotkey string, returning a reason when invalid.
@@ -197,5 +242,6 @@ func (p panelProvider) Subscribe() (<-chan core.Event, func()) {
 	return p.a.Bus().Subscribe()
 }
 
-// Version is the application version string.
-func (p panelProvider) Version() string { return Version }
+// Version is the application version string (normalized, no leading "v";
+// the panel must not double the prefix).
+func (p panelProvider) Version() string { return NormalizedVersion() }

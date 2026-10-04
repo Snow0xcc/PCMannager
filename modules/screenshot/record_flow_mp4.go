@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kbinani/screenshot"
-
 	"github.com/snow0xcc/pcmannager/internal/core"
 )
 
@@ -125,7 +123,7 @@ func (r *mp4Recorder) loop(loopCtx context.Context) {
 				}
 			}
 
-			img, err := screenshot.CaptureRect(r.region)
+			img, err := grabRegion(r.region)
 			if err != nil {
 				r.ctx.Logger.Warn("MP4 录屏取帧失败", "module", moduleID, "err", err)
 				continue

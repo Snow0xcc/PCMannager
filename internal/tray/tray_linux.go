@@ -90,7 +90,8 @@ type statusNotifierProperties struct {
 func Supported() bool { return true }
 
 // New 创建一个基于 StatusNotifierItem 的 Linux 系统托盘。
-func New(log *slog.Logger, handler Handler) Tray {
+// iconPath 仅为签名对齐（Windows 支持自定义 .ico），Linux 暂不使用。
+func New(log *slog.Logger, handler Handler, _ string) Tray {
 	if log == nil {
 		log = slog.Default()
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/snow0xcc/pcmannager/internal/app"
 	"github.com/snow0xcc/pcmannager/internal/paths"
+	"github.com/snow0xcc/pcmannager/internal/sysutil"
 	"github.com/snow0xcc/pcmannager/modules/clipboard"
 	"github.com/snow0xcc/pcmannager/modules/launcher"
 	"github.com/snow0xcc/pcmannager/modules/repair"
@@ -34,6 +35,17 @@ func main() {
 		}
 	}
 
+	// 单实例：托盘应用不允许双开——两个热键后端/两个托盘图标/剪贴板
+	// 监视分裂都会出错。第二次启动静默退出（托盘应用惯例）；GUI 子系统下
+	// stderr 不可见，提示可忽略，日志文件里无痕迹属预期。锁在进程内持有，
+	// 放在 main 而非 app.New：同进程多 App 实例（测试）不受影响。
+	releaseInstance, ok := sysutil.AcquireSingleInstance("pcmannager")
+	if !ok {
+		os.Stderr.WriteString("PCMannager 已在运行（见系统托盘），本次启动退出。\n")
+		os.Exit(1)
+	}
+	defer releaseInstance()
+
 	a, err := app.New()
 	if err != nil {
 		// The logger is not up yet, so stderr is the only sink available.
@@ -42,8 +54,8 @@ func main() {
 	}
 
 	// Register every feature. Each is independently toggleable + hotkeyable.
-	// preferences is not registered: it is a view over this registry, opened
-	// on demand through preferences.Show(preferences.NewManager(a)).
+	// preferences is not registered: the preferences panel is opened on demand
+	// through App.OpenPanel (native WebView2 window or browser).
 	a.MustRegister(taskbar.NewFeature())
 	a.MustRegister(clipboard.NewFeature())
 	a.MustRegister(screenshot.NewFeature())

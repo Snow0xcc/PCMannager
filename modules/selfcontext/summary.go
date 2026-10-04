@@ -50,11 +50,17 @@ func (f *Feature) recordSummary(title string) {
 	f.mu.Lock()
 	// 从尾部找匹配的条目（record 刚 append 过它）；找不到就放弃——
 	// 说明条目已被环形缓冲挤掉。
+	saved := false
 	for i := len(f.entries) - 1; i >= 0 && time.Since(f.entries[i].Timestamp) < 2*time.Minute; i-- {
 		if f.entries[i].Title == title && f.entries[i].Summary == "" {
 			f.entries[i].Summary = summary
+			saved = true
 			break
 		}
+	}
+	// 条目现在是持久化的（C3），描述也必须落盘，否则重启后 Summary 全丢。
+	if saved {
+		f.saveLocked()
 	}
 	f.mu.Unlock()
 

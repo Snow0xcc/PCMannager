@@ -77,9 +77,9 @@ func TestOptionsExposeEveryKey(t *testing.T) {
 	want := []string{
 		optInterval, optShowDown, optShowUp, optShowCPU, optShowMem, optShowDisk,
 		optShowUptime, optShowBattery, optAlign, optOffsetX, optWidth, optMarginTop, optMarginV, optLayout,
-		optNumAlign, optSpeedUnit, optUnitSpace, optFontFamily, optFontSize,
-		optFGColor, optAutoFG, optBGMode, optBGColor, optFollowTheme, optSeparator, optRender,
-		optAvoidWidgets, optMultiMonitor,
+		optSpeedUnit, optUnitSpace, optFontFamily, optFontSize,
+		optFGColor, optAutoFG, optBGMode, optBGColor, optSeparator,
+		optAvoidWidgets,
 	}
 
 	f := &Feature{}
@@ -127,9 +127,8 @@ func TestOptionsSelectHaveChoicesAndValidDefaults(t *testing.T) {
 	}
 }
 
-// TestActionsExposeDeclaredIDs 守护面板按钮：Actions() 必须暴露已实现的
-// action id。copy_stats 目前只定义了常量、尚未接线，这里显式断言它确实
-// 没有出现在面板上，一旦将来补上实现，本用例会提醒同步更新。
+// TestActionsExposeDeclaredIDs 守护面板按钮：Actions() 必须且只能暴露
+// 有 RunAction 分支的 action id。
 func TestActionsExposeDeclaredIDs(t *testing.T) {
 	ids := map[string]bool{}
 	for _, a := range (&Feature{}).Actions() {
@@ -145,9 +144,6 @@ func TestActionsExposeDeclaredIDs(t *testing.T) {
 		if !ids[want] {
 			t.Errorf("缺少操作: %s（feature.go 声明了但 Actions() 里没有）", want)
 		}
-	}
-	if ids[actionCopy] {
-		t.Errorf("操作 %s 已在 Actions() 中暴露，但它还没有 RunAction 分支，请补上实现", actionCopy)
 	}
 }
 

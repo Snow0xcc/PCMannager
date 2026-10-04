@@ -17,7 +17,8 @@ type noopTray struct{}
 func Supported() bool { return false }
 
 // New returns a tray that reports the feature as unavailable.
-func New(_ *slog.Logger, _ Handler) Tray { return &noopTray{} }
+// iconPath is accepted for signature parity with the Windows build but unused.
+func New(_ *slog.Logger, _ Handler, _ string) Tray { return &noopTray{} }
 
 // SetMenu 是 no-op。
 func (t *noopTray) SetMenu(Menu) {}

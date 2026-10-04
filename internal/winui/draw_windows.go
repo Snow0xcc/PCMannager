@@ -201,14 +201,6 @@ func (c *Canvas) Fill(r Rect, color uint32) {
 	procFillRect.Call(c.hdc, uintptr(unsafe.Pointer(&r)), brush)
 }
 
-// FillRound paints a filled rectangle with a 1px border of borderColor.
-func (c *Canvas) FillRound(r Rect, fill uint32, border uint32) {
-	c.Fill(r, fill)
-	if border != 0 {
-		c.StrokeRect(r, border, 1)
-	}
-}
-
 // StrokeRect draws a rectangle outline.
 func (c *Canvas) StrokeRect(r Rect, color uint32, width int32) {
 	if width <= 0 {
@@ -345,12 +337,6 @@ func BlendColors(fg, bg uint32, weight float64) uint32 {
 		mix((fg>>8)&0xFF, (bg>>8)&0xFF),
 		mix((fg>>16)&0xFF, (bg>>16)&0xFF),
 	)
-}
-
-// FillRectAlpha paints a translucent rectangle; it is an alias of FillAlpha kept
-// for call sites that think in terms of rectangles rather than masks.
-func (c *Canvas) FillRectAlpha(r Rect, color uint32, alpha byte) {
-	c.FillAlpha(r, color, alpha)
 }
 
 // Text draws a single line of text with a transparent background.

@@ -59,7 +59,7 @@ bash scripts/gen-logo.sh
 bash scripts/gen-logo.sh --check   # 只校验 docs/site/assets/*.svg 是否与几何一致
 ```
 
-Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。
+Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。注意**构建通过不等于功能可用**：全局热键、托盘、任务栏嵌入、截图编辑器、修复动作、快捷面板等原生能力在非 Windows 上均不可用，逐模块成色见 README 功能表「平台可用性」列。
 
 > **不要裸调 `go build` 产出发布版**：必须带 `-tags production`（Wails 需要）且 Windows 需 `-H windowsgui`（否则弹控制台）。`scripts/build.sh` 已把两者固定下来，发布请一律走它。
 
@@ -69,28 +69,33 @@ Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心
 2. 新增模块：在 `modules/<name>/` 下建包实现 `internal/core.Module`，并在 `main.go` 注册；平台相关 UI 须成对提供 `_windows.go`（`//go:build windows`）与 `_other.go`（`//go:build !windows`）。
 3. 改动依赖后跑 `go mod tidy`，并提交更新后的 `go.mod`/`go.sum`。
 4. 提交前执行 `gofmt -w . && go vet ./...` 自查。
-5. 前端（规划中的 Wails 面板）**严禁使用 emoji**，图形一律用 icon 资源替代（详见 README「前端显示规范」）。
+5. 前端（Web 面板与 Wails 原生窗口）**严禁使用 emoji**，图形一律用 icon 资源替代（详见 README「前端显示规范」）。
 
 ## 5. 本地运行与调试
 
-- 配置文件默认位于用户配置目录下的 `GoBox/config.yaml`（Windows `%APPDATA%\GoBox`）。可用环境变量覆盖路径以便调试：
+- 配置文件默认位于用户配置目录下的 `GoBox/config.yaml`（数据目录：Windows `%APPDATA%\GoBox`、Linux `$XDG_CONFIG_HOME/GoBox`，可由 `app.data_dir` 覆盖；`GoBox` 为历史代号，见 README「已知限制」）。可用环境变量覆盖路径以便调试：
 
   ```bash
-  PCMANNAGER_CONFIG=/path/to/dev-config go run .
+  PCMANNAGER_CONFIG=/path/to/dev-config.yaml go run .
   ```
 
-- 日志同时写入两处：数据目录 `logs/gobox.log` **和程序所在目录** `logs/gobox.log`（即 exe 旁边的 `logs/`，启动时自动创建）。后者对无控制台的 GUI 构建尤其重要——直接去程序目录就能看到日志。
+- 日志写入两处：数据目录 `logs/gobox.log`（`internal/paths.LogFile`）**与程序所在目录** `logs/gobox.log`（`paths.ExecutableLogFile`，启动时自动创建）。后者对无控制台的 GUI 构建尤其重要——直接去 exe 旁边的 `logs/` 就能看日志。同一文件不会被重复打开。
 
 ## 6. 构建与运行的坑
 
-历史上 `main.go` 曾引用旧版 `core` API 而无法 `go build`，该缺口已修复：现在 `go build ./...`、`go vet ./...` 与四个目标平台交叉构建都通过。
+早期 `main.go` 曾引用旧版 `core` API（`Manager`/`Feature`/`App`）导致四平台构建失败；该迁移缺口**已修复**（全模块迁移到 `core.Module` 契约，`main.go` 改用 `internal/app` 装配层）。
+
+当前状态：
+
+- `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64` 均以 `CGO_ENABLED=0` 构建通过，`go build ./...` / `go vet ./...` 可正常使用。
+- 发布构建统一走 `bash scripts/build.sh <goos> <goarch> <输出>`（固定 `-tags production`，并对 Windows 追加 `-H windowsgui`）。
 
 仍要注意两点（都会导致“看起来构建成功、但行为异常”）：
 
-- **Wails 的 `production` 标签**：缺它会让 `wailsapp` 退回 `app_default_windows.go` 桩实现（`CreateApp` 弹框返回 `nil`），事件转发随后以无效 context 调 `runtime.EventsEmit`，内部 `log.Fatalf` 直接退出进程。`scripts/build.sh` 已固定该标签。
+- **Wails 的 `production` 标签**：缺它会让 `wailsapp` 退回 `app_default_windows.go` 桩实现（`CreateApp` 弹框返回 `nil`），事件转发随后以无效 context 调 `runtime.EventsEmit`，内部 `log.Fatalf` 直接 `os.Exit`——GUI 子系统下表现为**创建完 config 后静默退出**。`scripts/build.sh` 已固定该标签。
 - **Windows 的 `-H windowsgui`**：缺它会在启动时弹出黑色控制台窗口。
 
-开发期用 `go run .`（无标签、控制台子系统）调试核心逻辑是可行的；`wailsapp` 侧已加固为“拿到空 context 就停止转发”，不会因此退出进程。
+开发期用 `go run .`（无标签、控制台子系统）调试核心逻辑是可行的；`wailsapp` 侧已加固为“拿到空 context 就停止转发”（`API.ctxFor()` 返回 `nil` 而非 `context.Background()`），不会因此退出进程。
 
 ## 7. 提交说明
 

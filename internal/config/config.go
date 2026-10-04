@@ -33,6 +33,10 @@ type App struct {
 	ServerPort    int    `yaml:"server_port" json:"server_port"`
 	OpenInWebview bool   `yaml:"open_in_webview" json:"open_in_webview"`
 	Language      string `yaml:"language" json:"language"`
+	// TrayIconPath is an optional user-supplied .ico file for the tray icon.
+	// Empty means the built-in embedded brand icon. Read only at startup
+	// (restart required, A7).
+	TrayIconPath string `yaml:"tray_icon_path" json:"tray_icon_path"`
 }
 
 // Module is the per-module persisted configuration.
@@ -87,7 +91,6 @@ func Default() *Config {
 					"margin_top":    0,
 					"margin_v":      0,
 					"layout":        "two-line",
-					"num_align":     "left",
 					"speed_unit":    "B",
 					"unit_space":    true,
 					"font_family":   "Microsoft YaHei",
@@ -96,21 +99,19 @@ func Default() *Config {
 					"auto_fg_color": true,
 					"bg_mode":       "transparent",
 					"bg_color":      "#1E1E1E",
-					"follow_theme":  true,
 					"separator":     "space",
-					"render":        "gdi",
 					"avoid_widgets": true,
-					"multi_monitor": false,
 				},
 			},
 			"clipboard": {
 				Enabled: true,
 				Hotkey:  "Ctrl+`",
 				Options: map[string]any{
-					"max_items":      500,
-					"store_images":   true,
-					"paste_on_copy":  false,
-					"retention_days": 30,
+					"max_items":       500,
+					"store_images":    true,
+					"paste_on_copy":   false,
+					"retention_days":  30,
+					"max_image_bytes": 8388608,
 				},
 			},
 			"selfcontext": {
@@ -218,8 +219,32 @@ func mergeOptions(def, cur map[string]any) map[string]any {
 	return out
 }
 
-// Config returns the live configuration document.
-func (m *Manager) Config() *Config { return m.cfg }
+// Config returns a detached snapshot of the configuration document.
+//
+// It used to return the live pointer, which let callers read App fields
+// without holding cfg.mu while UpdateApp wrote them concurrently (A7 data
+// race). The returned copy is owned by the caller: mutating it never
+// affects the Manager. All writes must go through ModuleView setters,
+// UpdateApp or DeclareDefaults; re-take a snapshot to observe fresh values.
+func (m *Manager) Config() *Config {
+	m.cfg.mu.RLock()
+	defer m.cfg.mu.RUnlock()
+	out := &Config{
+		App:     m.cfg.App,
+		Modules: make(map[string]Module, len(m.cfg.Modules)),
+	}
+	for id, mod := range m.cfg.Modules {
+		if mod.Options != nil {
+			opts := make(map[string]any, len(mod.Options))
+			for k, v := range mod.Options {
+				opts[k] = v
+			}
+			mod.Options = opts
+		}
+		out.Modules[id] = mod
+	}
+	return out
+}
 
 // Path returns the config file location.
 func (m *Manager) Path() string { return m.path }

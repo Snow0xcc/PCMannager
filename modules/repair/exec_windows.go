@@ -3,16 +3,18 @@
 package repair
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
-	"strings"
 )
 
-// runCommand executes cmdline through cmd /c and returns the combined output.
-func runCommand(cmdline string) (string, error) {
-	cmd := exec.Command("cmd", "/c", cmdline)
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+// runCommand executes cmdline through cmd /c under the catalogue action's
+// execution budget and returns the trimmed combined output. The budget comes
+// from actionTimeout(id): a hung command is killed via CommandContext and
+// surfaces as a friendly timeout error naming the action.
+func runCommand(id, cmdline string) (string, error) {
+	return runActionBudgeted(id, actionTimeout(id), func(ctx context.Context) (string, error) {
+		return runWithContext(ctx, "cmd", "/c", cmdline)
+	})
 }
 
 // appendLogf formats a log line for the walk panel's log buffer.

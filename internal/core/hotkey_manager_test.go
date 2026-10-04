@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -299,6 +300,50 @@ func TestHotkeyManualHandlerSurvivesRegistrationFailure(t *testing.T) {
 	if !called {
 		t.Fatal("手动调用未触发处理器")
 	}
+}
+
+// settleGoroutines waits until the goroutine count stops changing, so a
+// comparison baseline is not skewed by teardown that has not been scheduled
+// yet (the backend pump exits when close() closes its done channel, one
+// scheduler tick after Stop returns).
+func settleGoroutines() {
+	prev := runtime.NumGoroutine()
+	for i := 0; i < 100; i++ {
+		time.Sleep(10 * time.Millisecond)
+		cur := runtime.NumGoroutine()
+		if cur == prev {
+			return
+		}
+		prev = cur
+	}
+}
+
+// TestHotkeyStopTerminatesDispatcher is the C4 dispatcher-leak regression:
+// Stop must end the goroutine that drains the dispatch channel, so repeated
+// Start/Stop cycles cannot accumulate goroutines. Before the fix the channel
+// was a Start-local value that Stop never closed, so every cycle leaked one
+// goroutine blocked on `for range ch` forever.
+func TestHotkeyStopTerminatesDispatcher(t *testing.T) {
+	// Warm-up cycle: also triggers lazy runtime goroutines so the measured
+	// baseline belongs to a settled process.
+	warm := NewHotkeyManager(nil)
+	warm.Start()
+	warm.Stop()
+	settleGoroutines()
+
+	before := runtime.NumGoroutine()
+	h := NewHotkeyManager(nil)
+	h.Start()
+	h.Stop()
+
+	for i := 0; i < 100; i++ {
+		if runtime.NumGoroutine() <= before {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Stop 后 goroutine 数未回落: before=%d after=%d（dispatcher 泄漏）",
+		before, runtime.NumGoroutine())
 }
 
 // TestHotkeyConcurrentBindUnbindStop exercises the Manager under -race with

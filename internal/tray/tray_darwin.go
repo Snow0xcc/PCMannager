@@ -243,7 +243,9 @@ func nsImageFromRGBA(img *image.RGBA) objc.ID {
 // New 创建一个 macOS 菜单栏托盘。
 // Supported 在 macOS 上为 true：本文件实现了 NSStatusBar 菜单项。
 func Supported() bool { return true }
-func New(log *slog.Logger, handler Handler) Tray {
+
+// iconPath 仅为签名对齐（Windows 支持自定义 .ico），macOS 暂不使用。
+func New(log *slog.Logger, handler Handler, _ string) Tray {
 	if log == nil {
 		log = slog.Default()
 	}

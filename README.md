@@ -4,7 +4,7 @@
 
 # PCMannager
 
-跨平台系统托盘工具（以 Windows 为主，同时支持 Linux/macOS），用 Go 编写。集成任务栏状态、剪贴板历史、截图、工作上下文记录、电脑修复工具箱等模块，每个模块可独立开关并绑定全局热键。
+系统托盘工具（Windows 优先），用 Go 编写。集成任务栏状态、剪贴板历史、截图、工作上下文记录、电脑修复工具箱、快捷面板等模块，每个模块可独立开关并绑定全局热键。四个目标平台均可构建运行，但**构建通过不等于功能等价**：功能模块的平台成色差异显著（Windows 最完整），逐模块实测结论见下方功能表「平台可用性」列。
 
 **设计原则**：单一二进制、`CGO_ENABLED=0` 纯 Go 构建、零 cgo 依赖（Windows GUI 走自研 `internal/winui`，基于 `syscall.LazyDLL` 直接调 Win32）。
 
@@ -26,16 +26,16 @@ Wiki 内容以 `docs/wiki/*.md` 为单一数据源，由 `scripts/sync-wiki.sh` 
 
 ## 功能与状态
 
-| 模块 | ID | 说明 | 默认热键 | 默认开关 |
-| --- | --- | --- | --- | --- |
-| 任务栏状态 | `taskbar` | 任务栏 CPU/内存/网络/磁盘/运行时长/电量小组件（TrafficMonitor 式锚在通知区左侧，真透明背景），2×2 网格排版字段**随字号实测缩放**，文字颜色随背景明暗自适应（Windows 真实嵌入窗口，其他平台仅采集日志） | `Ctrl+Alt+T` | 开 |
-| 剪贴板历史 | `clipboard` | 文本 + 图片历史、置顶、容量裁剪、保留期清理（Windows 查看器可拖动，选中后恢复焦点并可选自动粘贴） | `` Ctrl+` `` | 开 |
-| 截图 | `screenshot` | 全屏抓取 + 框选编辑器（选区浮动工具栏：矩形/椭圆/箭头/画笔标注、颜色与粗细、撤销、确认/复制/取消），png/jpg 可选，可自动复制到剪贴板；另含 **GIF 录屏**（框选后录制，独立置顶控制条）与**滚动长截图**（手动或自动滚动 + 像素条带拼接，自动滚动会注入滚轮） | `F1` | 开 |
-| 上下文记录 | `selfcontext` | 记录活动窗口标题/进程名（不含截屏），可导出/清空 | `Ctrl+Alt+M` | **关**（隐私 opt-in） |
-| 电脑修复与工具 | `repair` | 声明式工具箱目录（7 大页、约 60 个工具：系统设置/网络排查/清理/运行环境/包管理器…） | — | 开 |
-| 自动更新 | `updater` | 定时比对 GitHub Releases 版本并下载匹配平台资产；镜像池轮询（ghfast/ghproxy/moeyy → 直连），主机白名单校验、原子暂存 + sha256；应用需显式确认，经提权脚本替换并重启，**绝不自动执行下载物** | — | **关** |
-| 快捷面板 | `launcher` | Alt+Space 唤起的全局搜索面板：模块动作/界面入口/网页捷径/本地应用统一候选，拼音首字母缩写，别名/拼音关键字可编辑，置顶与打开次数驱动排序；另有 Alt+P 超级面板（悬浮磁贴池） | `Alt+Space` | 开 |
-| 首选项 | `preferences` | 统一设置面板；**非功能模块**，是注册表的视图 | — | — |
+| 模块 | ID | 说明 | 默认热键 | 默认开关 | 平台可用性 |
+| --- | --- | --- | --- | --- | --- |
+| 任务栏状态 | `taskbar` | 任务栏 CPU/内存/网络/磁盘/运行时长/电量小组件（TrafficMonitor 式锚在通知区左侧，真透明背景），2×2 网格排版字段**随字号实测缩放**，文字颜色随背景明暗自适应 | `Ctrl+Alt+T` | 开 | Windows 完整；Linux/macOS 部分可用（指标采集与面板展示正常，无任务栏嵌入窗口、无电量） |
+| 剪贴板历史 | `clipboard` | 文本 + 图片历史、置顶、容量裁剪、保留期清理（Windows 查看器可拖动，选中后恢复焦点并可选自动粘贴） | `` Ctrl+` `` | 开 | Windows 完整；Linux/macOS 部分可用（文本/图片历史与面板浏览/写回/删除正常；文件类型采集与写回、自动粘贴、原生查看器窗口不可用） |
+| 截图 | `screenshot` | 全屏抓取 + 框选编辑器（选区浮动工具栏：矩形/椭圆/箭头/画笔标注、颜色与粗细、撤销、确认/复制/取消），png/jpg 可选，可自动复制到剪贴板；另含 **GIF 录屏**（框选后录制，独立置顶控制条）与**滚动长截图**（手动或自动滚动 + 像素条带拼接，自动滚动会注入滚轮） | `F1` | 开 | Windows 完整；Linux/macOS 不可用（编辑器窗口降级为空转，抓屏后无区域选择/保存/复制，截图直接丢弃；GIF/滚动/MP4 编码管线只能经编辑器进入，同样不可达） |
+| 上下文记录 | `selfcontext` | 记录活动窗口标题/进程名（不含截屏），可导出/清空 | `Ctrl+Alt+M` | **关**（隐私 opt-in） | Windows 完整；Linux/macOS 不可用（活动窗口探针恒为空，采样不产生记录；屏幕捕获与查看器不可用；导出/清空可用但数据恒为空） |
+| 电脑修复与工具 | `repair` | 声明式工具箱目录（7 大页、约 60 个工具：系统设置/网络排查/清理/运行环境/包管理器…） | — | 开 | 仅 Windows；Linux/macOS 不可用（所有动作返回「当前平台不支持」） |
+| 自动更新 | `updater` | 定时检查 GitHub Releases 新版并提醒（SemVer/rc 排序、prerelease 开关）；下载走主机白名单 + sha256，经提权 helper 显式应用 | — | **关** | 全平台可用（检查/下载/校验一致；Linux/macOS 的应用更新需 root 或 setuid） |
+| 快捷面板 | `launcher` | uTools 式全局搜索面板（Alt+Space）与超级磁贴池（Alt+P）：模块动作/界面入口、网页捷径、开始菜单应用；拼音首字母缩写、多因子加权排序与置顶、右键编辑关键字 | `Alt+Space` | 开 | 仅 Windows；Linux/macOS 不可用（面板/超级面板为原生窗口能力，空转降级，热键无可见响应；开始菜单应用索引亦仅 Windows） |
+| 首选项 | `preferences` | 统一设置面板；**非功能模块**，是注册表的视图 | — | — | 全平台可用（设置走 HTTP 面板；原生窗口仅 Windows） |
 
 模块 ID 是稳定契约，被配置、热键绑定与 REST API 按 ID 查找，新增 ID 须同步 `internal/config`。
 
@@ -71,8 +71,10 @@ go vet ./...
 gofmt -l .                      # 格式化：gofmt -w .
 bash scripts/check-emoji.sh     # 前端禁用 emoji 检查
 
-# 测试（当前 297 个顶层用例，含子测试约 294 条 PASS 断言）
+# 测试（用例数以实测为准，文档不手写具体数字）
+grep -rn "^func Test" --include=*_test.go internal/ modules/ | wc -l
 go test -count=1 ./internal/... ./modules/...
+# 注：-race 需要 cgo，与项目 CGO_ENABLED=0 约束冲突，本机不可用
 ```
 
 > `internal/server` 与 `modules/updater` 的部分用例用 `httptest.NewServer` 监听回环端口，在禁止监听套接字的环境（如受限沙箱）会失败；这是环境限制而非代码缺陷。`modules/preferences` 的用例走 `app.New()` 读配置目录，可用 `PCMANNAGER_CONFIG` 指向可写目录后运行。
@@ -84,7 +86,7 @@ go test -count=1 ./internal/... ./modules/...
 ## 架构
 
 ```
-main.go                  注册 7 个模块 → app.New() → StartPanel/StartTray → Run() 阻塞
+main.go                  注册功能模块（taskbar · clipboard · screenshot · selfcontext · repair · updater · launcher） → app.New() → StartPanel/StartTray → Run() 阻塞
   │
   ├─ internal/app        装配层：config / logx / Bus / HotkeyManager / tray / panel
   │                      实现 server.Provider（依赖方向 app → server，反向会成环）
@@ -93,7 +95,7 @@ main.go                  注册 7 个模块 → app.New() → StartPanel/StartTr
   ├─ internal/server     HTTP REST + SSE，仅监听 127.0.0.1
   │    └─ internal/panel/index.html   面板唯一前端资源（embed 内置，两种传输共用）
   ├─ internal/wailsapp   原生窗口（Wails/WebView2，Windows only；其它平台返回 ErrUnsupported）
-  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · updater · launcher
+  └─ modules/*           taskbar · clipboard · screenshot · selfcontext · repair · updater · launcher · preferences
 平台层：internal/winui（自研免 cgo Win32：窗口/任务栏嵌入/DPI/托盘/注册表）
         internal/tray · internal/sysutil（提权/自启/单实例/通知）· internal/paths · internal/logx
 ```
@@ -115,7 +117,7 @@ Windows 专用 UI 放 `_windows.go`（`//go:build windows`），非 Windows 由 
 ## 首选项面板
 
 - **跨平面板（全平台可用）**：`internal/server` 提供 JSON REST + SSE，前端为 `internal/panel/index.html`，仅监听回环地址。
-- **原生窗口（Windows）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。**必须带 `-tags production` 构建**（`scripts/build.sh` 已固定），否则 Wails 会退回桩实现并导致进程静默退出；非 Windows 自动回退浏览器面板。
+- **原生窗口（Windows，已接线）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.16.0` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。该包已实现 `API` 绑定层（`State`/`Modules`/`Module`/`PatchModule`…，是 `server.Provider` 的薄适配），**已在 `internal/app` 接线**（`main.go` 调 `runNativeWindow`：Windows 起独立 `LockOSThread` goroutine 跑 `wailsapp.Run`，托盘消息泵留在主线程；非 Windows 为 no-op，自动回退浏览器面板）。**必须带 `-tags production` 构建**（`scripts/build.sh` 已固定），否则 Wails 会退回 `app_default_windows.go` 桩实现、事件转发以无效 context 调 `runtime.EventsEmit` 触发 `log.Fatalf`，进程**在创建完 config 后静默退出**（GUI 子系统无控制台、无日志）。
 
 REST 接口：
 
@@ -132,7 +134,7 @@ REST 接口：
 
 ### 前端显示规范：禁用 emoji
 
-客户端界面（Web 面板、Wails 前端与任何原生 UI）**严禁 emoji 字符**作为图标或装饰，一律用 icon 资源替代——SVG / 图标字体置于前端 `assets/icons/`，原生托盘与任务栏走 `internal/winui` 的 `TrayIcon` 等句柄。此约束优先于"美观/快捷"类考量。
+客户端界面（Web 面板、Wails 前端与任何原生 UI）**严禁 emoji 字符**作为图标或装饰，一律用 icon 资源替代——面板图标当前是 `internal/panel/index.html` 的内联 SVG（`icon(name)` 生成），原生托盘与任务栏走 `internal/winui` 的 `TrayIcon` 等句柄。此约束优先于"美观/快捷"类考量。
 
 已落地自动化检查：`bash scripts/check-emoji.sh`（扫描 html/css/js/md/go，正则覆盖 emoji 与符号区段），并在 `.github/workflows/release.yml` 中作为独立 `lint` job，`build` 通过 `needs: lint` 串在其后——emoji 违规会直接卡住发布。
 
@@ -168,6 +170,8 @@ REST 接口：
 **应用更新必须显式确认**：`apply_update` 经 `sysutil.RunElevated` 执行 PowerShell helper（等进程退出 → 备份 → 替换 → 重启），绝不自动执行下载物。版本基准来自 `core.AppControl.Version()`，与构建注入的 `internal/app.Version` 同源。
 
 镜像池按优先级轮询（ghfast.top → ghproxy.net → github.moeyy.xyz → 直连兜底），便于国内访问。
+
+面板动作三步走：`check_now` 检查 → `download` 下载平台匹配资产 → `apply_update`（danger+admin）经提权 helper 显式应用；托盘菜单的"检查更新"入口尚未加（现仅面板动作），真实替换流程仍需 Windows 实机验证。
 
 配置项：`auto_check`（默认**开**，1–168 小时间隔）、`include_prerelease`（默认关）、`notify`（面板事件流提示）。
 
@@ -211,14 +215,15 @@ git push origin v1.0.0
 
 ## 已知限制
 
+- **跨平台成色差异大（D1 如实标注）**：四平台构建均通过，但功能不等价——全局热键在非 Windows 不可用（托盘三平台均已实现，macOS/Linux 未经真机验证）；`screenshot`/`selfcontext`/`repair`/`launcher` 核心能力不可用，`taskbar`/`clipboard` 部分可用，`updater`/`preferences` 全平台可用。逐模块实测结论见上方功能表「平台可用性」列。
 - **真实 Windows 验收部分完成**：托盘启退循环、热键触发、任务栏小组件嵌入、Wails 原生窗口、截图编辑器、剪贴板历史窗口已在本机 Windows 实跑验证；Explorer 重启恢复等边界场景仍未覆盖。
 - **热键可能被占用**：`F1`、`` Ctrl+` ``、`Alt+Space` 在部分机器已被其它程序占用（如 PowerToys Run 抢占 Alt+Space），当前按设计降级（告警 + 面板/托盘仍可用）；面板尚未提供"可用性检测"与改绑引导。
-- **录屏仅支持 GIF**：纯 Go 无成熟 H.264 编码器，项目约束零 cgo + 无 ffmpeg，因此 MP4、音频、摄像头、麦克风均未实现（GIF 帧缓冲上限 1200 帧，约 2 分钟 @10fps）。
+- **录屏默认 GIF，装了 ffmpeg 才有 MP4**：纯 Go 无成熟 H.264 编码器，故 GIF 是默认且无外部依赖（帧缓冲上限 1200 帧，约 2 分钟 @10fps）；MP4 为 opt-in，仅在检测到外部 `ffmpeg` 时出现在选项里（可带扬声器/麦克风音频）。摄像头与麦克风**画面采集**未实现。
 - **滚动截图自动滚动会注入真实滚轮事件**并把光标移到选区中心，属“控制用户电脑”的行为；纯色背景/重复内容可能因条带多处匹配而拼接失败（会平滑停止并保留已拼部分）。
-- **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存；`modules/taskbar` 包名 `statusbar`、`modules/repair` 包名 `pcrepair` 与目录名不一致。
-- **托盘图标不可配置**：三平台托盘都用 `internal/logo` 程序化渲染的品牌蝴蝶（Windows 经 `winui.IconFromRGBA` 转 HICON，macOS/Linux 转 NSImage / IconPixmap），不再回退系统通用图标；但没有配置项可换成自定义图标路径。
+- **命名残留**：`paths.AppName = "GoBox"`、窗口类名 `GoBoxTray`、日志 `gobox.log`、数据目录 `%APPDATA%\GoBox` 与产品名 PCMannager 并存（迁移设计见 [`docs/NAMING-MIGRATION.md`](docs/NAMING-MIGRATION.md)）；各 `modules/*` 包名已与目录名一致（早年 `statusbar`/`pcrepair` 旧名已改齐）。
+- **托盘图标**：四级回退链（`app.tray_icon_path` → 内嵌 `assets/icon.ico` → 程序化蝴蝶标 → shell 通用图标，见 TODO #9 与 `AGENTS.md`）；三平台托盘均实现（Windows `Shell_NotifyIconW`、macOS `NSStatusBar`、Linux `StatusNotifierItem`，Windows 经 `winui.IconFromRGBA`）。
 - **Linux 托盘未做真机验证**：StatusNotifierItem + dbusmenu 仅通过交叉编译与单测（菜单树、点击事件映射、图标字节序），未在真实桌面环境（GNOME/KDE）上验证显示与交互。
-- **测试覆盖缺口**：平台专属测试（`internal/winui` 5 个、`internal/tray` 7 个文件均为 Windows/macOS/Linux build tag）无法在非对应平台执行，跨平台逻辑缺少非平台无关的单测；`modules/preferences` 仅覆盖 `Manager` 与 `ModuleIDs`，未覆盖面板 UI。
+- **测试覆盖缺口**：`internal/winui`、`modules/launcher`、`modules/taskbar` 以及 `modules/screenshot` 的部分用例只有 Windows build tag 的测试文件，在 Linux/macOS runner 上不参与执行（仅由 `GOOS=windows` 编译闸门保证不腐烂）；`internal/tray` 亦有 `*_windows_test.go` 不参与执行，但其图标资产解析与回退链用例（`icon_test.go`）无 tag、Linux 实跑。`internal/wailsapp` 目前没有测试文件。用例总数以实测为准（见上）。
 
 完整待办与优先级见 [`TODO.md`](TODO.md)，变更历史见 [`CHANGELOG.md`](CHANGELOG.md)，模块开发前请读 [`docs/MODULE-CONTRACT.md`](docs/MODULE-CONTRACT.md)。
 
@@ -227,7 +232,7 @@ git push origin v1.0.0
 ```
 main.go / main_{windows,other}.go   程序入口
 internal/{app,core,config,server,panel,wailsapp,winui,tray,sysutil,paths,logx}/
-modules/{taskbar,clipboard,screenshot,selfcontext,repair,updater,launcher,preferences}/
+modules/{launcher,taskbar,clipboard,screenshot,selfcontext,repair,preferences,updater}/
 scripts/{build.sh,check-emoji.sh,gen-logo.sh,sync-wiki.sh,test-linux-tray-dbus.sh}   构建、emoji 检查、品牌校验、Wiki 同步、Linux 托盘 D-Bus 测试
 docs/                               DEVELOPMENT（开发指南）· MODULE-CONTRACT（模块契约）
                                     · AI-PHASE-A-PROMPT · HANDOVER · PROJECT-AUDIT · competitors

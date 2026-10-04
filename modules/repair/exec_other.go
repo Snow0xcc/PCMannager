@@ -10,7 +10,7 @@ import (
 var errUnsupported = errors.New("repair: 当前平台不支持该操作")
 
 // runCommand is a no-op off Windows: every repair action targets cmd.exe.
-func runCommand(cmdline string) (string, error) { return "", errUnsupported }
+func runCommand(id, cmdline string) (string, error) { return "", errUnsupported }
 
 // appendLogf formats a log line for callers that still want a textual trace.
 func appendLogf(name, out string, err error) string {

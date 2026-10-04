@@ -176,6 +176,16 @@ type HotkeyManager struct {
 	nextID   int
 	warn     func(format string, args ...any)
 	started  bool
+
+	// dispatch carries fired hotkey ids from the backend pump to the
+	// dispatcher goroutine, and dispatchDone is closed by that goroutine on
+	// exit. Both are created by Start under mu, so Stop always observes a
+	// consistent pair. Stop closes dispatch only after backend.close() has
+	// joined the pump, so no send can race the close and the dispatcher's
+	// `for range` terminates — without this, every Start/Stop cycle leaked
+	// one goroutine blocked on the range forever (C4).
+	dispatch     chan int
+	dispatchDone chan struct{}
 }
 
 // NewHotkeyManager builds a manager. warn (optional) receives conflict and
@@ -203,10 +213,14 @@ func (h *HotkeyManager) Start() {
 	}
 	h.started = true
 	ch := make(chan int, 16)
+	done := make(chan struct{})
+	h.dispatch = ch
+	h.dispatchDone = done
 	h.mu.Unlock()
 
 	go h.backend.run(ch)
 	go func() {
+		defer close(done)
 		for id := range ch {
 			h.mu.Lock()
 			mod := h.bySlot[id]
@@ -358,12 +372,18 @@ func (h *HotkeyManager) Rebind(get func(module string) (string, func() error)) {
 // stall every Bind/Combo/Conflicts caller during shutdown.
 //
 // Order matters: registrations are unregistered while the pump is still alive,
-// then close() joins the thread, so Stop returns only after every hotkey is
-// gone and no thread or goroutine is left behind.
+// then close() joins the thread, and only then is the dispatch channel closed
+// so the dispatcher's range ends. Stop therefore returns only after every
+// hotkey is gone and neither the pump thread nor the dispatcher goroutine is
+// left behind (C4).
 func (h *HotkeyManager) Stop() {
 	h.mu.Lock()
 	started := h.started
 	h.started = false
+	ch := h.dispatch
+	done := h.dispatchDone
+	h.dispatch = nil
+	h.dispatchDone = nil
 	ids := make([]int, 0, len(h.bySlot))
 	for id := range h.bySlot {
 		ids = append(ids, id)
@@ -377,9 +397,12 @@ func (h *HotkeyManager) Stop() {
 		_ = h.backend.unregister(id)
 	}
 
-	if started {
-		h.backend.close()
-		return
-	}
+	// close() joins the pump before returning (both backends), so once it is
+	// back no further send on ch can race the close below.
 	h.backend.close()
+
+	if started && ch != nil {
+		close(ch)
+		<-done // dispatcher has exited: no goroutine is left behind
+	}
 }

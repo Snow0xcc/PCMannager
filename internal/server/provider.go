@@ -49,11 +49,18 @@ type AppConfig struct {
 	ServerPort    int    `json:"server_port"`
 	OpenInWebview bool   `json:"open_in_webview"`
 	Language      string `json:"language"`
+	// TrayIconPath is an optional user-supplied .ico file for the tray icon;
+	// empty means the built-in embedded brand icon. Restart required (A7).
+	TrayIconPath string `json:"tray_icon_path"`
 	// EffectiveDataDir is the path the app actually resolved and is using,
 	// after merging the user override with the OS default. It is read-only:
 	// the user override flows through DataDir, and this field is for display
 	// so the panel never shows an empty box while data lives elsewhere.
 	EffectiveDataDir string `json:"effective_data_dir"`
+	// RestartRequired lists config keys that are only read at startup, so
+	// saving them has no effect until the app restarts (A7). The panel
+	// renders a hint for these instead of silently ignoring the change.
+	RestartRequired []string `json:"restart_required,omitempty"`
 }
 
 // AppConfigPatch is a partial update of the application settings.
@@ -65,6 +72,19 @@ type AppConfigPatch struct {
 	ServerPort    *int    `json:"server_port,omitempty"`
 	OpenInWebview *bool   `json:"open_in_webview,omitempty"`
 	Language      *string `json:"language,omitempty"`
+	TrayIconPath  *string `json:"tray_icon_path,omitempty"`
+}
+
+// HotkeyConflict reports one global hotkey combo claimed by more than one
+// module, so the panel can warn the user and point at the module pages where
+// the binding can be changed (C2-2).
+type HotkeyConflict struct {
+	// Hotkey is the canonical combo text, e.g. "ctrl+alt+k".
+	Hotkey string `json:"hotkey"`
+	// Holders lists the module ids that configure this combo, in registration
+	// order. Only the first binding wins, so the remaining holders' hotkeys
+	// are dead until the user rebinds them.
+	Holders []string `json:"holders"`
 }
 
 // Provider is the application-side data source used by the HTTP handlers.
@@ -89,6 +109,9 @@ type Provider interface {
 
 	// Capabilities describes the platform features available in this build.
 	Capabilities() any
+	// Conflicts reports global hotkey combos claimed by more than one module,
+	// so the panel can render a rebind hint (C2-2).
+	Conflicts() []HotkeyConflict
 	// ValidateHotkey checks a hotkey string, returning a reason when invalid.
 	ValidateHotkey(hotkey string) error
 

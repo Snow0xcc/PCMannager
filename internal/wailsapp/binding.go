@@ -34,23 +34,6 @@ var ErrUnsupported = errors.New("wailsapp: 当前平台不提供原生窗口，�
 // events. It mirrors the SSE stream exposed by internal/server.
 const EventBusName = "pcm:event"
 
-// Available returns a channel that is closed when the native window's runtime
-// context becomes ready, letting callers wait (or poll) for the window without
-// importing the runtime themselves.
-//
-// Off Windows — where no native window ever exists — the channel is never
-// closed, so a bounded wait stays bounded:
-//
-//	select {
-//	case <-wailsapp.Available():
-//	    _ = wailsapp.Show()
-//	default: // not ready (or unsupported); fall back to the browser
-//	}
-//
-// Implementations live in app_windows.go (closed by OnStartup) and
-// app_other.go (never closed).
-func Available() <-chan struct{} { return available() }
-
 // API is the object bound to the frontend. Every exported method becomes
 // callable from JavaScript via the generated Wails bindings.
 //
@@ -90,14 +73,15 @@ func (a *API) ctxFor() context.Context {
 	return a.ctx
 }
 
-// State returns the full panel snapshot: version, app settings, modules and
-// platform capabilities. Mirrors GET /api/state.
+// State returns the full panel snapshot: version, app settings, modules,
+// platform capabilities and hotkey conflicts. Mirrors GET /api/state.
 func (a *API) State() map[string]any {
 	return map[string]any{
 		"version":      a.prov.Version(),
 		"app":          a.prov.AppConfig(),
 		"modules":      a.prov.Modules(),
 		"capabilities": a.prov.Capabilities(),
+		"conflicts":    a.prov.Conflicts(),
 	}
 }
 

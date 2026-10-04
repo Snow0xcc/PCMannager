@@ -216,7 +216,7 @@ func watcherIntrospectionNode() *introspect.Node {
 func showLinuxTray(t *testing.T) (*linuxTray, string) {
 	t.Helper()
 
-	tray := New(nil, HandlerFunc(func(string) {})).(*linuxTray)
+	tray := New(nil, HandlerFunc(func(string) {}), "").(*linuxTray)
 	if err := tray.Show(); err != nil {
 		t.Fatalf("Show 返回错误: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestLinuxTrayDBusMenuClick(t *testing.T) {
 	clicked := make(chan string, 4)
 	tray := New(nil, HandlerFunc(func(id string) {
 		clicked <- id
-	})).(*linuxTray)
+	}), "").(*linuxTray)
 	tray.SetMenu(Menu{
 		Tooltip: "GoBox",
 		Items: []Item{
