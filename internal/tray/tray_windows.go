@@ -29,6 +29,13 @@ type winTray struct {
 	added    bool
 	visible  bool
 
+	// iconPath is the optional user .ico (empty = built-in), read from
+	// config at construction; iconHandle caches the resolved HICON
+	// (see icon_windows.go).
+	iconPath string
+	iconOnce sync.Once
+	iconH    uintptr
+
 	// ownerDraw holds the payloads behind colored (owner-drawn) menu items,
 	// keyed by the dwItemData value the system hands back in
 	// WM_MEASUREITEM/WM_DRAWITEM. odMu separates it from the tray lock so the
@@ -40,8 +47,8 @@ type winTray struct {
 }
 
 // New creates a Windows tray icon bound to the given handler.
-func New(log *slog.Logger, handler Handler) Tray {
-	return &winTray{log: log, handler: handler, commands: map[uint32]string{}}
+func New(log *slog.Logger, handler Handler, iconPath string) Tray {
+	return &winTray{log: log, handler: handler, iconPath: iconPath, commands: map[uint32]string{}}
 }
 
 // odKeyWithFlags packs the owner-draw key into dwItemData.
@@ -99,7 +106,7 @@ func (t *winTray) Show() error {
 		ID:       1,
 		Flags:    winui.NIF_MESSAGE | winui.NIF_ICON | winui.NIF_TIP,
 		Callback: winui.WM_TRAYCALLBACK,
-		Icon:     defaultIcon(),
+		Icon:     t.iconHandle(),
 	}
 	copyTip(&t.nid, t.menu.Tooltip)
 	nid := t.nid
@@ -413,27 +420,4 @@ func brandIconHandle() uintptr {
 		brandIcon.h = winui.IconFromRGBA(img)
 	})
 	return brandIcon.h
-}
-
-// defaultIcon loads the application's own small icon, preferring the embedded
-// butterfly brand mark over whatever binary icon the exe carries (a plain
-// `go build` produces an exe with no icon resource at all, so without this the
-// tray would show the generic shell application icon).
-func defaultIcon() uintptr {
-	if h := brandIconHandle(); h != 0 {
-		return h
-	}
-	const (
-		imageIcon     = 1
-		lrDefaultSize = 0x0000
-		lrShared      = 0x8000
-	)
-	h, _, _ := procLoadImageW.Call(0, 0, imageIcon, 0, 0, lrDefaultSize|lrShared)
-	if h != 0 {
-		return h
-	}
-	// Fall back to the generic application icon supplied by the shell.
-	const idiApplication = 32512
-	icon, _, _ := procLoadIconW.Call(0, idiApplication)
-	return icon
 }

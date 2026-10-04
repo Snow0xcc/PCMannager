@@ -124,7 +124,7 @@ func (p panelProvider) OpenUI(id string) error { return p.a.OpenUI(id) }
 
 // restartRequiredKeys are app settings read only during startup: saving
 // them succeeds but takes no effect until the next launch (A7).
-var restartRequiredKeys = []string{"server_port", "data_dir", "log_level"}
+var restartRequiredKeys = []string{"server_port", "data_dir", "log_level", "tray_icon_path"}
 
 // AppConfig returns the application settings.
 func (p panelProvider) AppConfig() server.AppConfig {
@@ -137,6 +137,7 @@ func (p panelProvider) AppConfig() server.AppConfig {
 		ServerPort:       c.ServerPort,
 		OpenInWebview:    c.OpenInWebview,
 		Language:         c.Language,
+		TrayIconPath:     c.TrayIconPath,
 		EffectiveDataDir: p.a.DataDir(),
 		RestartRequired:  restartRequiredKeys,
 	}
@@ -170,6 +171,9 @@ func (p panelProvider) PatchAppConfig(patch server.AppConfigPatch) error {
 		}
 		if patch.Language != nil {
 			c.Language = *patch.Language
+		}
+		if patch.TrayIconPath != nil {
+			c.TrayIconPath = *patch.TrayIconPath
 		}
 	})
 }

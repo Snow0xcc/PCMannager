@@ -578,6 +578,7 @@ function renderAppPage(root) {
   card.appendChild(el('<div class="row"><label>日志级别</label><div class="grow"><select id="f-level"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select><span class="hint">保存后需重启生效</span></div></div>'));
   card.appendChild(el('<div class="row"><label>面板端口</label><div class="grow"><input type="number" id="f-port"><span class="hint">保存后需重启生效</span></div></div>'));
   card.appendChild(el('<div class="row"><label>数据目录</label><div class="grow"><input type="text" id="f-dir"><span class="hint">保存后需重启生效</span></div></div>'));
+  card.appendChild(el('<div class="row"><label>托盘图标路径</label><div class="grow"><input type="text" id="f-iconpath" placeholder="留空使用内置图标"><span class="hint">.ico 文件；留空使用内置图标，保存后需重启生效</span></div></div>'));
   if (a.effective_data_dir) {
     // 数据目录来自配置，仍必须转义：el() 走 innerHTML，这是全站唯一
     // 曾未走 esc() 的插值点（A6）。
@@ -591,6 +592,7 @@ function renderAppPage(root) {
   card.querySelector("#f-level").value = a.log_level || "info";
   card.querySelector("#f-port").value = a.server_port || 0;
   card.querySelector("#f-dir").value = a.data_dir || "";
+  card.querySelector("#f-iconpath").value = a.tray_icon_path || "";
 
   card.querySelector("#f-save").onclick = async () => {
     const port = parseInt(card.querySelector("#f-port").value, 10) || 0;
@@ -602,15 +604,17 @@ function renderAppPage(root) {
         log_level: card.querySelector("#f-level").value,
         server_port: port,
         data_dir: card.querySelector("#f-dir").value,
+        tray_icon_path: card.querySelector("#f-iconpath").value,
       };
       state.app = await transport.call("app", patch);
 // 主题立即生效（不等下一次 load）。
       applyTheme(state.app.theme || "auto");
       // 其余这几项只在启动时读取，保存成功也要明确告知需重启（A7）。
-      const restartKeys = a.restart_required || ["server_port", "data_dir", "log_level"];
+      const restartKeys = a.restart_required || ["server_port", "data_dir", "log_level", "tray_icon_path"];
       const needsRestart = restartKeys.includes("server_port") && port !== (a.server_port || 0) ||
         restartKeys.includes("data_dir") && (card.querySelector("#f-dir").value || "") !== (a.data_dir || "") ||
-        restartKeys.includes("log_level") && card.querySelector("#f-level").value !== (a.log_level || "info");
+        restartKeys.includes("log_level") && card.querySelector("#f-level").value !== (a.log_level || "info") ||
+        restartKeys.includes("tray_icon_path") && card.querySelector("#f-iconpath").value !== (a.tray_icon_path || "");
       toast(needsRestart ? "应用设置已保存，重启应用后生效" : "应用设置已保存");
       renderPage();
     } catch (e) { toast(e.message, true); }

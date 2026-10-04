@@ -33,6 +33,10 @@ type App struct {
 	ServerPort    int    `yaml:"server_port" json:"server_port"`
 	OpenInWebview bool   `yaml:"open_in_webview" json:"open_in_webview"`
 	Language      string `yaml:"language" json:"language"`
+	// TrayIconPath is an optional user-supplied .ico file for the tray icon.
+	// Empty means the built-in embedded brand icon. Read only at startup
+	// (restart required, A7).
+	TrayIconPath string `yaml:"tray_icon_path" json:"tray_icon_path"`
 }
 
 // Module is the per-module persisted configuration.

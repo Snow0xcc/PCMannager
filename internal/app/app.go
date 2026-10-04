@@ -836,7 +836,7 @@ func (a *App) StartPanel() error {
 func (a *App) StartTray() error {
 	t := a.currentTray()
 	if t == nil {
-		t = tray.New(a.log, tray.HandlerFunc(a.onTraySelect))
+		t = tray.New(a.log, tray.HandlerFunc(a.onTraySelect), a.Config().App().TrayIconPath)
 		a.mu.Lock()
 		a.tray = t
 		a.mu.Unlock()

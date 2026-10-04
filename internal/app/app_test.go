@@ -60,7 +60,16 @@ func (f *fakeModule) OnHotkey() error { f.hotkeys++; return nil }
 // what keeps each test isolated.
 func newTestApp(t *testing.T) *App {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	// 隔离数据目录：New() 经 paths.DataDir("") 落到 os.UserConfigDir()，
+	// 不跟随工作目录。只 chdir 不够——Load() 收尾会 Save()，测试会把配置
+	// 写进真实用户目录（实测污染过 ~/.config/GoBox/config.yaml：残留了
+	// 测试专用模块与 tray_icon_path），且第二次运行会读到上次的残留，
+	// 让断言"默认值"的用例变成顺序依赖。Linux 读 XDG_CONFIG_HOME、
+	// macOS 读 $HOME，两个一起覆盖；app_test 是 !windows，不涉 %AppData%。
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Chdir(tmp)
 	a, err := New()
 	if err != nil {
 		t.Fatalf("New() 失败: %v", err)

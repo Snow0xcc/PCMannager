@@ -49,6 +49,9 @@ type AppConfig struct {
 	ServerPort    int    `json:"server_port"`
 	OpenInWebview bool   `json:"open_in_webview"`
 	Language      string `json:"language"`
+	// TrayIconPath is an optional user-supplied .ico file for the tray icon;
+	// empty means the built-in embedded brand icon. Restart required (A7).
+	TrayIconPath string `json:"tray_icon_path"`
 	// EffectiveDataDir is the path the app actually resolved and is using,
 	// after merging the user override with the OS default. It is read-only:
 	// the user override flows through DataDir, and this field is for display
@@ -69,6 +72,7 @@ type AppConfigPatch struct {
 	ServerPort    *int    `json:"server_port,omitempty"`
 	OpenInWebview *bool   `json:"open_in_webview,omitempty"`
 	Language      *string `json:"language,omitempty"`
+	TrayIconPath  *string `json:"tray_icon_path,omitempty"`
 }
 
 // HotkeyConflict reports one global hotkey combo claimed by more than one

@@ -67,3 +67,38 @@ func TestProviderConflictsEmptyWhenDistinct(t *testing.T) {
 		t.Fatalf("不同组合/未绑定/非法热键不应报冲突: %+v", got)
 	}
 }
+
+// TestProviderTrayIconPathContract（TODO #9）：tray_icon_path 是应用级配置，
+// 必须 (a) 出现在 AppConfig DTO 中、(b) 列入 RestartRequired（托盘图标只在
+// 启动时加载，保存后不重启不生效，面板 toast 依赖这份清单）、(c) 经
+// PatchAppConfig 持久化。三者缺一就会出现"保存了但静默无效"的假配置。
+func TestProviderTrayIconPathContract(t *testing.T) {
+	a := newTestApp(t)
+	p := a.PanelProvider()
+
+	if got := p.AppConfig().TrayIconPath; got != "" {
+		t.Fatalf("默认 TrayIconPath = %q, 期望空串", got)
+	}
+
+	found := false
+	for _, k := range p.AppConfig().RestartRequired {
+		if k == "tray_icon_path" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("RestartRequired = %v, 缺少 tray_icon_path（面板将不提示重启）",
+			p.AppConfig().RestartRequired)
+	}
+
+	v := `D:\icons\brand.ico`
+	if err := p.PatchAppConfig(server.AppConfigPatch{TrayIconPath: &v}); err != nil {
+		t.Fatalf("PatchAppConfig 失败: %v", err)
+	}
+	if got := p.AppConfig().TrayIconPath; got != v {
+		t.Fatalf("DTO 回读 TrayIconPath = %q, 期望 %q", got, v)
+	}
+	if got := a.Config().App().TrayIconPath; got != v {
+		t.Fatalf("配置持久化 TrayIconPath = %q, 期望 %q", got, v)
+	}
+}
