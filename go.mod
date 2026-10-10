@@ -11,7 +11,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/wailsapp/wails/v2 v2.16.0
 	golang.design/x/clipboard v0.11.0
-	golang.org/x/image v0.41.0
+	golang.org/x/image v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
