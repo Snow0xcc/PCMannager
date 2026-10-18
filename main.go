@@ -8,10 +8,10 @@ package main
 import (
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/snow0xcc/pcmannager/internal/app"
+	"github.com/snow0xcc/pcmannager/internal/paths"
 	"github.com/snow0xcc/pcmannager/internal/sysutil"
 	"github.com/snow0xcc/pcmannager/modules/clipboard"
 	"github.com/snow0xcc/pcmannager/modules/launcher"
@@ -23,28 +23,9 @@ import (
 )
 
 func main() {
-	// Single instance first: two copies would fight over the same global
-	// hotkeys, the same tray slot and the same config file. The logs showed
-	// exactly that — 53 starts against 7 clean exits, with F1 / Ctrl+`
-	// "already registered" in EVERY session, because the previous copy was
-	// still running and holding those hotkeys.
-	//
-	// AcquireSingleInstance existed but was never called. It is invoked before
-	// app.New so a second copy exits without writing config or logs, and the
-	// primary instance stays the only hotkey owner.
-	releaseInstance, ok := sysutil.AcquireSingleInstance("PCMannager")
-	if !ok {
-		// A second launch usually means "focus the running window". Doing it
-		// through the running instance's panel server is not wired yet, so at
-		// least report clearly instead of failing silently.
-		os.Stderr.WriteString("PCMannager 已在运行；请使用托盘图标或首选项面板。\n")
-		return
-	}
-	defer releaseInstance()
-
 	// internal/app resolves the data directory, loads config.yaml, opens the
 	// log file and starts the hotkey router.
-	if dir, warn := configDirEnv(); warn != "" {
+	if dir, warn := paths.ConfigDirFromEnv(); warn != "" {
 		// The logger is not up yet, so stderr is the only sink. A misconfigured
 		// override must be visible rather than silently degrading to default.
 		os.Stderr.WriteString(warn + "\n")
@@ -54,6 +35,17 @@ func main() {
 		}
 	}
 
+	// 单实例：托盘应用不允许双开——两个热键后端/两个托盘图标/剪贴板
+	// 监视分裂都会出错。第二次启动静默退出（托盘应用惯例）；GUI 子系统下
+	// stderr 不可见，提示可忽略，日志文件里无痕迹属预期。锁在进程内持有，
+	// 放在 main 而非 app.New：同进程多 App 实例（测试）不受影响。
+	releaseInstance, ok := sysutil.AcquireSingleInstance("pcmannager")
+	if !ok {
+		os.Stderr.WriteString("PCMannager 已在运行（见系统托盘），本次启动退出。\n")
+		os.Exit(1)
+	}
+	defer releaseInstance()
+
 	a, err := app.New()
 	if err != nil {
 		// The logger is not up yet, so stderr is the only sink available.
@@ -62,8 +54,8 @@ func main() {
 	}
 
 	// Register every feature. Each is independently toggleable + hotkeyable.
-	// preferences is not registered: it is a view over this registry, opened
-	// on demand through preferences.Show(preferences.NewManager(a)).
+	// preferences is not registered: the preferences panel is opened on demand
+	// through App.OpenPanel (native WebView2 window or browser).
 	a.MustRegister(taskbar.NewFeature())
 	a.MustRegister(clipboard.NewFeature())
 	a.MustRegister(screenshot.NewFeature())
@@ -121,31 +113,4 @@ func main() {
 	a.Run()
 	// Shutdown is idempotent, so a signal-driven shutdown is not repeated.
 	a.Shutdown()
-}
-
-// configDirEnv keeps the historical PCMANNAGER_CONFIG override working:
-// internal/app probes config.yaml relative to the working directory, so a
-// directory (or a config file, whose parent directory is used) selected here
-// wins over the OS data directory while debugging.
-// configDirEnv keeps the historical PCMANNAGER_CONFIG override working:
-// internal/app probes config.yaml relative to the working directory, so a
-// directory (or a config file, whose parent directory is used) selected here
-// wins over the OS data directory while debugging.
-//
-// A non-existent value is NOT silently ignored: it is reported so the operator
-// knows the override did not take effect (otherwise the app would silently fall
-// back to the OS default and look misconfigured). The caller logs the warning
-// and continues with the default directory.
-func configDirEnv() (dir string, warn string) {
-	raw := os.Getenv("PCMANNAGER_CONFIG")
-	if raw == "" {
-		return "", ""
-	}
-	if fi, err := os.Stat(raw); err == nil && !fi.IsDir() {
-		return filepath.Dir(raw), ""
-	}
-	if _, err := os.Stat(raw); err != nil {
-		return "", "PCMANNAGER_CONFIG 指向的目录不存在，已忽略并回退到默认数据目录: " + raw
-	}
-	return raw, ""
 }

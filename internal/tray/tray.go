@@ -45,11 +45,23 @@ type HandlerFunc func(id string)
 // OnSelect implements Handler.
 func (f HandlerFunc) OnSelect(id string) { f(id) }
 
-// Tray is the platform tray abstraction. The Windows implementation is backed
-// by Shell_NotifyIcon; other platforms return a no-op implementation.
+// Supported reports whether this build ships a real tray implementation.
+//
+// 它和“当前能否真的显示出来”是两件事：Linux 上 D-Bus 会话不可用、或 macOS 上
+// 没有菜单栏会话时 Show() 仍会失败（有日志），但构建本身带托盘实现。面板用它
+// 解释平台差异；之所以不由 winui 统一给出，是因为 winui 不能 import tray
+//（tray 依赖 winui，反向会成环）。各平台分别提供实现（tray_{windows,darwin,linux,other}.go）。
+
+// Tray is the platform tray abstraction. Windows 用 Shell_NotifyIcon，
+// macOS 用 NSStatusBar，Linux 用 StatusNotifierItem，其余平台是 no-op。
 type Tray interface {
 	// SetMenu replaces the tray menu.
 	SetMenu(Menu)
+	// SetBadge 在托盘图标右上角叠加角标（如剪贴板历史条数），空串清除。
+	// 角标内容只支持 0-9 与 '+'、'!'，其它字符会被跳过；跨平台外观由
+	// BadgeOverlay 统一绘制，方法只需把合成结果换成本平台的图标表示。
+	// 可从任意 goroutine 调用（实现方负责线程安全）。
+	SetBadge(text string)
 	// Show makes the icon visible.
 	Show() error
 	// Hide removes the icon.

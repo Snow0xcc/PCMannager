@@ -95,6 +95,8 @@
   .alert-body strong { font-weight: 600; word-break: break-word; }
   .alert-hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
   nav button .badge.err { margin-left: auto; }
+  /* ---- 热键冲突警告条（C2-2）：组合徽标 + 涉及模块名 ---- */
+  .conflict-line { margin-top: 6px; font-size: 13px; word-break: break-all; }
   /* ---- 结构化运行状态 ---- */
   .state-v { word-break: break-word; }
   .state-obj, .raw { margin-top: 4px; }
@@ -193,6 +195,21 @@
   .group-head:focus-visible { border-radius: 4px; box-shadow: 0 0 0 2px var(--accent); }
   .group-name { font-size: 13px; font-weight: 600; flex: 1; }
   .group-count { flex: none; }
+
+  /* ---- 剪贴板历史列表（clipboard 模块页，C2-1） ---- */
+  .clip-rows { display: flex; flex-direction: column; gap: 6px; }
+  .clip-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  }
+  .clip-row .clip-kind { color: var(--muted); flex: none; display: inline-flex; }
+  .clip-row .clip-preview {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 13px;
+  }
+  .clip-row .clip-time { color: var(--muted); font-size: 11px; flex: none; }
+  .clip-row button.btn { padding: 3px 9px; font-size: 12px; }
+  .clip-empty { color: var(--muted); font-size: 12px; padding: 10px 2px; }
 </style>
 </head>
 <body>
@@ -223,6 +240,8 @@ const state = {
   app: null, modules: [], caps: null, version: "", page: "app",
   navQuery: "",      // 左侧导航搜索词（纯前端过滤）
   actionQuery: "",   // 模块页 Actions 过滤词（repair 有 ~60 个工具）
+  conflicts: [],     // 全局热键冲突（C2-2，来自 /api/state 顶层 conflicts 键）
+  logQuery: "",      // 日志页过滤词（纯前端过滤，C2-4）
 };
 
 // ---------------------------------------------------------------------------
@@ -256,6 +275,16 @@ const ICONS = {
   open: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/>',
   // 磁盘：保存
   save: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3"/><path d="M8 14h8"/>',
+  // 剪贴板：写回指定历史条目
+  paste: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4a3 3 0 0 1 6 0"/><path d="M9 11h6"/><path d="M9 15h6"/>',
+  // 垃圾桶：删除历史条目
+  trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 14h10l1-14"/>',
+  // 画框山景：图片条目
+  image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M5 17l4.5-4.5 3 3L17 11l4 4"/>',
+  // 折角纸张：文件条目
+  file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  // 摄像机：录屏条目（截图历史用）
+  video: '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>',
 };
 
 // icon returns an inline <svg> markup string; unknown names fall back to a dot.
@@ -341,18 +370,22 @@ const transport = (function () {
     throw new Error("未知的面板操作: " + op);
   }
 
+  // EVENT_TYPES 与 internal/core 的 Event* 常量一一对应（契约测试
+  // internal/panel/panel_test.go 钉死两侧，漂移即红）。服务端 SSE 发送的是
+  // 具名事件（event: <type>），而 onmessage 只对无名事件触发，所以必须
+  // 按类型 addEventListener——这是 HTTP 面板事件日志曾经全空（A1）的根因。
+  const EVENT_TYPES = ["log", "state", "progress", "notice"];
+
   // subscribe delivers live module events to onEvent.
   function subscribe(onEvent) {
     if (!isWails) {
       const es = new EventSource("/api/events");
-      // 服务端为每条事件写了 "event: <type>" 命名帧（server.go handleEvents），
+// 服务端为每条事件写了 "event: <type>" 命名帧（server.go handleEvents），
       // 而 onmessage 只收无 event: 字段或 event: message 的帧——只挂 onmessage
       // 会把所有命名事件静默丢掉，日志页因此一条都看不到（实测确认）。
-      // 这里按后端可能出现的类型逐一监听，兜底再挂 onmessage。
-      const dispatch = (e) => {
-        try { onEvent(JSON.parse(e.data)); } catch (err) { /* 忽略坏帧 */ }
-      };
-      ["log", "state", "progress", "notice"].forEach(t => es.addEventListener(t, dispatch));
+      // 这里按 EVENT_TYPES 逐一监听，兜底再挂 onmessage。
+      const dispatch = (e) => { try { onEvent(JSON.parse(e.data)); } catch (err) { /* 忽略坏帧 */ } };
+      for (const t of EVENT_TYPES) es.addEventListener(t, dispatch);
       es.onmessage = dispatch;
       es.onerror = () => { /* EventSource 自行重连 */ };
       return;
@@ -366,10 +399,19 @@ const transport = (function () {
   return { isWails: isWails, call: call, subscribe: subscribe };
 })();
 
+// 面板 URL 自带 ?token=…（internal/server 的 Start 生成，B1 鉴权）。变更类
+// 请求必须把它放进 X-PCMT-Token 头回传——fetch 用相对路径不会自动继承
+// 页面 URL 的 query，所以这里从 location.search 提取一次。Wails 路径走
+// window.go.wailsapp.API，不经过 HTTP，天然免鉴权，不受此影响。
+const PANEL_TOKEN = new URLSearchParams(window.location.search).get("token") || "";
+
 async function api(path, method, body) {
+  const headers = {};
+  if (PANEL_TOKEN) headers["X-PCMT-Token"] = PANEL_TOKEN;
+  if (body) headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method: method || "GET",
-    headers: body ? { "Content-Type": "application/json" } : {},
+    headers: headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -382,6 +424,7 @@ async function api(path, method, body) {
 async function load() {
   const s = await transport.call("state");
   state.app = s.app; state.modules = s.modules || []; state.caps = s.capabilities;
+  state.conflicts = s.conflicts || [];
   state.version = s.version || "";
   // 后端（git describe）通常已带 v 前缀，但不要重复拼接（曾显示成 vv0.1.0）。
   const v = state.version;
@@ -430,7 +473,9 @@ function renderCaps() {
 // navItems builds the full navigation list (app + modules + log) with an icon
 // and a searchable text blob (name + id + description).
 function navItems() {
-  const items = [{ id: "app", name: "应用设置", icon: "app", text: "应用设置 app" }];
+  const items = [{ id: "app", name: "应用设置", icon: "app", text: "应用设置 app",
+    // C2-2：存在热键冲突时在导航上给出醒目标记，详情见应用设置页顶部警告条。
+    conflicts: (state.conflicts || []).length }];
   state.modules.forEach(m => {
     items.push({
       id: m.id, name: m.name || m.id, icon: "module",
@@ -489,6 +534,12 @@ function renderNavList() {
       tag.title = it.error;
       b.appendChild(tag);
     }
+    // “热键冲突”标记（C2-2）：应用设置项上提示存在冲突，详情在应用设置页。
+    if (it.conflicts) {
+      const tag = el('<span class="badge err">' + icon("keyboard") + '热键冲突</span>');
+      tag.title = "多个模块绑定了同一全局热键，详情见应用设置页";
+      b.appendChild(tag);
+    }
     if (state.page === it.id) b.className = "active";
     b.onclick = () => {
       // 切换模块时重置该模块的操作筛选词，避免上一个模块的词残留。
@@ -517,17 +568,21 @@ function renderPage() {
 }
 
 function renderAppPage(root) {
+  renderConflictsAlert(root);
   const a = state.app || {};
   const card = el('<div class="card"><h2>应用设置</h2><div class="desc">全局行为与面板选项。</div></div>');
 
   card.appendChild(el('<div class="row"><label>开机自启</label><input type="checkbox" id="f-autostart"></div>'));
   card.appendChild(el('<div class="row"><label>面板用内置窗口打开</label><input type="checkbox" id="f-webview"></div>'));
   card.appendChild(el('<div class="row"><label>主题</label><div class="grow"><select id="f-theme"><option value="auto">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></div></div>'));
-  card.appendChild(el('<div class="row"><label>日志级别</label><div class="grow"><select id="f-level"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></div></div>'));
-  card.appendChild(el('<div class="row"><label>面板端口</label><div class="grow"><input type="number" id="f-port"></div></div>'));
-  card.appendChild(el('<div class="row"><label>数据目录</label><div class="grow"><input type="text" id="f-dir"></div></div>'));
+  card.appendChild(el('<div class="row"><label>日志级别</label><div class="grow"><select id="f-level"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select><span class="hint">保存后需重启生效</span></div></div>'));
+  card.appendChild(el('<div class="row"><label>面板端口</label><div class="grow"><input type="number" id="f-port"><span class="hint">保存后需重启生效</span></div></div>'));
+  card.appendChild(el('<div class="row"><label>数据目录</label><div class="grow"><input type="text" id="f-dir"><span class="hint">保存后需重启生效</span></div></div>'));
+  card.appendChild(el('<div class="row"><label>托盘图标路径</label><div class="grow"><input type="text" id="f-iconpath" placeholder="留空使用内置图标"><span class="hint">.ico 文件；留空使用内置图标，保存后需重启生效</span></div></div>'));
   if (a.effective_data_dir) {
-    card.appendChild(el('<div class="row"><label></label><span class="hint">实际生效目录：' + a.effective_data_dir + '</span></div>'));
+    // 数据目录来自配置，仍必须转义：el() 走 innerHTML，这是全站唯一
+    // 曾未走 esc() 的插值点（A6）。
+    card.appendChild(el('<div class="row"><label></label><span class="hint">实际生效目录：' + esc(a.effective_data_dir) + '</span></div>'));
   }
   card.appendChild(el('<div class="row"><label></label><button class="btn primary" id="f-save">' + icon("save") + '保存</button></div>'));
 
@@ -537,6 +592,7 @@ function renderAppPage(root) {
   card.querySelector("#f-level").value = a.log_level || "info";
   card.querySelector("#f-port").value = a.server_port || 0;
   card.querySelector("#f-dir").value = a.data_dir || "";
+  card.querySelector("#f-iconpath").value = a.tray_icon_path || "";
 
   card.querySelector("#f-save").onclick = async () => {
     const port = parseInt(card.querySelector("#f-port").value, 10) || 0;
@@ -548,15 +604,44 @@ function renderAppPage(root) {
         log_level: card.querySelector("#f-level").value,
         server_port: port,
         data_dir: card.querySelector("#f-dir").value,
+        tray_icon_path: card.querySelector("#f-iconpath").value,
       };
       state.app = await transport.call("app", patch);
-      // 主题立即生效（不等下一次 load）。
+// 主题立即生效（不等下一次 load）。
       applyTheme(state.app.theme || "auto");
-      toast("应用设置已保存");
+      // 其余这几项只在启动时读取，保存成功也要明确告知需重启（A7）。
+      const restartKeys = a.restart_required || ["server_port", "data_dir", "log_level", "tray_icon_path"];
+      const needsRestart = restartKeys.includes("server_port") && port !== (a.server_port || 0) ||
+        restartKeys.includes("data_dir") && (card.querySelector("#f-dir").value || "") !== (a.data_dir || "") ||
+        restartKeys.includes("log_level") && card.querySelector("#f-level").value !== (a.log_level || "info") ||
+        restartKeys.includes("tray_icon_path") && card.querySelector("#f-iconpath").value !== (a.tray_icon_path || "");
+      toast(needsRestart ? "应用设置已保存，重启应用后生效" : "应用设置已保存");
       renderPage();
     } catch (e) { toast(e.message, true); }
   };
   root.appendChild(card);
+}
+
+// renderConflictsAlert（C2-2）：全局热键冲突常驻应用设置页顶部，列出冲突
+// 组合与涉及模块，引导用户到模块页改绑（模块页已有热键编辑器）。无冲突时
+// 不渲染。holders 是模块 id，优先显示模块名并括号保留 id 便于定位。
+function renderConflictsAlert(root) {
+  const list = state.conflicts || [];
+  if (!list.length) return;
+  const holderNames = (ids) => (ids || []).map(id => {
+    const m = mod(id);
+    return m ? (m.name || id) + "（" + id + "）" : id;
+  }).join("、");
+  const lines = list.map(c =>
+    '<div class="conflict-line"><span class="badge">' + esc(c.hotkey) + '</span> ' +
+    esc(holderNames(c.holders)) + '</div>').join("");
+  root.appendChild(el('<div class="alert">' + icon("keyboard") +
+    '<div class="alert-body">' +
+    '<strong>检测到 ' + list.length + ' 处全局热键冲突</strong>' +
+    lines +
+    '<div class="alert-hint">同一组合只由先绑定的模块生效，其余模块的热键不会触发。' +
+    '请进入对应模块页修改热键，保存后本警告自动消失。</div>' +
+    '</div></div>'));
 }
 
 function renderModulePage(root, m) {
@@ -689,9 +774,9 @@ function renderModulePage(root, m) {
 
   // codeToKeyName 把 KeyboardEvent.code 映射到 core.ParseHotkey 认识的键名。
   function codeToKeyName(code) {
-    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();      // KeyA→a
-    if (/^Digit[0-9]$/.test(code)) return code.slice(5);                  // Digit1→1
-    if (/^F([0-9]+)$/.test(code)) return "f" + code.slice(1).toLowerCase(); // F1→f1
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();      // KeyA=>a
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);                  // Digit1=>1
+    if (/^F([0-9]+)$/.test(code)) return "f" + code.slice(1).toLowerCase(); // F1=>f1
     const map = {
       Space: "space", Enter: "enter", Escape: "esc", Tab: "tab",
       Backspace: "backspace", Delete: "delete", Insert: "insert",
@@ -858,6 +943,14 @@ function renderModulePage(root, m) {
     drawActions();
   }
 
+  // ---- 剪贴板历史列表（C2-1）：非 Windows 平台没有原生查看器窗口，
+  // 这里的列表是唯一可浏览/写回/删除历史的入口；Windows 上与原生窗口互补。 ----
+  if (m.id === "clipboard") card.appendChild(renderClipboardHistoryCard(m));
+  // ---- 截图历史 / 上下文记录列表（C2-5）：同一思路，两个模块的历史此前
+  // 只能开原生窗口查看，非 Windows 平台这里是唯一入口（只读，无逐条操作）。 ----
+  if (m.id === "screenshot") card.appendChild(renderScreenshotHistoryCard(m));
+  if (m.id === "selfcontext") card.appendChild(renderSelfcontextHistoryCard(m));
+
   const ui = el('<div class="row"><label>模块界面</label><button class="btn" id="m-ui">' + icon("open") + '打开窗口</button></div>');
   ui.querySelector("#m-ui").onclick = async () => {
     try { await transport.call("ui", m.id); }
@@ -885,6 +978,7 @@ const STATE_LABELS = {
   max_items: "最大条目", store_images: "保存图片", paste_on_copy: "复制后粘贴",
   retention_days: "保留天数", capture_mode: "采集模式", pause_on_lock: "锁屏时暂停",
   source: "修复来源", options: "已保存选项",
+  max_image_bytes: "单图上限（字节）", cache_dir: "缓存目录", cache_bytes: "缓存占用（字节）",
 };
 
 // formatScalar renders one scalar state value in a human readable form.
@@ -916,7 +1010,10 @@ function renderStateValue(v) {
 // renderStateCard replaces the old raw JSON dump with a "键：值" list plus an
 // opt-in raw view (collapsed by default) for troubleshooting.
 function renderStateCard(m) {
-  const keys = Object.keys(m.state);
+  // clipboard/screenshot/selfcontext 的 entries 由各自模块页的历史卡片渲染，
+  // 运行状态里跳过，避免同一份数据在页面上出现两遍（原始视图里仍可查看）。
+  const entriesHidden = m.id === "clipboard" || m.id === "screenshot" || m.id === "selfcontext";
+  const keys = Object.keys(m.state).filter(k => !(entriesHidden && k === "entries"));
   const st = el('<div class="card"><h2>运行状态</h2>' +
     '<div class="desc">模块自报的运行时信息。</div><div class="sub-list"></div></div>');
   const list = st.querySelector(".sub-list");
@@ -936,6 +1033,207 @@ function renderStateCard(m) {
   raw.appendChild(det);
   list.appendChild(raw);
   return st;
+}
+
+// clipKindIcon maps an entry kind from the backend to an icon name;
+// unknown kinds fall back to the text-lines glyph.
+function clipKindIcon(kind) {
+  if (kind === "image") return "image";
+  if (kind === "file") return "file";
+  return "log";
+}
+
+// clipTime renders the backend's RFC3339 timestamp for the list: today shows
+// the time only, older entries get a date prefix.
+function clipTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const hm = d.toLocaleTimeString([], { hour12: false });
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? hm : d.toLocaleDateString() + " " + hm;
+}
+
+// renderClipboardHistoryCard renders the clipboard module's history section.
+//
+// Data comes from m.state.entries (newest first, metadata-only previews,
+// bounded by the backend) and each row offers 「写回」/「删除」 via
+// transport.call("action", ...), which transparently covers both the HTTP and
+// the Wails transport. After a successful operation the module is reloaded so
+// the list reflects the new state. The backend caps previews at 120 chars,
+// but everything user-copied is still inserted via textContent/esc() — it is
+// arbitrary clipboard content, never trusted markup.
+function renderClipboardHistoryCard(m) {
+  const st = m.state || {};
+  const entries = Array.isArray(st.entries) ? st.entries : [];
+  const count = typeof st.count === "number" ? st.count : entries.length;
+  const card = el('<div class="card sub"><h2>历史记录</h2>' +
+    '<div class="desc">共 ' + esc(count) + ' 条，显示最近 ' + esc(entries.length) +
+    ' 条（最新在最上）。写回后在目标窗口按 Ctrl+V 粘贴；文件条目仅 Windows 支持写回。</div>' +
+    '<div class="clip-rows"></div></div>');
+  const rows = card.querySelector(".clip-rows");
+
+  if (!entries.length) {
+    rows.appendChild(el('<div class="clip-empty">暂无历史记录：复制文本、图片或文件后会自动出现在这里。</div>'));
+    return card;
+  }
+
+  entries.forEach(e => {
+    if (!e || typeof e.id !== "number") return; // 契约之外的形态直接跳过
+    const row = el('<div class="clip-row">' +
+      '<span class="clip-kind" title="' + esc(e.kind || "") + '">' + icon(clipKindIcon(e.kind)) + '</span>' +
+      '<span class="clip-preview"></span>' +
+      '<span class="clip-time">' + esc(clipTime(e.time)) + '</span>' +
+      '</div>');
+    // 预览是用户复制的内容：用 textContent 插入，绝不走 innerHTML。
+    row.querySelector(".clip-preview").textContent = e.preview || "";
+
+    const writeBtn = el('<button class="btn" title="把该条写回系统剪贴板">' + icon("paste") + '写回</button>');
+    writeBtn.onclick = async () => {
+      writeBtn.disabled = true;
+      try {
+        await transport.call("action", m.id, "write_entry", { id: String(e.id) });
+        toast("已写回：" + (e.preview || ("条目 " + e.id)));
+        await reload();
+      } catch (err) {
+        toast(err.message, true);
+        writeBtn.disabled = false;
+      }
+    };
+    row.appendChild(writeBtn);
+
+    const delBtn = el('<button class="btn danger" title="从历史中删除该条（图片条目连同缓存文件）">' + icon("trash") + '删除</button>');
+    // 与 runAction 的就地铁确认一致（ARM_TIMEOUT 后自动复位；dataset.label
+    // 供 disarmAll 恢复原文案）：第一次点击进入“确认删除”态，第二次才执行。
+    delBtn.onclick = async () => {
+      if (delBtn.dataset.armed !== "1") {
+        delBtn.dataset.armed = "1";
+        delBtn.dataset.label = delBtn.innerHTML;
+        delBtn.classList.add("armed");
+        delBtn.innerHTML = icon("warn") + "确认删除";
+        setTimeout(() => {
+          if (delBtn.dataset.armed === "1") {
+            delBtn.dataset.armed = "0";
+            delBtn.classList.remove("armed");
+            delBtn.innerHTML = delBtn.dataset.label || delBtn.innerHTML;
+          }
+        }, ARM_TIMEOUT);
+        return;
+      }
+      delBtn.disabled = true;
+      try {
+        await transport.call("action", m.id, "delete_entry", { id: String(e.id) });
+        toast("已删除该条目");
+        await reload();
+      } catch (err) {
+        toast(err.message, true);
+        delBtn.disabled = false;
+      }
+    };
+    row.appendChild(delBtn);
+
+    rows.appendChild(row);
+  });
+
+  return card;
+}
+
+// shotKindIcon maps a screenshot entry kind to an icon name; unknown kinds
+// fall back to the image glyph.
+function shotKindIcon(kind) {
+  if (kind === "recording") return "video";
+  return "image";
+}
+
+// fmtBytes renders a byte count as B/KB/MB so the history rows read the same
+// way the module's own notices do. Anything that is not a sane number renders
+// empty (the size column then just disappears from that row).
+function fmtBytes(n) {
+  if (typeof n !== "number" || !(n >= 0) || !isFinite(n)) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+// renderScreenshotHistoryCard renders the screenshot module's history section
+// (C2-5).
+//
+// Data comes from m.state.entries (newest first, metadata-only: file name,
+// category, byte size, RFC3339 time — no absolute path). Rows are read-only:
+// the module has no per-entry actions by design, the directory-wide ones live
+// in the actions list above. The name is module-generated data but still
+// inserted via textContent — the panel never builds markup from state.
+function renderScreenshotHistoryCard(m) {
+  const st = m.state || {};
+  const entries = Array.isArray(st.entries) ? st.entries : [];
+  const count = typeof st.saved_count === "number" ? st.saved_count : entries.length;
+  const card = el('<div class="card sub"><h2>历史记录</h2>' +
+    '<div class="desc">共 ' + esc(count) + ' 张，显示最近 ' + esc(entries.length) +
+    ' 张（最新在最上）。文件保存在截图保存目录，超出上限的旧文件已自动清理。</div>' +
+    '<div class="clip-rows"></div></div>');
+  const rows = card.querySelector(".clip-rows");
+
+  if (!entries.length) {
+    rows.appendChild(el('<div class="clip-empty">暂无截图：按热键或「立即截图」保存后，文件会出现在这里。</div>'));
+    return card;
+  }
+
+  entries.forEach(e => {
+    if (!e || typeof e.name !== "string" || !e.name) return; // 契约之外的形态直接跳过
+    const size = fmtBytes(e.size);
+    const row = el('<div class="clip-row">' +
+      '<span class="clip-kind" title="' + esc(e.kind || "") + '">' + icon(shotKindIcon(e.kind)) + '</span>' +
+      '<span class="clip-preview"></span>' +
+      '<span class="clip-time">' + esc(clipTime(e.time)) + '</span>' +
+      '</div>');
+    // textContent 注入：文件名与大小拼接后依然不经过 innerHTML。
+    row.querySelector(".clip-preview").textContent =
+      e.name + (size ? "（" + size + "）" : "");
+    rows.appendChild(row);
+  });
+
+  return card;
+}
+
+// renderSelfcontextHistoryCard renders the context recorder's history section
+// (C2-5).
+//
+// Entries are sampled window titles (plus the AI summary in screen mode) —
+// user content by definition, so every field goes through textContent; the
+// backend already caps each field at 120 characters. Rows are read-only like
+// the screenshot card; aggregate actions (导出/清空) live in the actions list.
+function renderSelfcontextHistoryCard(m) {
+  const st = m.state || {};
+  const entries = Array.isArray(st.entries) ? st.entries : [];
+  const count = typeof st.count === "number" ? st.count : entries.length;
+  const card = el('<div class="card sub"><h2>上下文记录</h2>' +
+    '<div class="desc">共 ' + esc(count) + ' 条，显示最近 ' + esc(entries.length) +
+    ' 条（最新在最上）。内容为活动窗口标题采样，仅在本机面板展示。</div>' +
+    '<div class="clip-rows"></div></div>');
+  const rows = card.querySelector(".clip-rows");
+
+  if (!entries.length) {
+    rows.appendChild(el('<div class="clip-empty">暂无记录：启用模块并开始采样后，活动窗口标题会出现在这里。</div>'));
+    return card;
+  }
+
+  entries.forEach(e => {
+    if (!e || typeof e.title !== "string") return; // 契约之外的形态直接跳过
+    const tip = e.process ? "进程：" + e.process : "";
+    const row = el('<div class="clip-row">' +
+      '<span class="clip-kind" title="' + esc(tip) + '">' + icon("log") + '</span>' +
+      '<span class="clip-preview"></span>' +
+      '<span class="clip-time">' + esc(clipTime(e.time)) + '</span>' +
+      '</div>');
+    // 标题与 AI 摘要都是采集内容：textContent 注入，绝不走 innerHTML。
+    row.querySelector(".clip-preview").textContent =
+      e.title + (e.summary ? "（" + e.summary + "）" : "");
+    rows.appendChild(row);
+  });
+
+  return card;
 }
 
 // ARM_TIMEOUT is how long a danger button stays in its "确认执行？" state.
@@ -1094,33 +1392,128 @@ async function patchModule(id, patch) {
 async function reload() {
   const s = await transport.call("state");
   state.modules = s.modules || [];
+  state.conflicts = s.conflicts || [];
   renderNav(); renderPage();
+}
+
+// logLevel 取事件级别（视图样式类与过滤共用；notice/progress 也算日志）。
+function logLevel(ev) { return ev.level || ev.type || "info"; }
+
+// logContent 提取事件正文：message、progress 行或 data JSON。
+function logContent(ev) {
+  if (ev.message) return ev.message;
+  if (ev.data && ev.data.line) return ev.data.line;
+  if (ev.data && Object.keys(ev.data).length) return JSON.stringify(ev.data);
+  return "";
+}
+
+// logLineText 组装一条事件的可见文本（视图、过滤、复制共用同一来源，
+// 保证“看到的即可搜到/可复制的”）。
+function logLineText(ev) {
+  let text = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] ";
+  if (ev.module) text += ev.module + " ";
+  return text + logContent(ev);
+}
+
+// logMatches（C2-4）：过滤命中 = 级别 / 模块 / 可见文本任一包含关键词
+//（大小写不敏感）。
+function logMatches(ev, needle) {
+  const hay = (logLevel(ev) + " " + (ev.module || "") + " " + logLineText(ev)).toLowerCase();
+  return hay.indexOf(needle) !== -1;
+}
+
+// paintLogCounter 刷新日志页的“显示条数”计数（页面不在日志页时跳过）。
+function paintLogCounter() {
+  const counter = document.getElementById("log-count");
+  const box = document.getElementById("log");
+  if (!counter || !box) return;
+  const needle = state.logQuery.trim().toLowerCase();
+  counter.textContent = needle
+    ? (box.childNodes.length + " / " + logBuffer.length + " 条")
+    : (logBuffer.length + " 条");
 }
 
 function renderLogPage(root) {
   const card = el('<div class="card log-page"><h2>事件日志</h2>' +
-    '<div class="desc">模块通过事件总线推送的实时消息（含打开本页前的事件，最近 ' + LOG_BUFFER_MAX + ' 条）。</div>' +
-    '<div class="actions"><button class="btn" id="log-clear">' + icon("clear") + '清空显示</button>' +
-    '<button class="btn" id="log-copy">' + icon("save") + '复制全部</button></div>' +
+    '<div class="desc">模块通过事件总线推送的实时消息（含打开本页前的事件，最近 ' + LOG_BUFFER_MAX + ' 条）。' +
+    '「清空」会同时清空离线缓冲（日志仅是诊断视图，不影响任何数据）；「导出 .log」按时间正序保存当前缓冲。</div>' +
+    '<div class="row"><label>过滤</label><div class="grow">' +
+    '<label class="field">' + icon("search") +
+    '<input type="text" id="log-q" placeholder="按级别 / 模块 / 内容过滤，大小写不敏感" autocomplete="off"></label>' +
+    '</div><span class="hint" id="log-count"></span></div>' +
+    '<div class="actions">' +
+    '<button class="btn" id="log-clear">' + icon("trash") + '清空</button>' +
+    '<button class="btn" id="log-export">' + icon("file") + '导出 .log</button>' +
+    '<button class="btn" id="log-copy">' + icon("save") + '复制全部</button>' +
+    '</div>' +
     '<div id="log" class="log-flex"></div></div>');
   root.appendChild(card);
 
-  // 回放离线缓冲：打开页面时把订阅以来缓存的事件全部补上——
-  // 这是“日志不显示”的主因修复（此前只在页面上实时追加，打开前的事件全丢）。
-  // 必须倒序遍历：logBuffer 是 unshift（新→旧），而 appendLogLine 把每条
-  // 插到最上；正序回放会把显示顺序反转成旧→新，与实时路径不一致。
   const box = card.querySelector("#log");
-  for (let i = logBuffer.length - 1; i >= 0; i--) {
-    appendLogLine(box, logBuffer[i]);
+  const q = card.querySelector("#log-q");
+  q.value = state.logQuery;
+
+  // redraw 按当前过滤词从 logBuffer 重建视图。必须倒序遍历：logBuffer 是
+  // unshift（新=>旧），而 appendLogLine 把每条插到最上；正序回放会把显示
+  // 顺序反转成旧=>新，与实时路径不一致。
+  function redraw() {
+    box.innerHTML = "";
+    const needle = state.logQuery.trim().toLowerCase();
+    for (let i = logBuffer.length - 1; i >= 0; i--) {
+      const ev = logBuffer[i];
+      if (needle && !logMatches(ev, needle)) continue;
+      appendLogLine(box, ev);
+    }
+    paintLogCounter();
   }
-  card.querySelector("#log-clear").onclick = () => { box.innerHTML = ""; };
+
+  // 纯前端过滤：只重绘日志区，输入框保持挂载，焦点与光标不丢失。
+  q.oninput = () => { state.logQuery = q.value; redraw(); };
+  const qclear = el('<button class="btn icon-only" id="log-q-clear" title="清空过滤">' + icon("clear") + '</button>');
+  qclear.onclick = () => { state.logQuery = ""; q.value = ""; q.focus(); redraw(); };
+  card.querySelector(".field").appendChild(qclear);
+
+  // 清空（C2-4）：同时清视图与离线缓冲。按任务决策直接清、不做二次确认，
+  // 说明文案已注明；日志只是诊断视图，清空不触碰任何持久化数据。
+  card.querySelector("#log-clear").onclick = () => {
+    logBuffer.length = 0;
+    box.innerHTML = "";
+    paintLogCounter();
+  };
+
+  // 导出（C2-4）：把当前缓冲按时间正序（旧=>新）下载为 .log 文本。
+  card.querySelector("#log-export").onclick = () => {
+    if (!logBuffer.length) { toast("缓冲为空，暂无日志可导出"); return; }
+    const lines = [];
+    for (let i = logBuffer.length - 1; i >= 0; i--) {
+      const ev = logBuffer[i];
+      const t = new Date(ev.time || Date.now()).toISOString();
+      lines.push("[" + t + "] [" + logLevel(ev) + "] " +
+        (ev.module ? ev.module + " " : "") + logContent(ev));
+    }
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pcm-events-" + new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19) + ".log";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("已导出 " + lines.length + " 条日志");
+  };
+
+  // 复制全部始终针对整个缓冲（不受过滤影响，名称里的“全部”即整个缓冲）。
   card.querySelector("#log-copy").onclick = async () => {
-    const text = Array.from(box.children).map(d => d.textContent).join("\n");
+    const text = [];
+    for (let i = logBuffer.length - 1; i >= 0; i--) text.push(logLineText(logBuffer[i]));
     try {
-      await navigator.clipboard.writeText(text);
-      toast("已复制 " + box.children.length + " 条日志");
+      await navigator.clipboard.writeText(text.join("\n"));
+      toast("已复制 " + logBuffer.length + " 条日志");
     } catch (e) { toast("复制失败：" + e.message, true); }
   };
+
+  redraw();
 }
 
 // LOG_BUFFER_MAX 是离线缓冲上限：足够覆盖订阅到打开页面之间的窗口期，
@@ -1128,28 +1521,15 @@ function renderLogPage(root) {
 const LOG_BUFFER_MAX = 400;
 
 // logBuffer 缓存订阅以来收到的全部事件（与当前页面无关），
-// 供日志页打开时回放。unshift 使其保持新→旧顺序，与日志视图一致。
+// 供日志页打开时回放。unshift 使其保持新=>旧顺序，与日志视图一致。
 const logBuffer = [];
 
 // appendLogLine 把一条事件渲染为日志框中的一行（新事件插在最上面）。
 // 独立成函数是因为实时路径与回放路径都要走同一套渲染规则。
 function appendLogLine(box, ev) {
   const d = document.createElement("div");
-  // 事件类型作为级别的兑底：notice/progress 也是用户关心的日志，
-  // 此前它们因无 level 字段落到未知样式类上，看起来像“没有日志”。
-  const level = ev.level || ev.type || "info";
-  d.className = "lev-" + level;
-  let text = "[" + new Date(ev.time || Date.now()).toLocaleTimeString() + "] ";
-  if (ev.module) text += ev.module + " ";
-  if (ev.message) {
-    text += ev.message;
-  } else if (ev.data && ev.data.line) {
-    // progress 事件的正文在 data.line 里。
-    text += ev.data.line;
-  } else if (ev.data && Object.keys(ev.data).length) {
-    text += JSON.stringify(ev.data);
-  }
-  d.textContent = text;
+  d.className = "lev-" + logLevel(ev);
+  d.textContent = logLineText(ev);
   box.insertBefore(d, box.firstChild);
   while (box.childNodes.length > LOG_BUFFER_MAX) box.removeChild(box.lastChild);
 }
@@ -1166,7 +1546,12 @@ function pushLog(ev) {
 
   const box = document.getElementById("log");
   if (!box) return;
+  // 过滤激活时（C2-4），未命中当前关键词的实时事件只进缓冲、不进视图，
+  // 与 redraw 的结果保持一致。
+  const needle = state.logQuery.trim().toLowerCase();
+  if (needle && !logMatches(ev, needle)) { paintLogCounter(); return; }
   appendLogLine(box, ev);
+  paintLogCounter();
 }
 
 function connectEvents() {

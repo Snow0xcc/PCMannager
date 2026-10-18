@@ -29,6 +29,18 @@ type winTray struct {
 	added    bool
 	visible  bool
 
+	// badge tracks the current overlay text; iconOwned marks t.nid.Icon as a
+	// handle we created (badge composites) and may destroy. The initial icon
+	// can be a shell-provided LR_SHARED handle, which must never be destroyed.
+	badge     string
+	iconOwned bool
+
+	// iconPath is the optional user .ico (empty = built-in), read from
+	// config at construction; iconHandle caches the resolved HICON
+	// (see icon_windows.go).
+	iconPath string
+	iconOnce sync.Once
+	iconH    uintptr
 	// ownerDraw holds the payloads behind colored (owner-drawn) menu items,
 	// keyed by the dwItemData value the system hands back in
 	// WM_MEASUREITEM/WM_DRAWITEM. odMu separates it from the tray lock so the
@@ -39,9 +51,13 @@ type winTray struct {
 	odSeq     uintptr
 }
 
+// Supported reports whether this build carries a tray implementation.
+// Windows uses Shell_NotifyIcon, so it is always true here.
+func Supported() bool { return true }
+
 // New creates a Windows tray icon bound to the given handler.
-func New(log *slog.Logger, handler Handler) Tray {
-	return &winTray{log: log, handler: handler, commands: map[uint32]string{}}
+func New(log *slog.Logger, handler Handler, iconPath string) Tray {
+	return &winTray{log: log, handler: handler, iconPath: iconPath, commands: map[uint32]string{}}
 }
 
 // odKeyWithFlags packs the owner-draw key into dwItemData.
@@ -63,6 +79,53 @@ const odDisabledBit = uintptr(1) << 31
 // is implied by the low bits); winui 尚未声明它.
 const mfOwnerDraw = 0x0000010B
 
+// SetBadge overlays a badge (e.g. the clipboard history count) on the tray
+// icon, compositing the brand mark with the badge bubble in pure Go and
+// swapping the HICON via NIM_MODIFY.
+//
+// Called from arbitrary goroutines (clipboard copies arrive on the module's
+// watcher thread), so it follows the tray lock protocol: snapshot under the
+// lock, Win32 call outside it. Handles we mint are destroyed on replacement;
+// the initial icon may be a shell LR_SHARED handle, which must never be
+// destroyed, hence the iconOwned flag.
+func (t *winTray) SetBadge(text string) {
+	t.mu.Lock()
+	if t.badge == text {
+		t.mu.Unlock()
+		return
+	}
+	t.badge = text
+	if !t.added {
+		t.mu.Unlock()
+		return // Show() composes the icon with the current badge anyway
+	}
+	nid := t.nid
+	prev, prevOwned := nid.Icon, t.iconOwned
+	// 32px 与 brandIconHandle 的渲染尺寸一致（托盘小图标的事实尺寸），
+	// 尺寸不一致会让角标切换时图标轻微缩放跳动。
+	img := BadgeOverlay(logo.Render(32), text)
+	t.mu.Unlock()
+
+	h := winui.IconFromRGBA(img)
+	if h == 0 {
+		return // keep the current icon rather than blanking the tray
+	}
+
+	t.mu.Lock()
+	t.nid.Icon = h
+	t.nid.Flags |= winui.NIF_ICON
+	nid = t.nid
+	t.iconOwned = true
+	t.mu.Unlock()
+
+	if err := t.notify(winui.NIM_MODIFY, nid); err != nil {
+		t.log.Warn("托盘角标更新失败", "err", err)
+	}
+	if prevOwned {
+		winui.DestroyIconHandle(prev)
+	}
+}
+
 // SetMenu replaces the tray menu and refreshes the tooltip.
 func (t *winTray) SetMenu(m Menu) {
 	t.mu.Lock()
@@ -82,7 +145,16 @@ func (t *winTray) SetMenu(m Menu) {
 // It must NOT hold mu while calling into the shell: shellNotify used to take
 // mu itself, so Show deadlocked against its own lock (P0-1). The notify icon
 // data is copied under the lock and the Win32 call runs outside it.
+//
+// The icon handle is resolved *before* taking mu for the same reason: the
+// first call reads a .ico from disk and rasterises it (file IO + LoadImageW +
+// CreateIconIndirect), none of which belongs in the critical section — a slow
+// or unreachable tray_icon_path would otherwise stall the message thread that
+// every other mu-taking branch runs on. sync.Once makes the call idempotent
+// and its result independent of anything under mu.
 func (t *winTray) Show() error {
+	icon := t.iconHandle()
+
 	t.mu.Lock()
 	if t.added {
 		t.mu.Unlock()
@@ -99,7 +171,7 @@ func (t *winTray) Show() error {
 		ID:       1,
 		Flags:    winui.NIF_MESSAGE | winui.NIF_ICON | winui.NIF_TIP,
 		Callback: winui.WM_TRAYCALLBACK,
-		Icon:     defaultIcon(),
+		Icon:     icon,
 	}
 	copyTip(&t.nid, t.menu.Tooltip)
 	nid := t.nid
@@ -157,11 +229,13 @@ func (t *winTray) createWindowLocked() error {
 	if t.window != nil {
 		return nil
 	}
-	w, err := winui.NewWindow("GoBoxTray", 0, 0, 0)
+	// The handler must be installed before the window joins the global
+	// dispatch table (C4): a Handle written after NewWindow returns misses
+	// any message dispatched in between and races the pump thread's read.
+	w, err := winui.NewWindowWithHandler("GoBoxTray", 0, 0, 0, t.wndProc)
 	if err != nil {
 		return err
 	}
-	w.Handle = t.wndProc
 	t.window = w
 	return nil
 }
@@ -411,27 +485,4 @@ func brandIconHandle() uintptr {
 		brandIcon.h = winui.IconFromRGBA(img)
 	})
 	return brandIcon.h
-}
-
-// defaultIcon loads the application's own small icon, preferring the embedded
-// butterfly brand mark over whatever binary icon the exe carries (a plain
-// `go build` produces an exe with no icon resource at all, so without this the
-// tray would show the generic shell application icon).
-func defaultIcon() uintptr {
-	if h := brandIconHandle(); h != 0 {
-		return h
-	}
-	const (
-		imageIcon     = 1
-		lrDefaultSize = 0x0000
-		lrShared      = 0x8000
-	)
-	h, _, _ := procLoadImageW.Call(0, 0, imageIcon, 0, 0, lrDefaultSize|lrShared)
-	if h != 0 {
-		return h
-	}
-	// Fall back to the generic application icon supplied by the shell.
-	const idiApplication = 32512
-	icon, _, _ := procLoadIconW.Call(0, idiApplication)
-	return icon
 }

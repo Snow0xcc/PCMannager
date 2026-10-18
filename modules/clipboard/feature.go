@@ -23,9 +23,6 @@ import (
 	"github.com/snow0xcc/pcmannager/internal/winui"
 )
 
-// Action id for writing the newest entry back (declared by Actions()).
-const actionWriteLast = "write_last"
-
 // Timings.
 const (
 	// echoWindow is how long a write-back is ignored by the watcher, so the
@@ -62,8 +59,9 @@ type Feature struct {
 	cancel  context.CancelFunc
 	// echo* remembers the last payload this module wrote so the watcher can
 	// skip it instead of re-adding it to the history. Only one kind is set at
-	// a time; images/files are remembered by identity, never by bytes, so a
-	// write-back does not pin a BLOB in memory either.
+	// a time; images/files are remembered by identity (a sampled fingerprint or
+	// the cache path), never by bytes, so a write-back does not pin a BLOB in
+	// memory either.
 	echoText  string
 	echoImage string
 	echoFile  string
@@ -112,6 +110,12 @@ func (f *Feature) Actions() []core.Action {
 			Description: "显示最近复制的内容，可写回任意一条"},
 		{ID: actionWriteLast, Label: "写回最近一条", Kind: core.ActionNormal,
 			Description: "把最新一条历史写回系统剪贴板"},
+		{ID: actionWriteEntry, Label: "写回指定条目", Kind: core.ActionNormal, Group: groupHistory,
+			Description: "按 ID 把一条历史写回系统剪贴板（条目 ID 见下方历史记录列表）",
+			Params:      []core.Param{{Key: paramID, Label: "条目 ID", Required: true}}},
+		{ID: actionDeleteEntry, Label: "删除历史条目", Kind: core.ActionDanger, Group: groupHistory, Confirm: true,
+			Description: "按 ID 删除一条历史（图片条目会连同缓存文件一起删除）",
+			Params:      []core.Param{{Key: paramID, Label: "条目 ID", Required: true}}},
 		{ID: actionClear, Label: "清空剪贴板历史", Kind: core.ActionDanger, Confirm: true,
 			Description: "删除全部未固定的条目"},
 	}
@@ -205,23 +209,27 @@ func (f *Feature) State() core.State {
 	entries := f.hist.All()
 	last, lastKind := "", string(KindText)
 	if n := len(entries); n > 0 {
-		last = summary(entrySummary(entries[n-1]), maxPreview)
+		last = entrySummary(entries[n-1])
 		lastKind = string(entries[n-1].Kind)
 	}
 	f.mu.Lock()
 	running := f.running
 	f.mu.Unlock()
 	return core.State{
-		"running":        running,
-		"count":          len(entries),
-		"last":           last,
-		"last_kind":      lastKind,
-		"max_items":      cfg.MaxItems,
-		"store_images":   cfg.StoreImages,
-		"paste_on_copy":  cfg.PasteOnCopy,
-		"retention_days": cfg.Retention,
-		"cache_dir":      f.cacheDir(),
-		"cache_bytes":    f.cacheBytes(),
+		"running":   running,
+		"count":     len(entries),
+		"last":      last,
+		"last_kind": lastKind,
+		// C2-1：最近条目视图（有界、只含元数据），供面板浏览/写回/删除；
+		// 非 Windows 平台没有原生查看器窗口，这是唯一的历史入口。
+		"entries":         panelEntryViews(entries),
+		"max_items":       cfg.MaxItems,
+		"store_images":    cfg.StoreImages,
+		"paste_on_copy":   cfg.PasteOnCopy,
+		"retention_days":  cfg.Retention,
+		"max_image_bytes": cfg.MaxImageBytes,
+		"cache_dir":       f.cacheDir(),
+		"cache_bytes":     f.cacheBytes(),
 	}
 }
 
@@ -279,6 +287,10 @@ func (f *Feature) RunAction(id string, params map[string]string) error {
 			return errors.New("clipboard: 暂无历史条目")
 		}
 		return f.writeBack(entries[len(entries)-1])
+	case actionWriteEntry:
+		return f.writeEntryFromParams(params)
+	case actionDeleteEntry:
+		return f.deleteEntryFromParams(params)
 	case actionClear:
 		f.hist.Clear()
 		f.ctx.Logger.Info("已清空剪贴板历史", "module", moduleID)
@@ -309,6 +321,12 @@ func (f *Feature) snapshot() configView {
 	cfg.Enabled = f.ctx.Config.Enabled()
 	if n, ok := toInt(f.ctx.Config.Get(optMaxItems, defaultMaxItems)); ok && n > 0 {
 		cfg.MaxItems = n
+	}
+	// 显式 0/负数 = 不限制；键缺省时 Get 回落默认上限。
+	if n, ok := toInt(f.ctx.Config.Get(optMaxImageBytes, defaultMaxImageBytes)); ok && n > 0 {
+		cfg.MaxImageBytes = n
+	} else if ok {
+		cfg.MaxImageBytes = 0
 	}
 	if v, ok := f.ctx.Config.Get(optStoreImages, defaultStoreImages).(bool); ok {
 		cfg.StoreImages = v
@@ -351,6 +369,14 @@ func (f *Feature) ingest(ctx context.Context, cfg configView, d clip.Data) {
 	}
 	if d.Format == clip.FmtImage {
 		if !cfg.StoreImages || f.isEchoImage(d.Bytes) {
+			return
+		}
+		// B3：单条图片字节上限。超过即拒收（不入历史，也不落盘），warn 上报
+		// 面板；上限 ≤0 表示不限制（手改配置时）。图片最终只存磁盘缓存，
+		// 但没有这道闸门时，一张超大 PNG 仍会先整块进内存。
+		if cfg.MaxImageBytes > 0 && len(d.Bytes) > cfg.MaxImageBytes {
+			f.ctx.Logger.Warn("剪贴板图片超过大小上限，已拒收", "module", moduleID,
+				"bytes", len(d.Bytes), "limit", cfg.MaxImageBytes)
 			return
 		}
 		path, size, err := f.writePNGCache(ctx, d.Bytes)
@@ -535,15 +561,18 @@ func imageFingerprint(buf []byte) string {
 	return b.String()
 }
 
-// entrySummary renders one entry for the panel's "last" preview.
+// entrySummary renders one entry as a single-line excerpt for the panel: the
+// "last" state field and each row of the entries list share this rendering, so
+// the two views can never drift apart. Excerpts are capped at maxPreview
+// characters regardless of how large the original payload was.
 func entrySummary(e Entry) string {
 	switch e.Kind {
 	case KindImage:
-		return fmt.Sprintf("[图片 %d KB]", e.Size/1024)
+		return fmt.Sprintf("[图片 %.1f KB]", float64(e.Size)/1024)
 	case KindFile:
-		return "[文件] " + e.Text
+		return "[文件] " + singleLine(e.Text)
 	}
-	return e.Text
+	return summary(e.Text, maxPreview)
 }
 
 // cacheDir returns the directory holding image cache files (the module data
@@ -629,11 +658,12 @@ func (f *Feature) cacheBytes() int64 {
 
 // configView is this module's settings as read from the configuration.
 type configView struct {
-	Enabled     bool
-	MaxItems    int
-	StoreImages bool
-	PasteOnCopy bool
-	Retention   int
+	Enabled       bool
+	MaxItems      int
+	StoreImages   bool
+	PasteOnCopy   bool
+	Retention     int
+	MaxImageBytes int // <=0 = 不限制
 }
 
 // toInt narrows the numeric shapes a YAML/JSON config value can arrive in.

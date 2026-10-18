@@ -26,9 +26,21 @@ func (f *fakeModule) Stop() error              { return nil }
 
 // newTestApp builds an app rooted in a temp dir so no test touches the real
 // user data directory.
+//
+// HOME/XDG_CONFIG_HOME must be overridden too, not just the working dir:
+// app.New() resolves the data dir through paths.DataDir("") → os.UserConfigDir(),
+// which reads the environment, and config.Load() closes with an unconditional
+// Save(). Chdir alone therefore Load+Save'd the *real* ~/.config/GoBox/config.yaml
+// on every run — polluting it with test fixtures (e.g. "orphan") and making
+// results depend on whatever the machine's config happened to contain. Linux
+// reads XDG_CONFIG_HOME, macOS reads $HOME, so both are covered; there is no
+// t.Parallel() here, so t.Setenv is safe.
 func newTestApp(t *testing.T) *app.App {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Chdir(tmp)
 	a, err := app.New()
 	if err != nil {
 		t.Fatalf("app.New() 失败: %v", err)
@@ -52,10 +64,8 @@ func TestManagerLogIsAvailable(t *testing.T) {
 	}
 }
 
-// The methods below are written against a nil receiver so the panel code can
-// call them on a Manager that failed to construct without a nil-deref panic.
-// That tolerance is deliberate: Show() runs on the UI thread, where a panic
-// would kill the whole app.
+// The methods below are written against a nil receiver so a failed Manager
+// construction degrades to harmless reads instead of a nil-deref panic.
 func TestNilManagerIsTolerated(t *testing.T) {
 	var m *Manager
 	if m.App() != nil {
@@ -138,17 +148,6 @@ func TestModuleIDsEmptyWhenNoModules(t *testing.T) {
 	if ids := m.ModuleIDs(); len(ids) != 0 {
 		t.Errorf("空 Manager 的 ModuleIDs = %v, 期望空", ids)
 	}
-}
-
-func TestShowOnUnsupportedPlatformIsSafe(t *testing.T) {
-	// Off Windows Show must warn and return, never panic: main calls it from a
-	// tray/menu handler where a panic would take the process down.
-	Show(NewManager(newTestApp(t)))
-}
-
-func TestShowWithNilManagerDoesNotPanic(t *testing.T) {
-	var m *Manager
-	Show(m)
 }
 
 func TestFormatValue(t *testing.T) {

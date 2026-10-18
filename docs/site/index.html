@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PCMannager — 跨平台系统托盘工具</title>
+<link rel="icon" type="image/svg+xml" href="assets/icon.svg">
 <style>
   :root {
     --bg: #ffffff;
@@ -35,6 +36,8 @@
   .wrap { max-width: 900px; margin: 0 auto; }
   header { padding: 56px 0 24px; border-bottom: 1px solid var(--border); }
   h1 { margin: 0 0 8px; font-size: 32px; }
+  /* 页眉字标取自 logo.svg（与 README / Wiki 同一份资源），深色模式由 SVG 内部 media query 处理。 */
+  .brand img { display: block; height: 52px; width: auto; }
   .tagline { color: var(--muted); margin: 0; }
   h2 { margin-top: 40px; font-size: 22px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
@@ -71,7 +74,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>PCMannager</h1>
+    <h1 class="brand"><img src="assets/logo.svg" alt="PCMannager" width="292" height="64"></h1>
     <p class="tagline">跨平台系统托盘工具：剪贴板历史、截图、上下文记录、电脑修复、任务栏状态、快捷面板、超级面板、自动更新。</p>
   </header>
 

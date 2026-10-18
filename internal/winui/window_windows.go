@@ -74,27 +74,8 @@ func FindWindowEx(parent, after HWND, className, windowName string) HWND {
 // TaskbarClassName is the primary taskbar window class.
 const TaskbarClassName = "Shell_TrayWnd"
 
-// SecondaryTaskbarClassName is the class of secondary-monitor taskbars.
-const SecondaryTaskbarClassName = "Shell_SecondaryTrayWnd"
-
 // FindTaskbar locates the primary taskbar window.
 func FindTaskbar() HWND { return FindWindow(TaskbarClassName, "") }
-
-// FindSecondaryTaskbars enumerates secondary-monitor taskbars.
-func FindSecondaryTaskbars() []HWND {
-	var out []HWND
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		name := ClassName(HWND(hwnd))
-		if name == SecondaryTaskbarClassName {
-			out = append(out, HWND(hwnd))
-		}
-		return 1 // keep enumerating
-	})
-	r, _, _ := procEnumWindows.Call(cb, 0)
-	runtime.KeepAlive(cb)
-	_ = r
-	return out
-}
 
 // ChildWindows returns every direct child of parent whose class name starts with
 // the given prefix.
@@ -273,16 +254,6 @@ func KillTimer(h HWND, id uintptr) { _, _, _ = procKillTimer.Call(uintptr(h), id
 // InvalidateRect schedules a repaint.
 func InvalidateRect(h HWND) { _, _, _ = procInvalidateRect.Call(uintptr(h), 0, 0) }
 
-// RegisterWindowMessage registers a broadcast message id (e.g. TaskbarCreated).
-func RegisterWindowMessage(name string) uint32 {
-	p, err := syscall.UTF16PtrFromString(name)
-	if err != nil {
-		return 0
-	}
-	r, _, _ := procRegisterWindowMessage.Call(uintptr(unsafe.Pointer(p)))
-	return uint32(r)
-}
-
 // ScreenSize returns the primary display size in pixels.
 func ScreenSize() (int32, int32) {
 	w, _, _ := procGetSystemMetrics.Call(SM_CXSCREEN)
@@ -406,15 +377,6 @@ func PostQuitMessage(code int32) {
 	procPostQuitMessage.Call(uintptr(code))
 }
 
-// MessageBox shows a modal message box; returns true when the user accepted.
-func MessageBox(title, text string, flags uint32) bool {
-	t, _ := syscall.UTF16PtrFromString(title)
-	m, _ := syscall.UTF16PtrFromString(text)
-	r, _, _ := procMessageBoxW.Call(0, uintptr(unsafe.Pointer(m)),
-		uintptr(unsafe.Pointer(t)), uintptr(flags))
-	return r != 0
-}
-
 // Window is a lightweight base window with a Go message handler.
 //
 // It exists so modules can create native windows without repeating the
@@ -425,6 +387,13 @@ type Window struct {
 	className string
 	// Handle receives every message; return the result and true to stop
 	// default processing.
+	//
+	// It is guarded by mu: wndProcShared reads it from whichever thread pumps
+	// messages, so an unsynchronized write would race the dispatch path. New
+	// code should install the handler via NewWindowWithHandler (which has it
+	// in place before the window joins the global dispatch table, C4) or
+	// SetHandle; the exported field stays writable only for existing callers
+	// that assign it before any message can be pumped.
 	Handle func(hwnd HWND, msg uint32, wParam, lParam uintptr) (uintptr, bool)
 	// callbacks keeps the syscall callback alive for the window's lifetime.
 	callbacks []uintptr
@@ -436,9 +405,55 @@ var windows = struct {
 	m map[HWND]*Window
 }{m: map[HWND]*Window{}}
 
+// messageHandler is the signature of Window.Handle.
+type messageHandler = func(hwnd HWND, msg uint32, wParam, lParam uintptr) (uintptr, bool)
+
 // NewWindow creates (but does not show) a window with the given style.
+//
+// The message handler is nil; install one with SetHandle afterwards, or
+// preferably create the window with NewWindowWithHandler so the handler is
+// already in place when the first message is dispatched.
 func NewWindow(className string, style uint32, exStyle uint32, parent HWND) (*Window, error) {
-	w := &Window{className: fmt.Sprintf("%s_GoBox_%d", className, nextClassID())}
+	return newWindow(className, style, exStyle, parent, nil)
+}
+
+// NewWindowWithHandler creates a window whose message handler is installed
+// before the window is created and registered.
+//
+// This closes the C4 gap: NewWindow publishes the window into the global
+// dispatch table before returning, so a Handle assigned only afterwards can
+// miss early messages (they fall through to DefWindowProc) and races the
+// pump thread's unsynchronized read.
+func NewWindowWithHandler(className string, style uint32, exStyle uint32, parent HWND, handler messageHandler) (*Window, error) {
+	return newWindow(className, style, exStyle, parent, handler)
+}
+
+// SetHandle installs the message handler under the window lock.
+//
+// Prefer NewWindowWithHandler, which has the handler in place before the
+// window can receive any message.
+func (w *Window) SetHandle(fn messageHandler) {
+	w.mu.Lock()
+	w.Handle = fn
+	w.mu.Unlock()
+}
+
+// handle snapshots the current handler under the lock so callers can invoke
+// it without holding mu (a handler may call back into Window methods).
+func (w *Window) handle() messageHandler {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.Handle
+}
+
+// newWindow is the shared constructor behind NewWindow/NewWindowWithHandler.
+func newWindow(className string, style uint32, exStyle uint32, parent HWND, handler messageHandler) (*Window, error) {
+	// The handler is part of the struct literal, so it is in place before
+	// CreateWindowExW and before the window joins the global table (C4).
+	w := &Window{
+		className: fmt.Sprintf("%s_GoBox_%d", className, nextClassID()),
+		Handle:    handler,
+	}
 
 	cls, err := syscall.UTF16PtrFromString(w.className)
 	if err != nil {
@@ -500,9 +515,13 @@ func wndProcShared(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	w := windows.m[h]
 	windows.RUnlock()
 
-	if w != nil && w.Handle != nil {
-		if res, handled := w.Handle(h, msg, wParam, lParam); handled {
-			return res
+	// Snapshot the handler under the window lock, then call it outside: a
+	// handler may re-enter Window methods (HWND, Destroy, …).
+	if w != nil {
+		if handle := w.handle(); handle != nil {
+			if res, handled := handle(h, msg, wParam, lParam); handled {
+				return res
+			}
 		}
 	}
 	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)

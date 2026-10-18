@@ -4,9 +4,16 @@ package app
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
+	"github.com/snow0xcc/pcmannager/internal/tray"
 )
 
 // errFakeStart is what Start failure tests return, so assertions can line up
@@ -57,13 +64,185 @@ func (f *fakeModule) OnHotkey() error { f.hotkeys++; return nil }
 // what keeps each test isolated.
 func newTestApp(t *testing.T) *App {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	// 隔离数据目录：New() 经 paths.DataDir("") 落到 os.UserConfigDir()，
+	// 不跟随工作目录。只 chdir 不够——Load() 收尾会 Save()，测试会把配置
+	// 写进真实用户目录（实测污染过 ~/.config/GoBox/config.yaml：残留了
+	// 测试专用模块与 tray_icon_path），且第二次运行会读到上次的残留，
+	// 让断言"默认值"的用例变成顺序依赖。Linux 读 XDG_CONFIG_HOME、
+	// macOS 读 $HOME，两个一起覆盖；app_test 是 !windows，不涉 %AppData%。
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Chdir(tmp)
 	a, err := New()
 	if err != nil {
 		t.Fatalf("New() 失败: %v", err)
 	}
 	t.Cleanup(func() { a.Shutdown() })
 	return a
+}
+
+// TestConfigDirOverrideMovesConfigAndDataTogether 守护 PCMANNAGER_CONFIG 的
+// 完整性：它必须同时搬走 config.yaml **和**数据目录（日志、模块数据）。
+//
+// 曾经的缺陷是只搬走一半——探测阶段靠 chdir 在覆盖目录里读到了 config.yaml，
+// 但数据目录仍按系统默认解析，于是“面板显示的配置”与“实际写入的数据”分处
+// 两地，/api/state 的 effective_data_dir 也和覆盖目录不一致。
+func TestConfigDirOverrideMovesConfigAndDataTogether(t *testing.T) {
+	root := t.TempDir()
+	// 与 newTestApp 保持一致：先进一个空目录，探测阶段才不会把 config.yaml
+	// 写到源码目录里（那会污染工作区）。
+	t.Chdir(t.TempDir())
+	t.Setenv("PCMANNAGER_CONFIG", root)
+
+	a, err := New()
+	if err != nil {
+		t.Fatalf("New() 失败: %v", err)
+	}
+	t.Cleanup(a.Shutdown)
+
+	if got := a.DataDir(); got != root {
+		t.Fatalf("DataDir() = %q, 期望覆盖目录 %q", got, root)
+	}
+	// 配置必须落在同一个目录，否则又回到“两处分裂”的老问题。
+	cfg := filepath.Join(root, "config.yaml")
+	if err := a.Config().Save(); err != nil {
+		t.Fatalf("保存配置: %v", err)
+	}
+	if _, err := os.Stat(cfg); err != nil {
+		t.Fatalf("config.yaml 应写入覆盖目录 %q: %v", cfg, err)
+	}
+	// 日志目录也归覆盖目录，面板展示的 effective_data_dir 才不会骗人。
+	if _, err := os.Stat(filepath.Join(root, "logs")); err != nil {
+		t.Fatalf("logs 目录应位于覆盖目录下: %v", err)
+	}
+}
+
+// TestDataDirSettingBeatsOverride 守护优先级：app.data_dir 显式指定时优先于
+// 环境变量（环境变量只是调试用的兜底，不能反过来压过用户配置）。
+func TestDataDirSettingBeatsOverride(t *testing.T) {
+	root := t.TempDir()
+	explicit := filepath.Join(root, "explicit")
+	if err := os.MkdirAll(explicit, 0o755); err != nil {
+		t.Fatalf("准备目录: %v", err)
+	}
+	// 探测阶段读的是工作目录里的 config.yaml，先把它写成带 app.data_dir 的配置。
+	t.Chdir(root)
+	t.Setenv("PCMANNAGER_CONFIG", root)
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"),
+		[]byte("app:\n  data_dir: "+explicit+"\n"), 0o600); err != nil {
+		t.Fatalf("写探测配置: %v", err)
+	}
+
+	a, err := New()
+	if err != nil {
+		t.Fatalf("New() 失败: %v", err)
+	}
+	t.Cleanup(a.Shutdown)
+
+	if got := a.DataDir(); got != explicit {
+		t.Fatalf("DataDir() = %q, 期望 app.data_dir 指定的 %q", got, explicit)
+	}
+}
+
+// fakeTray 捕获托盘调用，用于断言角标派发。其余方法是空的：badgeWatch 只调
+// SetBadge。
+type fakeTray struct {
+	badges []string
+	mu     sync.Mutex
+}
+
+func (f *fakeTray) SetMenu(tray.Menu) {}
+func (f *fakeTray) Show() error       { return nil }
+func (f *fakeTray) Hide()             {}
+func (f *fakeTray) Visible() bool     { return true }
+func (f *fakeTray) Destroy()          {}
+func (f *fakeTray) SetBadge(text string) {
+	f.mu.Lock()
+	f.badges = append(f.badges, text)
+	f.mu.Unlock()
+}
+
+func (f *fakeTray) lastBadge() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.badges) == 0 {
+		return ""
+	}
+	return f.badges[len(f.badges)-1]
+}
+
+// TestBadgeWatchMirrorsClipboardCount 守护角标接线：剪贴板状态事件里的 count
+// 必须以文本形式到达托盘；停用事件必须清除角标；其它模块的事件不参与。
+//
+// 用 eventual 断言（轮询而非 sleep 固定时长）：badgeWatch 在独立 goroutine 里
+// 消费事件，到达时机不确定，但上限毫秒级。
+func TestBadgeWatchMirrorsClipboardCount(t *testing.T) {
+	a := newTestApp(t)
+	ft := &fakeTray{}
+	a.mu.Lock()
+	a.tray = ft
+	a.mu.Unlock()
+
+	a.bus.State("clipboard", core.State{"count": 7, "running": true})
+	waitFor(t, func() bool { return ft.lastBadge() == "7" })
+
+	a.bus.State("clipboard", core.State{"count": 0, "running": true})
+	waitFor(t, func() bool { return ft.lastBadge() == "" })
+
+	// 其它模块的状态事件不能写角标。
+	a.bus.State("taskbar", core.State{"count": 99, "running": true})
+	a.bus.State("clipboard", core.State{"count": 3, "running": false})
+	waitFor(t, func() bool { return ft.lastBadge() == "" })
+}
+
+// waitFor 轮询 cond 直到成立或超时（200ms 足够本地事件总线往返）。
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("条件在 200ms 内未成立")
+}
+
+// TestBadgeFromClipboardStateToleratesBadPayload 守护事件负载的宽容解析：
+// 异常负载都必须落到“清除角标”，绝不能让 watcher 拿到垃圾或被吓停。
+func TestBadgeFromClipboardStateToleratesBadPayload(t *testing.T) {
+	tests := []struct {
+		name string
+		data core.State
+		// wantBadge 是 watcher 应该设置的角标文本（"" = 清除）。
+		wantBadge string
+		wantShow  bool
+	}{
+		{"正常", core.State{"count": 7, "running": true}, "7", true},
+		{"nil 负载", nil, "", false},
+		{"缺 count", core.State{"running": true}, "", false},
+		{"count 类型不对", core.State{"count": "7", "running": true}, "", false},
+		{"count 为零", core.State{"count": 0, "running": true}, "", false},
+		{"count 为负", core.State{"count": -3, "running": true}, "", false},
+		// 停用时 show 仍为 true：watcher 需要收到一次 SetBadge("") 把角标清掉。
+		{"未运行", core.State{"count": 7, "running": false}, "", true},
+		{"缺 running 视为停用", core.State{"count": 7}, "", true},
+	}
+	for _, tt := range tests {
+		count, running, show := badgeFromClipboardState(tt.data)
+		if show != tt.wantShow {
+			t.Errorf("%s: show = %v, 期望 %v", tt.name, show, tt.wantShow)
+			continue
+		}
+		got := ""
+		if show && running {
+			got = strconv.Itoa(count)
+		}
+		if got != tt.wantBadge {
+			t.Errorf("%s: 角标 = %q, 期望 %q", tt.name, got, tt.wantBadge)
+		}
+	}
 }
 
 func TestRegisterRejectsDuplicateID(t *testing.T) {
@@ -354,6 +533,111 @@ func TestHotkeyConflictReportedNotFatal(t *testing.T) {
 	}
 	if got := a.ModuleError("y"); got == "" {
 		t.Error("重复热键的第二个模块也应记录原因")
+	}
+}
+
+// toggleFuzzModule detects the C4 double-start race: a second Start without
+// an intervening Stop means two goroutines passed the "already running" guard
+// together. (Stop-on-stopped is deliberately tolerated: plain Disable has
+// never been guarded, and modules must already survive that today.)
+type toggleFuzzModule struct {
+	core.Base
+	id string
+
+	mu         sync.Mutex
+	running    bool
+	starts     int
+	stops      int
+	violations []string
+}
+
+func (f *toggleFuzzModule) ID() string               { return f.id }
+func (f *toggleFuzzModule) Name() string             { return "racey " + f.id }
+func (f *toggleFuzzModule) Description() string      { return "test double" }
+func (f *toggleFuzzModule) Init(*core.Context) error { return nil }
+
+func (f *toggleFuzzModule) Start() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.running {
+		f.violations = append(f.violations,
+			fmt.Sprintf("Start 在已运行时被再次调用（第 %d 次 Start）", f.starts+1))
+	}
+	f.running = true
+	f.starts++
+	// Widen the check-then-act window so the pre-fix race is caught reliably
+	// instead of depending on scheduler luck. Post-fix the per-module lock
+	// serialises callers, so this only costs ~50µs per real start.
+	time.Sleep(50 * time.Microsecond)
+	return nil
+}
+
+func (f *toggleFuzzModule) Stop() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.running = false
+	f.stops++
+	return nil
+}
+
+// TestEnableDisableConcurrentNeverDoubleStart is the C4 check-then-act
+// regression: Enable reads "enabled && running" and only later sets the
+// running state, so concurrent callers (HTTP PATCH vs tray click) could both
+// pass the guard and start the module twice. The per-module lifecycle lock
+// must make the check+start/stop section atomic.
+func TestEnableDisableConcurrentNeverDoubleStart(t *testing.T) {
+	a := newTestApp(t)
+	m := &toggleFuzzModule{id: "racey"}
+	a.MustRegister(m)
+
+	const (
+		goroutines = 6
+		iterations = 40
+	)
+
+	var start sync.WaitGroup
+	start.Add(1)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			start.Wait()
+			for j := 0; j < iterations; j++ {
+				// EnableModule is the real-world entry point (HTTP PATCH and
+				// tray toggle both land here), and its guard only short-
+				// circuits for a config-enabled running module.
+				var err error
+				if i%2 == 0 {
+					err = a.EnableModule("racey", true)
+				} else {
+					err = a.EnableModule("racey", false)
+				}
+				if err != nil {
+					t.Errorf("EnableModule(%v): %v", i%2 == 0, err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	start.Done()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("并发 EnableModule 死锁")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.starts == 0 {
+		t.Fatal("压测未产生任何 Start（测试无效）")
+	}
+	if len(m.violations) > 0 {
+		t.Fatalf("检测到 %d 次并发双重启动（check-then-act 竞态）, 首次: %s",
+			len(m.violations), m.violations[0])
 	}
 }
 

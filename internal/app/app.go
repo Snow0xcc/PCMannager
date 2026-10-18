@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,16 @@ type App struct {
 	hotkeyError map[string]string
 	errorAt     map[string]time.Time
 
+	// lifeMu serialises the check-then-act section of Enable/Disable per
+	// module, so concurrent callers (HTTP PATCH vs tray click) cannot both
+	// pass the "already running" guard and start a module twice (C4).
+	//
+	// It is separate from mu on purpose: module Start/Stop callbacks run while
+	// a lifeMu is held, and module code may call back into App methods that
+	// take mu. Lock order is lifeMu -> mu; mu is never held while calling into
+	// module code. Entries are keyed by module id and guarded by mu.
+	lifeMu map[string]*sync.Mutex
+
 	hotkeys *core.HotkeyManager
 
 	// tray renders the notification-area icon. It is nil when the platform
@@ -90,7 +101,16 @@ func New() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataDir, err := paths.DataDir(probe.Config().App.DataDir)
+	// 目录优先级：app.data_dir > PCMANNAGER_CONFIG 覆盖目录 > 系统默认目录。
+	// 覆盖目录必须参与决策：它同时是上面这次探测读到的目录（main.go 已 chdir
+	// 过去），若这里只认 app.data_dir，config.yaml 会落在覆盖目录、而日志与
+	// 模块数据仍写进系统默认目录——PCMANNAGER_CONFIG 就只搬走了一半状态。
+	override, _ := paths.ConfigDirFromEnv()
+	dirSetting := probe.Config().App.DataDir
+	if dirSetting == "" {
+		dirSetting = override
+	}
+	dataDir, err := paths.DataDir(dirSetting)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +159,7 @@ func New() (*App, error) {
 		lastError:   map[string]string{},
 		hotkeyError: map[string]string{},
 		errorAt:     map[string]time.Time{},
+		lifeMu:      map[string]*sync.Mutex{},
 		dataDir:     dataDir,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -152,6 +173,7 @@ func New() (*App, error) {
 	// subscriber turns those into panel-visible state. The stop function is
 	// registered with the cleanup below so the goroutine cannot outlive the bus.
 	a.errorWatch(bus)
+	a.badgeWatch(bus)
 
 	winui.SetDPIAware()
 
@@ -202,6 +224,50 @@ func (a *App) errorWatch(bus *core.Bus) {
 			a.recordRuntimeError(ev.Module, ev.Message, ev.Time)
 		}
 	}()
+}
+
+// badgeWatch 把剪贴板历史条数镜像到托盘角标。
+//
+// 剪贴板模块每次历史变更都会发 EventState（含 count 字段），这是托盘上最自然
+// 的“数字型”状态源：角标实时反映当前记录了多少条。模块停用（running=false）
+// 或条数归零时清除角标；其它模块的状态事件不参与，将来要接其它数据源
+// （如更新可用）从这里扩展即可。
+func (a *App) badgeWatch(bus *core.Bus) {
+	ch, stop := bus.Subscribe()
+	go func() {
+		defer stop()
+		for ev := range ch {
+			if ev.Type != core.EventState || ev.Module != "clipboard" {
+				continue
+			}
+			count, running, show := badgeFromClipboardState(ev.Data)
+			t := a.currentTray()
+			if t == nil {
+				continue
+			}
+			if show && running {
+				t.SetBadge(strconv.Itoa(count))
+			} else {
+				t.SetBadge("")
+			}
+		}
+	}()
+}
+
+// badgeFromClipboardState 从剪贴板状态事件里提取角标所需字段。
+//
+// 拆成纯函数是为了单测：事件负载是 map[string]any，字段可能缺失或类型不对，
+// 这里必须宽容（取不到就不显示），不能让一个异常事件打断 watcher。
+func badgeFromClipboardState(data core.State) (count int, running, show bool) {
+	if data == nil {
+		return 0, false, false
+	}
+	c, ok := data["count"].(int)
+	if !ok || c <= 0 {
+		return 0, false, false
+	}
+	r, _ := data["running"].(bool)
+	return c, r, true
 }
 
 // hotkeyWarn is the warn callback handed to core.HotkeyManager.
@@ -334,8 +400,39 @@ func (a *App) StartModules() {
 	}
 }
 
+// lifecycleLock returns the per-module mutex that serialises the
+// Enable/Disable check-then-act section. Entries are created lazily so tests
+// that build an App without New keep working.
+func (a *App) lifecycleLock(id string) *sync.Mutex {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lifeMu == nil {
+		a.lifeMu = map[string]*sync.Mutex{}
+	}
+	m, ok := a.lifeMu[id]
+	if !ok {
+		m = &sync.Mutex{}
+		a.lifeMu[id] = m
+	}
+	return m
+}
+
 // Enable starts a single module and (re)binds its hotkey.
+//
+// The whole check+start sequence runs under the module's lifecycle lock so
+// concurrent callers (HTTP PATCH, tray toggle) cannot both pass the running
+// guard and double-start the module (C4). Module callbacks run under that
+// lock but never under a.mu, preserving the app-wide rule that module code is
+// never invoked while holding mu.
 func (a *App) Enable(id string) error {
+	lock := a.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return a.enableLocked(id)
+}
+
+// enableLocked is Enable with the module's lifecycle lock already held.
+func (a *App) enableLocked(id string) error {
 	m, ok := a.Module(id)
 	if !ok {
 		return fmt.Errorf("未找到模块 %s", id)
@@ -366,7 +463,18 @@ func (a *App) Enable(id string) error {
 }
 
 // Disable stops a module and unbinds its hotkey.
+//
+// Like Enable, the whole sequence runs under the module's lifecycle lock so
+// enable/disable pairs remain ordered against concurrent callers (C4).
 func (a *App) Disable(id string) error {
+	lock := a.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return a.disableLocked(id)
+}
+
+// disableLocked is Disable with the module's lifecycle lock already held.
+func (a *App) disableLocked(id string) error {
 	m, ok := a.Module(id)
 	if !ok {
 		return fmt.Errorf("未找到模块 %s", id)
@@ -390,14 +498,22 @@ func (a *App) Disable(id string) error {
 }
 
 // EnableModule implements core.AppControl for cross-module toggling.
+//
+// The persisted flip and the start/stop that follows it form one atomic
+// section under the module's lifecycle lock (C4): with SetEnabled outside the
+// lock, a concurrent toggle could flip the switch between another caller's
+// guard check and its Start, re-opening the double-start window.
 func (a *App) EnableModule(id string, on bool) error {
+	lock := a.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	if err := a.cfgMgr.Module(id).SetEnabled(on); err != nil {
 		return err
 	}
 	if on {
-		return a.Enable(id)
+		return a.enableLocked(id)
 	}
-	return a.Disable(id)
+	return a.disableLocked(id)
 }
 
 // bindHotkey registers a module's configured global hotkey.
@@ -655,7 +771,7 @@ func (a *App) SetPanelURL(u string) {
 
 // Version implements core.AppControl: it exposes the running version to
 // modules (the updater compares it against the latest release tag).
-func (a *App) Version() string { return Version }
+func (a *App) Version() string { return NormalizedVersion() }
 
 // PanelURL returns the preferences panel address.
 func (a *App) PanelURL() string {
@@ -775,7 +891,7 @@ func (a *App) StartPanel() error {
 func (a *App) StartTray() error {
 	t := a.currentTray()
 	if t == nil {
-		t = tray.New(a.log, tray.HandlerFunc(a.onTraySelect))
+		t = tray.New(a.log, tray.HandlerFunc(a.onTraySelect), a.Config().App().TrayIconPath)
 		a.mu.Lock()
 		a.tray = t
 		a.mu.Unlock()

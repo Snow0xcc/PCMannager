@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kbinani/screenshot"
-
 	"github.com/snow0xcc/pcmannager/internal/core"
 )
 
@@ -112,7 +110,7 @@ func (r *recorder) loop(loopCtx context.Context) {
 		case <-ticker.C:
 			// The editor parks itself outside the region while recording, so the
 			// frame here is the real screen content and not our own overlay.
-			img, err := screenshot.CaptureRect(r.region)
+			img, err := grabRegion(r.region)
 			if err != nil {
 				// A failed frame is not worth aborting the recording; note it and
 				// keep going so a transient error does not lose the take.

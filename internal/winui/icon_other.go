@@ -14,7 +14,3 @@ func IconFromRGBA(img *image.RGBA) uintptr { return 0 }
 // DestroyIconHandle 在非 Windows 下无事可做：IconFromRGBA 恒返回 0，没有句柄需要
 // 释放。
 func DestroyIconHandle(h uintptr) {}
-
-// SetWindowIcon 在非 Windows 下是空操作：既没有 HWND，也没有 WM_SETICON 这类
-// 窗口消息。
-func SetWindowIcon(hwnd HWND, icon uintptr) {}

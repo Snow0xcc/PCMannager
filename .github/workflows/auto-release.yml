@@ -2,15 +2,17 @@
 #
 # 每次推送到 main 时：
 #   1. 找到当前最新的 semver tag（如 v1.2.3），patch 位 +1 得到新 tag；
-#   2. 打 tag 并 push。
+#   2. 打 tag 并 push；
+#   3. 显式 workflow_dispatch 派发 release.yml（见下）；
+#   4. 同步 docs/wiki 到 GitHub Wiki。
 #
-# push tag 会触发 release.yml（监听 v* tag）执行四平台构建与 GitHub Release
-# 发布——本文件只负责“递增版本号”，构建/发布复用 release.yml，避免两处
-# 构建参数漂移。
+# 构建/发布复用 release.yml（监听 v* tag 的四平台构建 + GitHub Release），
+# 本文件只负责“递增版本号 + 触发”，避免两处构建参数漂移。
 #
-# 为什么之前没有 Release/Tag：release.yml 一直是被动等待“有人 push v* tag”，
-# 而从未有任何流程自动打 tag，所以流水线一次都没被触发过。本文件补上的就是
-# 缺失的“自动递增 + 自动打 tag”这一环。
+# 注意：GITHUB_TOKEN 推送的 tag **不会**触发其它 workflow（GitHub 防递归设计，
+# 仅 repository_dispatch/workflow_dispatch 豁免）。所以第 3 步不能指望“push tag
+# 就自动跑 release”，必须显式 gh workflow run 派发——这不是冗余，是唯一的触发
+# 途径。
 name: auto-release
 
 on:
@@ -19,6 +21,7 @@ on:
 
 permissions:
   contents: write # push tag 需要写权限
+  actions: write # workflow_dispatch 触发 release.yml 需要（见 trigger release workflow 步骤）
 
 jobs:
   bump:
@@ -96,6 +99,18 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "${{ steps.versioning.outputs.new_tag }}"
           git push origin "${{ steps.versioning.outputs.new_tag }}"
+
+      - name: trigger release workflow
+        if: steps.versioning.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: ${{ steps.versioning.outputs.new_tag }}
+        run: |
+          # 关键：用 GITHUB_TOKEN 推送的 tag 不会触发其它 workflow（GitHub 防递归
+          # 设计，仅 repository_dispatch/workflow_dispatch 豁免），所以 tag 推上去
+          # 之后 release.yml 是静默的——必须在这里显式 workflow_dispatch 派发，
+          # 四平台构建与 Release 发布才会真正跑起来。
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$NEW_TAG"
 
       - name: sync GitHub Wiki
         if: steps.versioning.outputs.skip != 'true'

@@ -12,6 +12,3 @@ const WHEEL_DELTA = 120
 
 // GET_WHEEL_DELTA_WPARAM 非 Windows 下恒返回 0：没有 wParam 就没有增量。
 func GET_WHEEL_DELTA_WPARAM(wParam uintptr) int16 { return 0 }
-
-// HIWORD 非 Windows 下同样只是常量函数。
-func HIWORD(v uintptr) uint16 { return uint16(v >> 16) }

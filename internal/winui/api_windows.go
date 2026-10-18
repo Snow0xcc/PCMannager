@@ -48,7 +48,6 @@ var (
 	procEndPaint                   = user32.NewProc("EndPaint")
 	procGetDC                      = user32.NewProc("GetDC")
 	procReleaseDC                  = user32.NewProc("ReleaseDC")
-	procRegisterWindowMessage      = user32.NewProc("RegisterWindowMessageW")
 	procGetSystemMetrics           = user32.NewProc("GetSystemMetrics")
 	procSystemParametersInfo       = user32.NewProc("SystemParametersInfoW")
 	procGetCursorPos               = user32.NewProc("GetCursorPos")
@@ -62,7 +61,6 @@ var (
 	procGetWindowTextW             = user32.NewProc("GetWindowTextW")
 	procGetClassNameW              = user32.NewProc("GetClassNameW")
 	procGetWindowThreadProcessId   = user32.NewProc("GetWindowThreadProcessId")
-	procEnumWindows                = user32.NewProc("EnumWindows")
 	procLoadCursorW                = user32.NewProc("LoadCursorW")
 	procLoadImageW                 = user32.NewProc("LoadImageW")
 	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
@@ -71,7 +69,6 @@ var (
 	procUpdateWindow               = user32.NewProc("UpdateWindow")
 	procFillRect                   = user32.NewProc("FillRect")
 	procDrawTextW                  = user32.NewProc("DrawTextW")
-	procMessageBoxW                = user32.NewProc("MessageBoxW")
 	procReleaseCapture             = user32.NewProc("ReleaseCapture")
 	procGetWindowDC                = user32.NewProc("GetWindowDC")
 

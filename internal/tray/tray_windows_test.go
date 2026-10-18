@@ -198,6 +198,74 @@ func TestTrayDestroyReleasesWindow(t *testing.T) {
 	}
 }
 
+// TestTrayWindowHandleReadyAtRegistration is the C4 Handle regression guard:
+// the wndProc must be installed before the window joins the global dispatch
+// table, so a message dispatched immediately after creation reaches the tray
+// instead of falling through to DefWindowProc (and the pump thread's read of
+// Handle no longer races the assignment).
+func TestTrayWindowHandleReadyAtRegistration(t *testing.T) {
+	tr := newStubTray()
+	var selected int32
+	tr.handler = HandlerFunc(func(id string) {
+		if id == "open_panel" {
+			atomic.AddInt32(&selected, 1)
+		}
+	})
+
+	if err := tr.createWindowLocked(); err != nil {
+		t.Fatalf("createWindowLocked: %v", err)
+	}
+	t.Cleanup(func() {
+		if tr.window != nil {
+			tr.window.Destroy()
+		}
+	})
+
+	if tr.window.Handle == nil {
+		t.Fatal("窗口进入全局表时 Handle 必须已就绪")
+	}
+
+	// Dispatch through the shared wndproc right after creation: the tray
+	// handler must see it. (Same-thread SendMessage is synchronous.)
+	winui.SendMessage(tr.window.HWND(), winui.WM_TRAYCALLBACK, 0, uintptr(winui.WM_LBUTTONDBLCLK))
+	if atomic.LoadInt32(&selected) == 0 {
+		t.Fatal("创建后立即派发的托盘消息未到达 wndProc（Handle 未在注册前就绪）")
+	}
+}
+
+// TestWindowHandlerSetHandleReplaces covers the locked setter used by callers
+// that cannot create the window with a handler in one step.
+func TestWindowHandlerSetHandleReplaces(t *testing.T) {
+	var hits int32
+	w, err := winui.NewWindowWithHandler("GoBoxTrayTest", 0, 0, winui.Invalid,
+		func(hwnd winui.HWND, msg uint32, wParam, lParam uintptr) (uintptr, bool) {
+			if msg == winui.WM_APP+7 {
+				atomic.AddInt32(&hits, 1)
+				return 1, true
+			}
+			return 0, false
+		})
+	if err != nil {
+		t.Fatalf("NewWindowWithHandler: %v", err)
+	}
+	t.Cleanup(func() { w.Destroy() })
+
+	winui.SendMessage(w.HWND(), winui.WM_APP+7, 0, 0)
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("handler 收到 %d 条消息, 期望 1", atomic.LoadInt32(&hits))
+	}
+
+	// Replacing the handler under the lock must take effect for subsequent
+	// messages.
+	w.SetHandle(func(hwnd winui.HWND, msg uint32, wParam, lParam uintptr) (uintptr, bool) {
+		return 0, false // fall through to DefWindowProc
+	})
+	winui.SendMessage(w.HWND(), winui.WM_APP+7, 0, 0)
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatal("SetHandle 后旧 handler 仍被调用")
+	}
+}
+
 // TestTrayNoReentrantLock is a direct structural assertion: notify must not
 // acquire t.mu. If a future change reintroduces locking inside notify, this
 // deadlocks instead of passing silently.

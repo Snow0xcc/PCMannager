@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/{REPO}/main/docs/site/assets/logo.svg" alt="PCMannager" width="260">
+</p>
+
 # PCMannager 文档
 
 跨平台系统托盘工具：剪贴板历史、截图、上下文记录、电脑修复、任务栏状态、快捷面板、超级面板、自动更新。
@@ -16,6 +20,8 @@
 | macOS (arm64) | [下载](https://github.com/{REPO}/releases/download/{TAG}/pcmannager-darwin-arm64) | [高速](https://ghfast.top/https://github.com/{REPO}/releases/download/{TAG}/pcmannager-darwin-arm64) | [高速](https://ghproxy.net/https://github.com/{REPO}/releases/download/{TAG}/pcmannager-darwin-arm64) |
 
 镜像站偶发限流，某个节点不可用时请切换其它节点或官方源。
+
+> **平台成色提示**：四个平台的产物均可构建并启动（核心、HTTP 面板与自动更新全平台可用），但功能模块的平台能力差异显著——Windows 最完整，Linux/macOS 上截图、上下文记录、修复工具箱、快捷面板等模块的核心能力不可用。逐模块明细见 [模块说明](Modules.md) 的「平台可用性」标注。
 
 ## 文档导航
 

@@ -34,7 +34,6 @@ const (
 	optMarginTop    = "margin_top"
 	optMarginV      = "margin_v"
 	optLayout       = "layout"
-	optNumAlign     = "num_align"
 	optSpeedUnit    = "speed_unit"
 	optUnitSpace    = "unit_space"
 	optFontFamily   = "font_family"
@@ -42,13 +41,15 @@ const (
 	optFGColor      = "fg_color"
 	optBGMode       = "bg_mode"
 	optBGColor      = "bg_color"
-	optFollowTheme  = "follow_theme"
 	optSeparator    = "separator"
-	optRender       = "render"
 	optAvoidWidgets = "avoid_widgets"
-	optMultiMonitor = "multi_monitor"
 	optWidth        = "width"
 )
+
+// 已摘除的惰性 option（ROADMAP C1）：num_align / follow_theme / render /
+// multi_monitor 曾在面板可见，但小组件从未读取——改了没反应的假设置。
+// 实现对应行为后再恢复声明，并同步 internal/config.Default() 与
+// feature_test.go 的 TestOptionsExposeEveryKey（见 docs/ROADMAP.md C1）。
 
 // Option defaults, kept in sync with internal/config.Default().
 const (
@@ -68,7 +69,6 @@ const (
 	defaultMarginTop  = 0
 	defaultMarginV    = 0
 	defaultLayout     = "two-line"
-	defaultNumAlign   = "left"
 	defaultSpeedUnit  = "B"
 	defaultUnitSpace  = true
 	defaultFontFamily = "Microsoft YaHei"
@@ -81,11 +81,8 @@ const (
 	defaultFGColor      = "#FFFFFF"
 	defaultBGMode       = "transparent"
 	defaultBGColor      = "#1E1E1E"
-	defaultFollowTheme  = true
 	defaultSeparator    = "space"
-	defaultRender       = "gdi"
 	defaultAvoidWidgets = true
-	defaultMultiMonitor = false
 	// defaultWidth is wider than the old 200px because the readout is bigger and
 	// the two columns are now measured rather than squeezed into fixed fields.
 	defaultWidth = 230
@@ -104,7 +101,6 @@ const stopWait = 2 * time.Second
 const (
 	actionToggle = "toggle_widget"
 	actionReset  = "reset_position"
-	actionCopy   = "copy_stats"
 )
 
 // Feature implements the taskbar status module.
@@ -176,11 +172,6 @@ func (f *Feature) Options() []core.Option {
 				{Value: "two-line", Label: "双行"},
 			},
 			Help: "双行在任务栏较高时更易读", Restart: true},
-		{Key: optNumAlign, Label: "数字对齐", Kind: core.KindSelect, Default: defaultNumAlign,
-			Choices: []core.Choice{
-				{Value: "left", Label: "数字左对齐"},
-				{Value: "right", Label: "数字右对齐"},
-			}},
 		{Key: optSpeedUnit, Label: "速率单位", Kind: core.KindSelect, Default: defaultSpeedUnit,
 			Choices: []core.Choice{
 				{Value: "B", Label: "字节 B/s（自动进位）"},
@@ -193,8 +184,7 @@ func (f *Feature) Options() []core.Option {
 		{Key: optFontSize, Label: "字号", Kind: core.KindInt,
 			Default: defaultFontSize, Min: 8, Max: 32, Step: 1,
 			Help: "任务栏高度有限，过大可能被截断"},
-		{Key: optFGColor, Label: "文字颜色", Kind: core.KindColor, Default: defaultFGColor,
-			VisibleIf: &core.VisibleIf{Key: optAutoFG, Value: false}},
+		{Key: optFGColor, Label: "文字颜色", Kind: core.KindColor, Default: defaultFGColor},
 		{Key: optAutoFG, Label: "文字颜色自动适配背景", Kind: core.KindBool, Default: defaultAutoFG,
 			Help: "根据背景明暗自动选择黑或白文字，避免浅色主题下看不清"},
 		{Key: optBGMode, Label: "背景模式", Kind: core.KindSelect, Default: defaultBGMode,
@@ -203,9 +193,7 @@ func (f *Feature) Options() []core.Option {
 				{Value: "solid", Label: "纯色"},
 			},
 			Help: "透明时任务栏背景直接透出，仅绘制文字"},
-		{Key: optBGColor, Label: "背景颜色", Kind: core.KindColor, Default: defaultBGColor,
-			VisibleIf: &core.VisibleIf{Key: optBGMode, Value: "solid"}},
-		{Key: optFollowTheme, Label: "跟随明暗主题自动调整文字", Kind: core.KindBool, Default: defaultFollowTheme},
+		{Key: optBGColor, Label: "背景颜色", Kind: core.KindColor, Default: defaultBGColor},
 		{Key: optSeparator, Label: "分隔符", Kind: core.KindSelect, Default: defaultSeparator,
 			Choices: []core.Choice{
 				{Value: "space", Label: "空格"},
@@ -213,14 +201,8 @@ func (f *Feature) Options() []core.Option {
 				{Value: "dot", Label: "间隔点 ·"},
 				{Value: "none", Label: "无"},
 			}},
-		{Key: optRender, Label: "渲染方式", Kind: core.KindSelect, Default: defaultRender,
-			Choices: []core.Choice{
-				{Value: "gdi", Label: "GDI"},
-			},
-			Help: "当前仅内置 GDI 渲染", Restart: true},
 		{Key: optAvoidWidgets, Label: "自动避开通知区域", Kind: core.KindBool, Default: defaultAvoidWidgets,
 			Help: "始终锚定在时钟左侧，不会压住托盘图标"},
-		{Key: optMultiMonitor, Label: "在副屏任务栏也显示", Kind: core.KindBool, Default: defaultMultiMonitor},
 	}
 }
 
@@ -389,11 +371,11 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		}
 	case optShowDown, optShowUp, optShowCPU, optShowMem, optShowDisk, optShowUptime,
 		optShowBattery, optAutoFG, optWidth,
-		optAlign, optOffsetX, optMarginTop, optMarginV, optNumAlign, optSpeedUnit,
+		optAlign, optOffsetX, optMarginTop, optMarginV, optSpeedUnit,
 		optUnitSpace, optFontFamily, optFontSize, optFGColor, optBGMode, optBGColor,
-		optFollowTheme, optSeparator, optAvoidWidgets, optMultiMonitor:
+		optSeparator, optAvoidWidgets:
 		f.rebuildWidget()
-	case optLayout, optRender:
+	case optLayout:
 		// Declared with Restart: true — the app restarts this module, rebuilding
 		// here too would race with that restart.
 	default:

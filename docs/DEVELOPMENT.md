@@ -60,11 +60,17 @@ CGO_ENABLED=0 go vet ./...
 gofmt -l .          # 列出未格式化文件（见下方 CRLF 说明）
 gofmt -w .          # 就地格式化
 
+
 # CI 工作流结构校验（本地就能发现 GitHub 会拒绝的 workflow）
 bash scripts/check-workflows.sh
+
+# 重新生成品牌 SVG（改了 internal/logo 的几何后必跑）
+bash scripts/gen-logo.sh
+bash scripts/gen-logo.sh --check   # 只校验 docs/site/assets/*.svg 是否与几何一致
+
 ```
 
-Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。
+Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。注意**构建通过不等于功能可用**：全局热键、托盘、任务栏嵌入、截图编辑器、修复动作、快捷面板等原生能力在非 Windows 上均不可用，逐模块成色见 README 功能表「平台可用性」列。
 
 > **不要裸调 `go build` 产出发布版**：必须带 `-tags production`（Wails 需要）且 Windows 需 `-H windowsgui`（否则弹控制台）。`scripts/build.sh` 已把两者固定下来，发布请一律走它。
 >
@@ -76,31 +82,38 @@ Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心
 2. 新增模块：在 `modules/<name>/` 下建包实现 `internal/core.Module`，并在 `main.go` 注册；平台相关 UI 须成对提供 `_windows.go`（`//go:build windows`）与 `_other.go`（`//go:build !windows`）。
 3. 改动依赖后跑 `go mod tidy`，并提交更新后的 `go.mod`/`go.sum`。
 4. 提交前执行 `gofmt -w . && go vet ./...` 自查。
-5. 前端（规划中的 Wails 面板）**严禁使用 emoji**，图形一律用 icon 资源替代（详见 README「前端显示规范」）。
+5. 前端（Web 面板与 Wails 原生窗口）**严禁使用 emoji**，图形一律用 icon 资源替代（详见 README「前端显示规范」）。
 
 ## 5. 本地运行与调试
 
-- 配置文件默认位于用户配置目录下的 `GoBox/config.yaml`（Windows `%APPDATA%\GoBox`）。可用环境变量覆盖路径以便调试：
+- 配置文件默认位于用户配置目录下的 `GoBox/config.yaml`（数据目录：Windows `%APPDATA%\GoBox`、Linux `$XDG_CONFIG_HOME/GoBox`，可由 `app.data_dir` 覆盖；`GoBox` 为历史代号，见 README「已知限制」）。可用环境变量覆盖路径以便调试：
 
   ```bash
-  PCMANNAGER_CONFIG=/path/to/dev-config go run .
+  PCMANNAGER_CONFIG=/path/to/dev-config.yaml go run .
   ```
 
-- 日志同时写入两处：数据目录 `logs/gobox.log` **和程序所在目录** `logs/gobox.log`（即 exe 旁边的 `logs/`，启动时自动创建）。后者对无控制台的 GUI 构建尤其重要——直接去程序目录就能看到日志。
+- 日志写入两处：数据目录 `logs/gobox.log`（`internal/paths.LogFile`）**与程序所在目录** `logs/gobox.log`（`paths.ExecutableLogFile`，启动时自动创建）。后者对无控制台的 GUI 构建尤其重要——直接去 exe 旁边的 `logs/` 就能看日志。同一文件不会被重复打开。
 
 ## 6. 构建与运行的坑
 
-历史上 `main.go` 曾引用旧版 `core` API 而无法 `go build`，该缺口已修复：现在 `go build ./...`、`go vet ./...` 与四个目标平台交叉构建都通过。
+早期 `main.go` 曾引用旧版 `core` API（`Manager`/`Feature`/`App`）导致四平台构建失败；该迁移缺口**已修复**（全模块迁移到 `core.Module` 契约，`main.go` 改用 `internal/app` 装配层）。
+
+当前状态：
+
+- `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64` 均以 `CGO_ENABLED=0` 构建通过，`go build ./...` / `go vet ./...` 可正常使用。
+- 发布构建统一走 `bash scripts/build.sh <goos> <goarch> <输出>`（固定 `-tags production`，并对 Windows 追加 `-H windowsgui`）。
 
 仍要注意两点（都会导致“看起来构建成功、但行为异常”）：
 
-- **Wails 的 `production` 标签**：缺它会让 `wailsapp` 链接到 `app_default_windows.go` 报错桩（`CreateApp` 弹框返回 `nil`）。现在有三道防线：`scripts/preflight.sh` 在构建前断言标签生效且未选中桩；`scripts/build.sh` 构建后检查产物内嵌的 `-tags` 与桩文案；`wailsapp` 运行时再用 `debug.ReadBuildInfo` 自检验证，缺标签时返回 `ErrMissingBuildTag` 并回退浏览器面板，不再弹英文错误框。
+
+- **Wails 的 `production` 标签**：缺它会让 `wailsapp` 链接到 `app_default_windows.go` 报错桩（`CreateApp` 弹框返回 `nil`）。现在有三道防线：`scripts/preflight.sh` 在构建前断言标签生效且未选中桩；`scripts/build.sh` 构建后检查产物内嵌的 `-tags` 与桩文案；`wailsapp` 运行时再用 `debug.ReadBuildInfo` 自检，缺标签返回 `ErrMissingBuildTag` 并回退浏览器面板。
 - **Windows 的 `-H windowsgui`**：缺它会在启动时弹出黑色控制台窗口。`scripts/build.sh` 会对产物 PE 可选头的 Subsystem 字段做断言（必须为 2=GUI），不符就删除产物并失败。
 
-开发期用 `go run .`（无标签、控制台子系统）调试核心逻辑是可行的：原生窗口会明确返回 `ErrMissingBuildTag`，日志里能看到原因，HTTP 面板照常可用。
+开发期用 `go run .`（无标签、控制台子系统）调试核心逻辑是可行的：原生窗口会明确返回 `ErrMissingBuildTag`，日志里能看到原因，HTTP 面板照常可用；`wailsapp` 侧已加固为“拿到空 context 就停止转发”（`API.ctxFor()` 返回 `nil` 而非 `context.Background()`），不会因此退出进程。
+
 
 ## 7. 提交说明
 
 - 提交信息使用 Conventional Commits 风格（如 `feat:`、`fix:`、`docs:`、`chore:`）。
 - 若改动涉及 `reference/` 子模块版本，请单独提交 `.gitmodules` 与子模块指针变更，并注明所引用的上游 commit。
-- 不要将 `bin/`、`*.exe`、本地日志提交进仓库（已由 `.gitignore` 排除）。
+- 不要将 `dist/`、`*.exe`、本地日志提交进仓库（已由 `.gitignore` 排除）。macOS 上 Finder 生成的 `.DS_Store` 也已加入 `.gitignore`，避免在 `git status` 里堆成未跟踪文件。

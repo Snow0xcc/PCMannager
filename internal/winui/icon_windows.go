@@ -18,17 +18,6 @@ var (
 	procDestroyIcon        = user32.NewProc("DestroyIcon")
 )
 
-// WM_SETICON 用于给窗口设置大/小图标；lParam 为 HICON，wParam 取 ICON_SMALL 或
-// ICON_BIG。
-const WM_SETICON = 0x0080
-
-// SendMessage 的 wParam 取值：分别对应任务栏/Alt+Tab 用的大图标与标题栏/对话框
-// 用的小图标。传 0 的 HICON 即清除图标。
-const (
-	ICON_SMALL = 0
-	ICON_BIG   = 1
-)
-
 // ICONINFO mirrors the Win32 ICONINFO structure. Field order and widths must
 // match exactly: CreateIconIndirect reads hbmMask/hbmColor at the offsets the C
 // layout dictates, and getting them wrong yields a garbage handle rather than an
@@ -136,15 +125,4 @@ func DestroyIconHandle(h uintptr) {
 		return
 	}
 	procDestroyIcon.Call(h)
-}
-
-// SetWindowIcon sets a window's small and large icons (WM_SETICON).
-// Passing 0 clears them. Best-effort.
-func SetWindowIcon(hwnd HWND, icon uintptr) {
-	if !hwnd.Valid() {
-		return
-	}
-	// 大图标用于任务栏与 Alt+Tab，小图标用于标题栏；两者分开设置才能都换掉。
-	procSendMessageW.Call(uintptr(hwnd), WM_SETICON, ICON_BIG, icon)
-	procSendMessageW.Call(uintptr(hwnd), WM_SETICON, ICON_SMALL, icon)
 }

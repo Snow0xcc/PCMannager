@@ -37,6 +37,48 @@ func TestExecutableLogFileLivesBesideTheProgram(t *testing.T) {
 	}
 }
 
+// TestConfigDirFromEnvUnsetIsNeutral 守护“没设环境变量就等于没覆盖”，
+// 否则默认启动路径会被意外改写。
+func TestConfigDirFromEnvUnsetIsNeutral(t *testing.T) {
+	t.Setenv(ConfigDirEnvVar, "")
+	dir, warn := ConfigDirFromEnv()
+	if dir != "" || warn != "" {
+		t.Fatalf("未设置时应返回空: dir=%q warn=%q", dir, warn)
+	}
+}
+
+// TestConfigDirFromEnvAcceptsDirAndFile 守护文档中写明的两种取值：目录本身，
+// 或配置文件路径（取其父目录）。
+func TestConfigDirFromEnvAcceptsDirAndFile(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(ConfigDirEnvVar, root)
+	if dir, warn := ConfigDirFromEnv(); dir != root || warn != "" {
+		t.Fatalf("目录取值: dir=%q warn=%q, 期望 dir=%q", dir, warn, root)
+	}
+
+	file := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(file, []byte("app:\n"), 0o600); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	t.Setenv(ConfigDirEnvVar, file)
+	if dir, warn := ConfigDirFromEnv(); dir != root || warn != "" {
+		t.Fatalf("文件取值应回退到父目录: dir=%q warn=%q, 期望 dir=%q", dir, warn, root)
+	}
+}
+
+// TestConfigDirFromEnvReportsMissingPath 守护“不能静默忽略”：路径不存在时必须
+// 给出警告，否则应用会悄悄退回系统默认目录，排查时毫无线索。
+func TestConfigDirFromEnvReportsMissingPath(t *testing.T) {
+	t.Setenv(ConfigDirEnvVar, filepath.Join(t.TempDir(), "nope"))
+	dir, warn := ConfigDirFromEnv()
+	if dir != "" {
+		t.Fatalf("路径不存在时不应返回目录, 实际 %q", dir)
+	}
+	if warn == "" {
+		t.Fatal("路径不存在时应返回警告")
+	}
+}
+
 // TestExecutableDirMatchesRunningBinary makes sure the directory is resolved
 // from the executable and not from the (unreliable) working directory.
 func TestExecutableDirMatchesRunningBinary(t *testing.T) {

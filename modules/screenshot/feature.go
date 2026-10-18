@@ -13,11 +13,11 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/kbinani/screenshot"
 	clip "golang.design/x/clipboard"
 
 	"github.com/snow0xcc/pcmannager/internal/core"
@@ -62,6 +62,19 @@ const (
 	actionRecord   = "record"
 	actionScroller = "scroll_capture"
 )
+
+// savedNamePrefix is the filename prefix of every saved screenshot; the
+// startup cleaner uses it (plus a numeric stem and a known extension) to tell
+// this module's own files apart from anything else in the directory.
+const savedNamePrefix = "screenshot_"
+
+// longshotNamePrefix marks scrolling long captures. They are module-owned too,
+// so the history limit must cover them as well — otherwise longshot files
+// accumulate across restarts with nothing ever reclaiming them.
+const longshotNamePrefix = "longshot_"
+
+// moduleNamePrefixes are all filename prefixes this module writes.
+var moduleNamePrefixes = []string{savedNamePrefix, longshotNamePrefix}
 
 // Timeouts for the operations that touch another process or the OS UI.
 const (
@@ -123,14 +136,13 @@ func (f *Feature) Options() []core.Option {
 			}},
 		{Key: optJPGQuality, Label: "JPG 质量", Kind: core.KindInt,
 			Default: defaultJPGQuality, Min: 10, Max: 100, Step: 5,
-			VisibleIf: &core.VisibleIf{Key: optFormat, Value: "jpg"},
-			Help:      "仅对 JPG 生效"},
+			Help: "仅对 JPG 生效"},
 		{Key: optCopyAfter, Label: "截图后复制到剪贴板", Kind: core.KindBool, Default: defaultCopyAfter},
 		{Key: optSaveDir, Label: "保存目录", Kind: core.KindString, Default: defaultSaveDir,
 			Help: "留空则使用本模块的数据目录"},
 		{Key: optMaxHistory, Label: "最多保留张数", Kind: core.KindInt,
 			Default: defaultMaxHistory, Min: 10, Max: 2000, Step: 10,
-			Help: "超出后删除本次会话中最早保存的图片"},
+			Help: "超出后自动删除最早的图片（含历史文件与长截图）"},
 		{Key: optRecFPS, Label: "录屏帧率 (fps)", Kind: core.KindInt,
 			Default: defaultRecFPS, Min: recMinFPS, Max: recMaxFPS, Step: 1,
 			Help: "录屏帧率；越高越流畅，文件也越大"},
@@ -192,12 +204,15 @@ func (f *Feature) recActionLabel() string {
 	return "录屏 (GIF)"
 }
 
-// Init implements core.Module.
+// Init implements core.Module. The save directory outlives the process, so
+// Init adopts the files already on disk and trims past max_history; otherwise
+// the directory would grow without bound across restarts.
 func (f *Feature) Init(ctx *core.Context) error {
 	if ctx == nil {
 		return errNotReady
 	}
 	f.ctx = ctx
+	f.enforceHistoryLimit()
 	return nil
 }
 
@@ -269,6 +284,9 @@ func (f *Feature) State() core.State {
 	if count > 0 {
 		last = f.saved[count-1]
 	}
+	// C2-5：锁内只拷贝路径快照，文件元数据（Stat）由 panelShotViews 在锁外
+	// 补齐——I/O 不进临界区。
+	saved := append([]string(nil), f.saved...)
 	f.mu.Unlock()
 
 	rec := f.activeRecorder()
@@ -285,6 +303,9 @@ func (f *Feature) State() core.State {
 		"format":      f.format(),
 		"max_history": max,
 		"record_fps":  f.recordingFPS(),
+		// C2-5：最近保存的条目视图（仅元数据：文件名/类别/大小/时间，不含
+		// 绝对路径），供面板浏览历史；这是非 Windows 平台唯一的历史入口。
+		"entries": panelShotViews(saved),
 	}
 	// Reporting the in-flight jobs is what lets the panel offer a stop button and
 	// show elapsed progress; a bare boolean would leave the user guessing.
@@ -354,6 +375,8 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		if !ok || n < 1 {
 			return fmt.Errorf("screenshot: %s 需要正整数", key)
 		}
+		// A shrunken limit must take effect immediately, not on the next save.
+		f.enforceHistoryLimit()
 	case optRecFPS:
 		n, ok := toInt(value)
 		if !ok || n < recMinFPS || n > recMaxFPS {
@@ -448,14 +471,13 @@ func (f *Feature) captureAs(mode edMode) {
 		f.ctx.Logger.Error("初始化剪贴板失败", "module", moduleID, "err", err)
 		f.ctx.Bus.Log(moduleID, "error", "剪贴板不可用，将无法复制截图")
 	}
-	if screenshot.NumActiveDisplays() <= 0 {
+	if captureDisplayCount() <= 0 {
 		f.ctx.Logger.Warn("未找到可用的显示器", "module", moduleID)
 		f.ctx.Bus.Notice(moduleID, "未找到可用的显示器")
 		return
 	}
 
-	bounds := screenshot.GetDisplayBounds(0)
-	img, err := screenshot.CaptureRect(bounds)
+	bounds, img, err := grabDisplay()
 	if err != nil {
 		f.ctx.Logger.Error("截屏失败", "module", moduleID, "err", err)
 		f.ctx.Bus.Log(moduleID, "error", "截屏失败："+err.Error())
@@ -706,6 +728,9 @@ func (f *Feature) writeShotNamed(img image.Image, prefix string) (string, error)
 		f.ctx.Bus.Notice(moduleID, "无法创建截图目录："+dir)
 		return "", err
 	}
+	// 保留 prefix 参数：滚动长截图存为 longshot_<ms>.png，与普通截图在磁盘上
+	// 可区分。写死 savedNamePrefix 会让两类文件同名，且下面 isModuleScreenshot
+	// 的清理逻辑再也认不出长截图，max_history 就管不住它们了。
 	name := filepath.Join(dir, fmt.Sprintf("%s_%d%s", prefix, time.Now().UnixMilli(), f.ext()))
 	if err := f.writeImage(name, img); err != nil {
 		return "", err
@@ -757,6 +782,94 @@ func (f *Feature) remember(path string) {
 		stale = f.saved[:len(f.saved)-max]
 		f.saved = f.saved[len(f.saved)-max:]
 	}
+	f.mu.Unlock()
+
+	for _, old := range stale {
+		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+			f.ctx.Logger.Warn("删除旧截图失败", "module", moduleID, "file", old, "err", err)
+		}
+	}
+}
+
+// isModuleScreenshot reports whether name follows this module's save pattern
+// (screenshot_<digits>.png|.jpg). The startup cleaner only ever deletes files
+// matching it, so user documents in the same directory are never touched.
+func isModuleScreenshot(name string) bool {
+	var stem string
+	matched := false
+	for _, p := range moduleNamePrefixes {
+		if strings.HasPrefix(name, p) {
+			stem = strings.TrimPrefix(name, p)
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	ext := filepath.Ext(name)
+	if ext != ".png" && ext != ".jpg" {
+		return false
+	}
+	stem = strings.TrimSuffix(stem, ext)
+	if stem == "" {
+		return false
+	}
+	for _, r := range stem {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// enforceHistoryLimit adopts the files this module already saved across
+// restarts: it lists them oldest-first, deletes everything past max_history
+// and repopulates f.saved with the survivors so in-session pruning continues
+// from the real directory state. A missing or unreadable directory is silently
+// ignored — there is simply nothing to clean.
+func (f *Feature) enforceHistoryLimit() {
+	dir := f.saveDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type shot struct {
+		path string
+		mod  time.Time
+	}
+	var shots []shot
+	for _, e := range entries {
+		if e.IsDir() || !isModuleScreenshot(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		shots = append(shots, shot{path: filepath.Join(dir, e.Name()), mod: info.ModTime()})
+	}
+	sort.Slice(shots, func(i, j int) bool {
+		if shots[i].mod.Equal(shots[j].mod) {
+			return shots[i].path < shots[j].path
+		}
+		return shots[i].mod.Before(shots[j].mod)
+	})
+
+	var stale []string
+	if max := maxHistory(f.ctx); max > 0 && len(shots) > max {
+		for _, s := range shots[:len(shots)-max] {
+			stale = append(stale, s.path)
+		}
+		shots = shots[len(shots)-max:]
+	}
+
+	kept := make([]string, len(shots))
+	for i, s := range shots {
+		kept[i] = s.path
+	}
+	f.mu.Lock()
+	f.saved = kept
 	f.mu.Unlock()
 
 	for _, old := range stale {

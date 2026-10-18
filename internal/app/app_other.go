@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package app
 
@@ -6,8 +6,8 @@ import "errors"
 
 // Run blocks until the application context is cancelled.
 //
-// Non-Windows builds have no native tray and therefore no message pump; the
-// preferences panel is the control surface there.
+// Windows 有 Win32 消息泵、macOS 有 CFRunLoop（见 app_darwin.go）；其余平台
+// 没有原生托盘，因此也没有消息泵，首选项面板就是控制面。
 func (a *App) Run() { a.Wait() }
 
 // nativePanelAvailable is always false off Windows; OpenPanel therefore uses

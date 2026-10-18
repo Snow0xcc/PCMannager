@@ -213,12 +213,15 @@ func (f *fanout) WithGroup(name string) slog.Handler {
 
 // busHandler forwards records to the panel bus. Any "module" attribute is
 // lifted out so the panel can filter logs per module.
+//
+// slog 的 group 语义在这里被有意拍平：面板事件流是单层键值，无嵌套作用域
+// 概念，所以不记录 WithGroup 路径（曾有的 groups 字段只写不读，已摘除，见
+// docs/ROADMAP.md C1）。
 type busHandler struct {
-	mu     sync.Mutex
-	sink   BusSink
-	level  slog.Level
-	attrs  map[string]string
-	groups []string
+	mu    sync.Mutex
+	sink  BusSink
+	level slog.Level
+	attrs map[string]string
 }
 
 func (h *busHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
@@ -254,14 +257,15 @@ func (h *busHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for _, a := range attrs {
 		merged[a.Key] = a.Value.String()
 	}
-	return &busHandler{sink: h.sink, level: h.level, attrs: merged, groups: h.groups}
+	return &busHandler{sink: h.sink, level: h.level, attrs: merged}
 }
 
+// WithGroup keeps the same flat rendering: group names are not part of the
+// panel log line, so the returned handler behaves identically.
 func (h *busHandler) WithGroup(name string) slog.Handler {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	groups := append(append([]string{}, h.groups...), name)
-	return &busHandler{sink: h.sink, level: h.level, attrs: h.attrs, groups: groups}
+	return &busHandler{sink: h.sink, level: h.level, attrs: h.attrs}
 }
 
 func levelName(l slog.Level) string {

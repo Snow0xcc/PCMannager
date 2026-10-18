@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 100 100" role="img" aria-labelledby="pm-mark-title">
+  <title id="pm-mark-title">PCMannager</title>
+  <!-- 由 scripts/gen-logo.sh 依据 internal/logo 的几何生成，请勿手工编辑。 -->
+  <path fill="#2F62D6" d="M50 52C40 60 26 72 36 84C44 94 58 82 56 62C55 56 52 53 50 52Z"/>
+  <path fill="#2F62D6" d="M50 52C60 60 74 72 64 84C56 94 42 82 44 62C45 56 48 53 50 52Z"/>
+  <path fill="#4F8CFF" d="M50 46C34 26 14 18 10 34C6 50 22 56 40 52C46 50 49 48 50 46Z"/>
+  <path fill="#4F8CFF" d="M50 46C66 26 86 18 90 34C94 50 78 56 60 52C54 50 51 48 50 46Z"/>
+  <circle fill="#FFFFFF" cx="24" cy="38" r="5"/>
+  <circle fill="#FFFFFF" cx="76" cy="38" r="5"/>
+  <path fill="#1C3A70" d="M50 38C53 50 53 66 50 82C47 66 47 50 50 38Z"/>
+  <g fill="none" stroke="#1C3A70" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M49 40C47 30 41 22 37 18"/>
+    <path d="M51 40C53 30 59 22 63 18"/>
+  </g>
+</svg>

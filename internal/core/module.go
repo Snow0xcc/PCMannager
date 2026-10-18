@@ -44,21 +44,12 @@ type Option struct {
 	// hack in Help, which leaked markup into the UI and broke silently if the
 	// help text was edited.
 	Restart bool `json:"restart,omitempty"`
-	// VisibleIn keeps the option out of the default form when it only makes
-	// sense for a specific value of another option.
-	VisibleIf *VisibleIf `json:"visible_if,omitempty"`
 }
 
 // Choice is one entry of a KindSelect option.
 type Choice struct {
 	Value string `json:"value"`
 	Label string `json:"label"`
-}
-
-// VisibleIf expresses a simple dependency between options.
-type VisibleIf struct {
-	Key   string `json:"key"`
-	Value any    `json:"value"`
 }
 
 // ActionKind tells the panel how to present an action button.
