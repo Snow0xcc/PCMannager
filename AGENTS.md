@@ -4,8 +4,14 @@
 
 ## 构建、测试、检查、格式化
 - 跨平台可构建：Windows 下用 `lxn/walk`/`gonutz/w32` 渲染真实窗口，非 Windows 下对应 UI 文件由 `//go:build !windows` 的同名 no-op 版本替换（UI 降级为空转，核心逻辑照常编译运行）。
-- 构建/检查命令：`go build ./...`、`go vet ./...`、`gofmt -l .`（格式化用 `gofmt -w .`）。首次改动依赖后先跑 `go mod tidy`。
-- **发布构建统一走 `bash scripts/build.sh <goos> <goarch> <输出>`**（CI 与本地同源，避免参数漂移）。该脚本固定 `CGO_ENABLED=0 -trimpath -ldflags="-s -w" -tags production`，并**对 Windows 追加 `-H windowsgui`**。两个参数都不能省：
+- **构建前必须先过基线**：`bash scripts/preflight.sh [goos] [goarch] [--with-tests]`。它检查 Go 版本（对 `go.mod`）、**构建标签契约**、依赖一致性（`go mod verify` + `go mod tidy -diff`）、gofmt（兼容 CRLF）、workflow YAML 结构、`go vet`。任一失败即退出非零。`scripts/build.sh` **默认会先执行它**（CI 已单独跑过时可加 `--skip-preflight`）。
+- 基线脚本的标签来源是 `scripts/build-env.sh` 的 `PCM_BUILD_TAGS`。**改标签只能改这一处**：`build.sh` 与 `preflight.sh` 都 source 它，两处各写一份必然漂移。
+- 检查命令：`go build ./...`、`go vet ./...`、`gofmt -l .`（格式化用 `gofmt -w .`）。首次改动依赖后先跑 `go mod tidy`。
+- **本机 CRLF 会让 `gofmt -l .` 全仓误报**（Windows `core.autocrlf=true` 时工作区是 CRLF，gofmt 只输出 LF）。仓库根 `.gitattributes` 已固定 `eol=lf`；旧检出可 `git add --renormalize .`。基线脚本与 CI 均对 CR 做了容错，判定真实格式问题。
+- **发布构建统一走 `bash scripts/build.sh <goos> <goarch> <输出>`**（CI 与本地同源，避免参数漂移）。该脚本固定 `CGO_ENABLED=0 -trimpath -ldflags="-s -w" -tags production`，并**对 Windows 追加 `-H windowsgui`**，构建完成后还对产物做两项硬校验：
+  - 产物内嵌的 `-tags` 必须含 `production`，且不得包含 Wails 桩文案 `will not build without the correct build tags`；
+  - Windows 产物 PE 可选头 `Subsystem` 必须为 `2`（GUI），否则说明漏了 `-H windowsgui`。
+  任一校验失败会**删除产物并退出非零**，避免坏包被发布。
   - 漏掉 `-H windowsgui` → 启动弹出黑色控制台窗口。
   - 漏掉 `-tags production` → Wails 退回 `app_default_windows.go` 桩实现，`CreateApp` 只弹错误框返回 `nil`，随后事件转发以无 Wails 值的 context 调 `runtime.EventsEmit` 触发 `log.Fatalf`，进程在**创建完 config 后静默退出**（GUI 子系统无控制台、无日志，最难排查的一类故障）。
   - GUI 子系统下 stdout/stderr 不可见，排障看日志文件或面板事件日志页。
@@ -42,6 +48,7 @@
 - `modules/updater`：**自动更新**（TODO #7）。定时检查 GitHub Releases（SemVer 比较含 rc 排序与 `include_prerelease` opt-in），下载走主机白名单（api.github.com/github.com/objects.githubusercontent.com，per-dial Control 钩子校验、重定向同样受控）+ 原子暂存 + sha256；`apply_update` 经 `sysutil.RunElevated` 执行 PowerShell helper（等进程退出→备份→替换→重启），**绝不自动执行**下载物。版本基准来自 `core.AppControl.Version()`（新增接口方法，*App 返回 `internal/app.Version`）。默认模块关闭。
 - `modules/repair`：**电脑修复 / 一键安装工具箱**，所有条目集中在 `catalog.go` 的 `Entry` 切片（声明式、平台无关，单一数据源）；`feature.go` 的 `Actions()` 全量从 `Catalog()` 生成，`RunAction` 经 `Lookup`+`Entry.ResolveCommand` 分派；walk 面板（`panel_windows.go`）与 Web 面板均从此目录渲染，新增工具只改 `catalog.go`。包管理器偏好 `prefer_source`（`auto`/`winget`/`choco`）决定解析出的安装命令。
 - `docs/DEVELOPMENT.md`：快速开发指南（子模块初始化、工具链、本地调试），新人入职先读。
+- `scripts/`：构建与检查的单一来源——`build-env.sh`（构建标签，唯一可改处）、`preflight.sh`（构建前基线）、`build.sh`（发布构建 + 产物校验）、`check-workflows.sh` + `yamlcheck.go`（workflow YAML 结构）、`check-emoji.sh`。
 - `.github/workflows/release.yml`：打 tag 时跨平台构建并发布到 GitHub Release。
 - **文档与 CI**：`docs/wiki/*.md` 是 Wiki 的**单一数据源**（含 `{TAG}`/`{REPO}` 占位符），由 `scripts/sync-wiki.sh` 在发版时渲染后推送到 `<repo>.wiki.git`——**不要**在 Wiki 网页上直接编辑，下次发版会被覆盖。`docs/site/index.html` 是 GitHub Pages 主页源码（纯静态无构建），由 `.github/workflows/pages.yml` 在 `docs/site/**` 变更时发布。
 - `bin/pcmannager.exe`：已编译的 Windows 二进制，忽略即可。
@@ -54,7 +61,7 @@
 - **热键线程模型（Windows，P0-2）**：`RegisterHotKey` 会把热键绑定到*调用线程*的消息队列，`WM_HOTKEY` 只投递给该线程。因此 `winHotkeyBackend` 的 `doRegister`/`doUnregister` **只能在 `run()` 所在的 `LockOSThread` 泵线程内调用**；外部 `register/unregister` 一律把命令投递到 `cmdCh` 并同步等待结果，再用 `PostThreadMessage(wmWake)` 唤醒泵。**禁止**从 HTTP handler、main goroutine 或临时 goroutine 直接调用 Win32 注册接口。同理，`HotkeyManager.Bind/Unbind/Stop` 必须在**不持有 `h.mu`** 的情况下调用后端（后端会阻塞等待泵线程）。
   - `close()` 的 join **必须带超时**（`join()`）：`doneCh` 只由 `run()` 关闭，"未 Start 就 Stop"时它永不关闭，无界等待会让 `Stop` 直至整个应用退出流程挂死。
 - **托盘锁协议（Windows，P0-1）**：`internal/tray` 中 `winTray` 遵循"锁内复制 `NOTIFYICONDATAW` 快照 → 解锁 → 再调 Win32"。`notify()` 自身**不获取任何锁**，任何在持锁路径里调用会重新取锁的 helper 都会造成同锁重入死锁。真实 shell 调用统一经 `notifyFn`（测试可注入替换）。
-- **Wails 构建标签（P0）**：`wailsapp` 依赖 Wails 的 `production` 标签。缺该标签时 `wails/v2/internal/app/app_default_windows.go` 会选中桩实现，`CreateApp` 弹错误框返回 `nil`，`wails.Run` 立即返回；此时若还有事件转发 goroutine 用 `context.Background()` 调 `runtime.EventsEmit`，它内部 `log.Fatalf` 直接 `os.Exit`——GUI 子系统下就是"静默退出"。`scripts/build.sh` 已固定 `-tags production`，**不要**在别处裸调 `go build`（`go run .` 同样没有该标签，故只能用于控制台调试）。`wailsapp` 侧也做了加固：`API.ctxFor()` 返回 `nil` 而非 `context.Background()`，转发 goroutine 拿到 `nil` 就直接退出。
+- **Wails 构建标签（P0）**：`wailsapp` 依赖 Wails 的 `production` 标签。缺该标签时 `wails/v2/internal/app/app_default_windows.go` 会选中桩实现，`CreateApp` 弹错误框返回 `nil`（就是 `prompt.txt` 里那段 “Wails applications will not build without the correct build tags”）。三层防护，按执行顺序：`preflight.sh` 构建前用 `go list -tags` 断言未选中桩；`build.sh` 构建后检查产物内嵌标签与桩文案；`internal/wailsapp/buildtags_windows.go` 运行时用 `debug.ReadBuildInfo` 自检，缺标签返回 `ErrMissingBuildTag`（回退浏览器面板，不再弹英文框、不静默退出）。**不要**在别处裸调 `go build`；`go run .` 可用于控制台调试，但原生窗口会被该自检拦下。
 - **Win32 句柄归属**：`syscall.LazyDLL` 把 DLL 和过程名绑死，从错误 DLL 解析会在**首次调用**时 panic（不是启动时）。已踩过的坑：`SetBkMode`/`SetTextColor` 属于 `gdi32` 而非 `user32`，错挂到 `user32` 会让任务栏小组件首次绘制时崩掉整个进程；`AlphaBlend` 属于 `msimg32`。新增 Win32 调用前先确认导出所在 DLL。
 - **无边框窗口拖动**：`WS_POPUP` 窗口没有标题栏，靠 `winui.BeginDragWindow(hwnd)`（`ReleaseCapture` + 合成 `WM_NCLBUTTONDOWN`/`HTCAPTION`）让 Windows 自己跑拖动循环；剪贴板窗口用命中头部的判断决定是拖动还是点选。
 - **剪贴板写回必须显式恢复焦点**：查看器窗口在屏时会持有前台，因此“选中一条就想粘到编辑器”靠的是**打开前记住 `winui.FocusedWindow()`**、关闭后 `SetForegroundWindow` 回去（并等窗口真正消失再发 Ctrl+V），而不是依赖当前前台窗口——后者永远是查看器自己。历史记录/写回本身经 `golang.design/x/clipboard`，其实现在 `CGO_ENABLED=0` 下可用（该库仅在无对应平台实现时才退化）。
@@ -75,8 +82,10 @@
 - 需要重启才生效的配置项：用 `core.Option` 的 `Restart: true` 字段声明，`internal/app` 的 `ApplyOption` 会在应用后自动重启该模块。**禁止**再用 Help 字符串前缀（历史 hack `[restart]`）承载这类元数据——改文案会静默丢失语义，且会把标记泄漏到面板上。
 
 ## CI / 发布
-- 触发：推送 `v*` tag（如 `v1.2.3`）时由 `.github/workflows/release.yml` 运行。
+- 触发：推送 `v*` tag（如 `v1.2.3`）时由 `.github/workflows/release.yml` 运行；推送到 `main`/PR 时由 `.github/workflows/ci.yml` 运行。
+- **两套流水线都以 `preflight` job 为前置**（`bash scripts/preflight.sh windows amd64`）：基线不满足时不会产出任何发布物，`build` job 用 `--skip-preflight` 避免重复执行，但**产物级校验仍然在 `build.sh` 末尾运行**。
 - 用 `softprops/action-gh-release` 发布，矩阵构建 `windows/amd64`、`linux/amd64`、`darwin/amd64` + `darwin/arm64`，产物命名 `pcmannager-<os>-<arch>[.exe]`。
+- `.github/workflows/*.yml` 由 `bash scripts/check-workflows.sh` 校验（基于 `yaml.v3`，无需额外安装）。它已捕获过真实事故：`auto-release.yml` 的 `run: |` 块被 tab 缩进，GitHub 会直接拒绝整条流水线。
 - 改动构建矩阵、Go 版本或产物命名时，必须同步更新本约定与 workflow 文件。
 
 ## 维护规则

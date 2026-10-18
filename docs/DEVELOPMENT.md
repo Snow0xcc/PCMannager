@@ -37,27 +37,38 @@ git submodule status   # 每个条目前应带空格或前缀，而非减号(-)
 # 下载/整理依赖（改动 go.mod 后先跑）
 go mod tidy
 
+# 构建前基线：Go 版本 / 构建标签契约 / 依赖一致性 / gofmt / workflow / vet
+# （加 --with-tests 会一并跑单测）
+bash scripts/preflight.sh windows amd64
+
 # 构建（当前平台）：发布类构建统一走脚本，参数与 CI 同源
+# 脚本会先跑 preflight，再对产物做校验（标签 + GUI 子系统）
 bash scripts/build.sh linux amd64 dist/pcmannager
 
 # Windows 交叉构建（无需 CGO，自动追加 -H windowsgui 与 -tags production）
 bash scripts/build.sh windows amd64 dist/pcmannager.exe
 
 # 开发期快速跑（控制台子系统，便于看日志）：注意它没有 production 标签，
-# Wails 原生窗口会退回桩实现（内部有加固，不会因此退出），仅适合核心逻辑调试
+# Wails 原生窗口会明确报告 ErrMissingBuildTag 并回退浏览器面板
+# （不会弹 Wails 的英文错误框，也不会静默退出），仅适合核心逻辑调试
 go run .
 
 # 静态检查
 CGO_ENABLED=0 go vet ./...
 
 # 格式化检查 / 修复
-gofmt -l .          # 列出未格式化文件
+gofmt -l .          # 列出未格式化文件（见下方 CRLF 说明）
 gofmt -w .          # 就地格式化
+
+# CI 工作流结构校验（本地就能发现 GitHub 会拒绝的 workflow）
+bash scripts/check-workflows.sh
 ```
 
 Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心逻辑（GUI 部分在非 Windows 下降级为空转）。
 
 > **不要裸调 `go build` 产出发布版**：必须带 `-tags production`（Wails 需要）且 Windows 需 `-H windowsgui`（否则弹控制台）。`scripts/build.sh` 已把两者固定下来，发布请一律走它。
+>
+> 仓库根目录的 `.gitattributes` 固定了 `eol=lf`。若你的旧检出仍是 CRLF，`gofmt -l .` 会把所有文件判为未格式化——那是换行符差异，不是格式问题。`bash scripts/preflight.sh` 已对 CRLF 做了容错，可直接用它自查。
 
 ## 4. 开发工作流
 
@@ -83,10 +94,10 @@ Windows 下可用 PowerShell 等价命令；macOS/Linux 已验证可编译核心
 
 仍要注意两点（都会导致“看起来构建成功、但行为异常”）：
 
-- **Wails 的 `production` 标签**：缺它会让 `wailsapp` 退回 `app_default_windows.go` 桩实现（`CreateApp` 弹框返回 `nil`），事件转发随后以无效 context 调 `runtime.EventsEmit`，内部 `log.Fatalf` 直接退出进程。`scripts/build.sh` 已固定该标签。
-- **Windows 的 `-H windowsgui`**：缺它会在启动时弹出黑色控制台窗口。
+- **Wails 的 `production` 标签**：缺它会让 `wailsapp` 链接到 `app_default_windows.go` 报错桩（`CreateApp` 弹框返回 `nil`）。现在有三道防线：`scripts/preflight.sh` 在构建前断言标签生效且未选中桩；`scripts/build.sh` 构建后检查产物内嵌的 `-tags` 与桩文案；`wailsapp` 运行时再用 `debug.ReadBuildInfo` 自检验证，缺标签时返回 `ErrMissingBuildTag` 并回退浏览器面板，不再弹英文错误框。
+- **Windows 的 `-H windowsgui`**：缺它会在启动时弹出黑色控制台窗口。`scripts/build.sh` 会对产物 PE 可选头的 Subsystem 字段做断言（必须为 2=GUI），不符就删除产物并失败。
 
-开发期用 `go run .`（无标签、控制台子系统）调试核心逻辑是可行的；`wailsapp` 侧已加固为“拿到空 context 就停止转发”，不会因此退出进程。
+开发期用 `go run .`（无标签、控制台子系统）调试核心逻辑是可行的：原生窗口会明确返回 `ErrMissingBuildTag`，日志里能看到原因，HTTP 面板照常可用。
 
 ## 7. 提交说明
 

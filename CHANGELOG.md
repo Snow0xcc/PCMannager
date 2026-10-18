@@ -5,6 +5,25 @@
 
 ## 未发布（当前 `main` 及工作区）
 
+### build — 构建前基线门禁与产物硬校验
+
+**背景**：`prompt.txt` 记录的错误框 `Wails applications will not build without the correct
+build tags` 说明构建缺少 Wails 必需的 `production` 标签。单独给 `build.sh` 加标签只能管住
+“正确的命令”，管不住 IDE 运行按钮、`go run .` 和手写 `go build`——它们照样能产出启动即
+弹框的二进制。因此把约束前移成可执行的基线。
+
+- `scripts/build-env.sh`：`PCM_BUILD_TAGS` 的唯一来源，`build.sh`/`preflight.sh` 共用。
+- `scripts/preflight.sh`：Go 版本、构建标签契约（`go list -tags` 断言未选中
+  `app_default_windows.go` 桩）、依赖一致性、gofmt（兼容 CRLF）、workflow 结构、`go vet`。
+- `scripts/build.sh`：默认先跑基线（`--skip-preflight` 可跳过），末尾新增产物级断言——
+  内嵌 `-tags` 含 `production`、不含桩文案、Windows PE `Subsystem == 2`；不满足则删除产物并失败。
+- `scripts/check-workflows.sh` + `scripts/yamlcheck.go`：基于已有的 `yaml.v3` 校验 workflow，
+  捕获了 `auto-release.yml` 用 tab 缩进的既存事故（GitHub 会拒绝整条流水线）。
+- `internal/wailsapp/buildtags_windows.go`：运行时用 `debug.ReadBuildInfo` 自检，缺标签返回
+  `ErrMissingBuildTag` 并回退浏览器面板，替代 Wails 的英文错误框与 GUI 下的静默失败。
+- `.gitattributes`（`eol=lf`）消除 Windows ORLF 检出导致的 `gofmt -l` 全仓误报。
+- CI（`ci.yml`/`release.yml`）新增 `preflight` job 作为 `build` 的前置；gofmt 检查改为 CRLF 容错。
+
 ### refactor — 全模块迁移到 core.Module 契约（P0 阻塞解除）
 
 **背景**：`internal/core` 已重构为 `Module`/`Registry`/`Bus`/`Context` 体系，删除了旧的

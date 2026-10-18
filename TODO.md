@@ -195,6 +195,26 @@ go vet ./...
 
 ## P1 — 待验证与收尾
 
+- [x] **50. 构建前基线门禁**：新增 `scripts/preflight.sh`，构建前强制检查 Go 版本、
+      **构建标签契约**、依赖一致性（`go mod verify` / `go mod tidy -diff`）、gofmt（兼容 CRLF）、
+      workflow YAML 结构、`go vet`，任一失败即中止。标签集中在 `scripts/build-env.sh` 的
+      `PCM_BUILD_TAGS`（`build.sh` 与 `preflight.sh` 共用，杜绝漂移），
+      `scripts/build.sh` 默认先跑基线（CI 已跑过可 `--skip-preflight`）。
+- [x] **51. 产物级硬校验**：`build.sh` 构建后断言产物内嵌 `-tags` 含 `production`、
+      不含 Wails 桩文案 `will not build without the correct build tags`，并断言 Windows PE
+      可选头 `Subsystem == 2`（GUI）。任一不符就**删除产物并以非零退出**。
+      三条断言都做过反向验证（去掉标签 / 去掉 `-H windowsgui` 均被拦下）。
+- [x] **52. `auto-release.yml` 非法 YAML**：`run: |` 块用 tab 缩进，GitHub 会直接拒绝整条
+      流水线（自动打 tag 从未生效）。已改为空格缩进，并新增
+      `scripts/check-workflows.sh` + `scripts/yamlcheck.go`（基于已有的 `yaml.v3`，无需额外安装）
+      把 workflow 结构校验接进基线，避免同类问题再次溜到 CI。
+- [x] **53. `gofmt` 全仓误报**：Windows `core.autocrlf=true` 下工作区是 CRLF，而 gofmt 只输出 LF，
+      导致 `gofmt -l .` 把 173 个文件全判为未格式化、本地自查与 CI 结论相反。
+      新增 `.gitattributes`（`eol=lf`），并把基线 / CI 的 gofmt 检查改为抹掉 CR 后比较。
+- [x] **54. 缺标签构建的运行时兜底**：`internal/wailsapp/buildtags_windows.go` 用
+      `debug.ReadBuildInfo` 读自身 `-tags`，缺 `production` 时返回 `ErrMissingBuildTag`（不再让
+      Wails 弹英文错误框，也不再静默失败），调用方回退浏览器面板；新增 3 组单测守护解析逻辑。
+
 - [ ] **1. 实际跑一次 CI 发布**：推送测试 tag（如 `v0.0.1-rc1`）验证 `.github/workflows/release.yml` 全流程，
       确认 4 个产物 `pcmannager-<os>-<arch>[.exe]` 均生成并上传 Release。本地已能构建，但 CI 环境未实测。
 - [x] **2. 提交当前未入库的改动** ✅ 已完成（`ac6cae4`）：`internal/wailsapp/`、`internal/panel/`

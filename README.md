@@ -53,7 +53,10 @@ PCMANNAGER_CONFIG=/tmp/pcm-conf ./dist/pcmannager
 需要 **Go 1.27+**（`go.mod` 声明 `go 1.27.1`）。
 
 ```bash
-# 发布构建：唯一入口，CI 与本地同源（对 Windows 自动追加 -H windowsgui）
+# 构建前基线：Go 版本、构建标签契约、依赖一致性、gofmt、workflow、vet
+bash scripts/preflight.sh windows amd64
+
+# 发布构建：唯一入口，CI 与本地同源（先跑基线；对 Windows 自动追加 -H windowsgui）
 bash scripts/build.sh windows amd64 dist/pcmannager-windows-amd64.exe
 bash scripts/build.sh darwin  arm64  dist/pcmannager-darwin-arm64
 
@@ -62,12 +65,13 @@ go build ./...
 go vet ./...
 gofmt -l .                      # 格式化：gofmt -w .
 bash scripts/check-emoji.sh     # 前端禁用 emoji 检查
+bash scripts/check-workflows.sh # workflow YAML 结构（GitHub 会拒绝非法 workflow）
 
 # 测试（当前 197 个用例，含子测试）
 go test -count=1 ./internal/... ./modules/...
 ```
 
-> **Windows 发布必须走 `scripts/build.sh`**：Go 默认按 console 子系统构建，漏掉 `-H windowsgui` 会在启动时弹出黑色控制台窗口；漏掉 `-tags production` 则会让 Wails 退回桩实现，进程在创建完 config 后静默退出。代价是 GUI 子系统下 stdout/stderr 不可见，排障请看数据目录下的 `logs/gobox.log`、**程序目录下的 `logs/gobox.log`** 或面板的事件日志页。
+> **Windows 发布必须走 `scripts/build.sh`**：Go 默认按 console 子系统构建，漏掉 `-H windowsgui` 会在启动时弹出黑色控制台窗口；漏掉 `-tags production` 则会让 Wails 退回桩实现并弹出英文错误框。脚本末尾会对产物做两项硬校验（内嵌标签 + PE 子系统），不满足就删除产物并失败。代价是 GUI 子系统下 stdout/stderr 不可见，排障请看数据目录下的 `logs/gobox.log`、**程序目录下的 `logs/gobox.log`** 或面板的事件日志页。
 
 四个目标平台 `windows/amd64`、`linux/amd64`、`darwin/amd64`、`darwin/arm64` 均以 `CGO_ENABLED=0` 构建通过。更详细的工具链与本地调试见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
@@ -105,7 +109,7 @@ Windows 专用 UI 放 `_windows.go`（`//go:build windows`），非 Windows 由 
 ## 首选项面板
 
 - **跨平面板（全平台可用）**：`internal/server` 提供 JSON REST + SSE，前端为 `internal/panel/index.html`，仅监听回环地址。
-- **原生窗口（Windows）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。**必须带 `-tags production` 构建**（`scripts/build.sh` 已固定），否则 Wails 会退回桩实现并导致进程静默退出；非 Windows 自动回退浏览器面板。
+- **原生窗口（Windows）**：`internal/wailsapp` 用 Wails/WebView2 把同一份前端装进原生窗口。经实测 `wails/v2 v2.10.2` 在 `CGO_ENABLED=0` 下四平台均可编译，不破坏免 cgo 约束。**必须带 `-tags production` 构建**（`scripts/build.sh` 已固定），否则 Wails 会链接到报错桩；`scripts/preflight.sh` 构建前断言标签生效，运行时另有 `debug.ReadBuildInfo` 自检（缺标签返回 `ErrMissingBuildTag` 并回退浏览器面板）。非 Windows 自动回退浏览器面板。
 
 REST 接口：
 
