@@ -173,6 +173,12 @@ func (p panelProvider) PatchAppConfig(patch server.AppConfigPatch) error {
 func (p panelProvider) Capabilities() any { return winui.Capabilities() }
 
 // ValidateHotkey checks a hotkey string, returning a reason when invalid.
+//
+// Syntax alone is not enough: the field log showed F1, Ctrl+`, Alt+Space and
+// Ctrl+1 all failing with "Hot key is already registered" AFTER the user had
+// saved them, because another program owned them. Registering-then-releasing
+// the combo up front turns that late surprise into an inline "已被占用" verdict
+// in the editor, so the user can pick a free shortcut before saving.
 func (p panelProvider) ValidateHotkey(hotkey string) error {
 	if hotkey == "" {
 		return nil // empty means "unbound"
@@ -180,7 +186,11 @@ func (p panelProvider) ValidateHotkey(hotkey string) error {
 	if !core.ValidHotkey(hotkey) {
 		return errors.New("热键格式无效，应为 mod+mod+key，例如 ctrl+alt+f1")
 	}
-	return nil
+	combo, ok, err := core.ParseHotkey(hotkey)
+	if err != nil || !ok {
+		return errors.New("热键格式无效，应为 mod+mod+key，例如 ctrl+alt+f1")
+	}
+	return p.a.hotkeys.Probe(combo)
 }
 
 // Subscribe returns the live event stream and an unsubscribe function.

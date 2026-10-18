@@ -21,6 +21,11 @@ type fakeBackend struct {
 	// failNext makes the next register call fail, to exercise rollback.
 	failNext bool
 
+	// probeErr is what probe reports (nil = "combo is free").
+	probeErr error
+	// probed records the combos Probe asked the backend about.
+	probed []string
+
 	// block is signalled while a backend call is in flight.
 	inCall chan struct{}
 	// release lets the test hold a backend call open.
@@ -64,6 +69,20 @@ func (f *fakeBackend) unregister(id int) error {
 
 func (f *fakeBackend) run(ch chan<- int) { <-make(chan struct{}) }
 
+// probe mirrors the Windows backend's "try then release": it takes the same
+// lock-free path as register so a Manager probing under its own mutex would
+// deadlock the same way.
+func (f *fakeBackend) probe(c Combo) error {
+	f.enter()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.probeErr != nil {
+		return f.probeErr
+	}
+	f.probed = append(f.probed, c.Text)
+	return nil
+}
+
 func (f *fakeBackend) close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -106,6 +125,68 @@ func newManagerWithFake() (*HotkeyManager, *fakeBackend) {
 		}
 	}()
 	return h, fb
+}
+
+// TestHotkeyProbeFreeCombo verifies a free combo reaches the backend probe.
+//
+// This is the "can I use this shortcut?" path behind the preferences panel's
+// inline editor; the field log showed hotkeys only failing AFTER saving.
+func TestHotkeyProbeFreeCombo(t *testing.T) {
+	h, fb := newManagerWithFake()
+	combo, ok, err := ParseHotkey("ctrl+alt+f9")
+	if err != nil || !ok {
+		t.Fatalf("ParseHotkey: %v %v", ok, err)
+	}
+
+	if err := h.Probe(combo); err != nil {
+		t.Fatalf("Probe(free combo) = %v, want nil", err)
+	}
+	fb.mu.Lock()
+	probed := append([]string(nil), fb.probed...)
+	fb.mu.Unlock()
+	if len(probed) != 1 || probed[0] != combo.Text {
+		t.Fatalf("backend probe calls = %v, want [%s]", probed, combo.Text)
+	}
+}
+
+// TestHotkeyProbeRejectsInProcessConflict verifies Probe rejects a combo a
+// module already owns, without bothering the OS: binding it would fail at
+// runtime for the very same reason.
+func TestHotkeyProbeRejectsInProcessConflict(t *testing.T) {
+	h, fb := newManagerWithFake()
+	h.Bind("taskbar", "ctrl+alt+f9", nil)
+
+	combo, _, err := ParseHotkey("ctrl+alt+f9")
+	if err != nil {
+		t.Fatalf("ParseHotkey: %v", err)
+	}
+	if err := h.Probe(combo); err == nil {
+		t.Fatal("Probe(conflicting combo) = nil, want an in-process conflict error")
+	}
+
+	fb.mu.Lock()
+	probed := len(fb.probed)
+	fb.mu.Unlock()
+	if probed != 0 {
+		t.Fatalf("Probe called the backend %d times for an in-process conflict, want 0", probed)
+	}
+}
+
+// TestHotkeyProbeReportsOSRefusal verifies the backend's refusal travels back
+// to the caller (this is what the panel renders as "已被占用").
+func TestHotkeyProbeReportsOSRefusal(t *testing.T) {
+	h, fb := newManagerWithFake()
+	fb.mu.Lock()
+	fb.probeErr = errors.New("该热键已被占用")
+	fb.mu.Unlock()
+
+	combo, _, err := ParseHotkey("f1")
+	if err != nil {
+		t.Fatalf("ParseHotkey: %v", err)
+	}
+	if err := h.Probe(combo); err == nil {
+		t.Fatal("Probe = nil, want the backend's refusal")
+	}
 }
 
 // TestHotkeyBindRegistersWithBackend verifies Bind reaches the backend.

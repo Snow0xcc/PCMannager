@@ -30,6 +30,16 @@ import (
 // Callers fall back to the HTTP panel.
 var ErrUnsupported = errors.New("wailsapp: 当前平台不提供原生窗口，请使用首选项面板")
 
+// ErrMissingBuildTag is returned when the binary was compiled without Wails'
+// required production build tag.
+//
+// Such a binary links Wails' stub implementation, whose CreateApp only shows a
+// modal English error box and returns nil — under the GUI subsystem that looks
+// like a silent failure. Reporting it as a plain error lets the caller log the
+// cause and fall back to the HTTP panel, which is far more actionable.
+var ErrMissingBuildTag = errors.New(
+	"wailsapp: 该二进制缺少 production 构建标签（原生窗口不可用）；请用 scripts/build.sh 构建，或为 IDE/go run 加上 -tags production")
+
 // EventBusName is the Wails event name the panel subscribes to for live module
 // events. It mirrors the SSE stream exposed by internal/server.
 const EventBusName = "pcm:event"
@@ -157,8 +167,21 @@ type Options struct {
 	// owns the embed because //go:embed cannot reach outside its own package
 	// directory, and the root package is what can see frontend/.
 	Assets fs.FS
-	// Logf receives lifecycle messages; may be nil.
-	Logf func(format string, args ...any)
+	// Logger receives lifecycle messages; may be nil.
+	//
+	// It is deliberately *not* a printf-style func(string, ...any). The previous
+	// contract looked like printf but callers passed slog.Logger.Warn, so a line
+	// written as "…: %v", err produced a literal !BADKEY attribute in the log
+	// file. A key/value signature makes that misuse impossible, and Info/Warn
+	// keeps "window started" out of the warning stream.
+	Logger NativeLogger
+}
+
+// NativeLogger is the minimal logging surface wailsapp needs. internal/logx
+// (and slog.Logger itself) satisfies it directly.
+type NativeLogger interface {
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
 }
 
 // emitEvent pushes one bus event to the frontend.

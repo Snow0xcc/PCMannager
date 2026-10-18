@@ -158,6 +158,8 @@ type hotkeyBackend interface {
 	register(id int, c Combo) error
 	// unregister removes a previously registered hotkey.
 	unregister(id int) error
+	// probe reports whether c can be registered right now, without keeping it.
+	probe(c Combo) error
 	// run pumps platform messages, dispatching fired hotkey ids on ch.
 	run(ch chan<- int)
 	// close releases the backend and stops run.
@@ -317,6 +319,27 @@ func (h *HotkeyManager) Combo(module string) (Combo, bool) {
 	defer h.mu.Unlock()
 	c, ok := h.combos[module]
 	return c, ok
+}
+
+// Probe reports whether combo can be registered right now.
+//
+// It is the "can I use this shortcut?" question the preferences panel asks
+// before saving. Registration is attempted and immediately released, so a
+// successful probe does not take the combo away from anyone.
+//
+// A conflict with *another module in this process* is reported as taken too,
+// because binding it would fail exactly the same way at runtime.
+func (h *HotkeyManager) Probe(combo Combo) error {
+	h.mu.Lock()
+	for other, existing := range h.combos {
+		if existing.Mods == combo.Mods && existing.VK == combo.VK {
+			h.mu.Unlock()
+			return fmt.Errorf("%s 已被模块 %s 占用", combo.Text, other)
+		}
+	}
+	h.mu.Unlock()
+
+	return h.backend.probe(combo)
 }
 
 // Conflicts reports hotkeys claimed by more than one module.

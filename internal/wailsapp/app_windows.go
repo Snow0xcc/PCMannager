@@ -127,6 +127,17 @@ func IsAvailable() bool { return windowCtx() != nil }
 //   - HideWindowOnClose keeps the assistant alive in the tray when the user
 //     closes the window, matching the tray's expected behaviour.
 func run(opts Options, prov server.Provider) error {
+	// Refuse early when this binary was built without Wails' required tag.
+	// Wails would otherwise substitute a stub that pops a modal MessageBox and
+	// returns a nil app; in a windowsgui build (no console, no logs) that reads
+	// as "started and then vanished". Returning a real error lets the caller
+	// log the reason and fall back to the HTTP panel instead of showing an
+	// unexplained dialog. scripts/preflight.sh prevents this at build time;
+	// this is the belt-and-braces check for IDE builds and `go run .`.
+	if !builtWithProductionTag() {
+		return ErrMissingBuildTag
+	}
+
 	api := NewAPI(prov)
 
 	title := opts.Title
@@ -206,8 +217,10 @@ func run(opts Options, prov server.Provider) error {
 			// see a context that is fully wired up.
 			setWindowCtx(base)
 			closeStarted()
-			if opts.Logf != nil {
-				opts.Logf("wailsapp: 原生窗口已启动")
+			if opts.Logger != nil {
+				// "started" is ordinary lifecycle information, not a warning; it
+				// used to land in WARN because the caller passed slog.Warn.
+				opts.Logger.Info("wailsapp: 原生窗口已启动")
 			}
 		},
 		OnShutdown: func(ctx context.Context) {
@@ -220,8 +233,8 @@ func run(opts Options, prov server.Provider) error {
 				cancel()
 			}
 			unsubscribe()
-			if opts.Logf != nil {
-				opts.Logf("wailsapp: 原生窗口已关闭")
+			if opts.Logger != nil {
+				opts.Logger.Info("wailsapp: 原生窗口已关闭")
 			}
 		},
 		Bind: []interface{}{api},

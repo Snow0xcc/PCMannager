@@ -25,6 +25,11 @@ func (b *noopHotkeyBackend) register(int, Combo) error {
 
 func (b *noopHotkeyBackend) unregister(int) error { return nil }
 
+// probe reports "unsupported" rather than "taken": off Windows there is no
+// global-hotkey backend at all, so blaming another application would send the
+// user hunting for a culprit that cannot exist.
+func (b *noopHotkeyBackend) probe(Combo) error { return errHotkeyUnsupported }
+
 func (b *noopHotkeyBackend) run(ch chan<- int) {
 	b.mu.Lock()
 	b.started = true

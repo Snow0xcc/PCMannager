@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/snow0xcc/pcmannager/internal/app"
+	"github.com/snow0xcc/pcmannager/internal/sysutil"
 	"github.com/snow0xcc/pcmannager/modules/clipboard"
 	"github.com/snow0xcc/pcmannager/modules/launcher"
 	"github.com/snow0xcc/pcmannager/modules/repair"
@@ -22,6 +23,25 @@ import (
 )
 
 func main() {
+	// Single instance first: two copies would fight over the same global
+	// hotkeys, the same tray slot and the same config file. The logs showed
+	// exactly that — 53 starts against 7 clean exits, with F1 / Ctrl+`
+	// "already registered" in EVERY session, because the previous copy was
+	// still running and holding those hotkeys.
+	//
+	// AcquireSingleInstance existed but was never called. It is invoked before
+	// app.New so a second copy exits without writing config or logs, and the
+	// primary instance stays the only hotkey owner.
+	releaseInstance, ok := sysutil.AcquireSingleInstance("PCMannager")
+	if !ok {
+		// A second launch usually means "focus the running window". Doing it
+		// through the running instance's panel server is not wired yet, so at
+		// least report clearly instead of failing silently.
+		os.Stderr.WriteString("PCMannager 已在运行；请使用托盘图标或首选项面板。\n")
+		return
+	}
+	defer releaseInstance()
+
 	// internal/app resolves the data directory, loads config.yaml, opens the
 	// log file and starts the hotkey router.
 	if dir, warn := configDirEnv(); warn != "" {
@@ -81,7 +101,7 @@ func main() {
 	// Both render the same embedded panel and the same provider data, so this
 	// is a presentation choice, not a second implementation. off Windows this
 	// is a no-op and the browser panel remains the control surface.
-	runNativeWindow(a, log.Warn)
+	runNativeWindow(a, log)
 
 	log.Info("PCMannager 已启动", "config", a.Config().Path(), "data_dir", a.DataDir(), "panel", a.PanelURL())
 

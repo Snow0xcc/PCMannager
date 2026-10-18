@@ -3,6 +3,7 @@
 package repair
 
 import (
+	"runtime"
 	"sync"
 
 	"github.com/lxn/walk"
@@ -39,6 +40,16 @@ func currentPanel() *walk.MainWindow {
 // only the layout — never the tool list. Adding a tool means editing the
 // catalogue, not this file.
 func openPanel(f *Feature) {
+	// walk is Win32: every control belongs to the thread that created it, and
+	// the message loop must run on that same thread. Without this the goroutine
+	// started by OpenUI could be rescheduled mid-construction, and walk's tooltip
+	// setup (WM_USER sent to the tooltip control) then fails with the opaque
+	// "TTM_ADDTOOL failed" seen repeatedly in the field log. Pinning makes the
+	// window's affinity explicit, matching the clipboard/screenshot/launcher
+	// panels.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	var mw *walk.MainWindow
 	var logEdit *walk.TextEdit
 

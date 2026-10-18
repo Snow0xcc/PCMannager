@@ -75,19 +75,23 @@ var catalog = []Entry{
 	{ID: "open_settings", Label: "打开设置", Page: pageSettings, Group: "系统与设置",
 		Command: "start ms-settings:"},
 	{ID: "open_control_panel", Label: "控制面板", Page: pageSettings, Group: "系统与设置",
-		Command: "control"},
+		Command: "start control"},
 	{ID: "open_msinfo", Label: "系统信息", Page: pageSettings, Group: "系统与设置",
-		Command: "msinfo32"},
+		Command: "start msinfo32"},
 	{ID: "open_devmgmt", Label: "设备管理器", Page: pageSettings, Group: "系统与设置",
-		Command: "devmgmt.msc"},
+		Command: "start devmgmt.msc"},
 	{ID: "open_diskmgmt", Label: "磁盘管理", Page: pageSettings, Group: "系统与设置",
-		Command: "diskmgmt.msc"},
+		Command: "start diskmgmt.msc"},
 	{ID: "open_services", Label: "服务", Page: pageSettings, Group: "系统与设置",
-		Command: "services.msc"},
+		Command: "start services.msc"},
 	{ID: "open_taskschd", Label: "任务计划", Page: pageSettings, Group: "系统与设置",
-		Command: "taskschd.msc"},
+		Command: "start taskschd.msc"},
 	{ID: "open_powercfg", Label: "电源选项", Page: pageSettings, Group: "系统与设置",
-		Command: "powercfg.cpl"},
+		// .cpl is a shell document, not an executable: `cmd /c powercfg.cpl`
+		// fails with exit status 1 (observed in the field log), while `start`
+		// hands it to the shell and returns immediately. The same applies to
+		// the .msc consoles above.
+		Command: "start powercfg.cpl"},
 
 	{ID: "hibernate_off", Label: "关闭休眠", Page: pageSettings, Group: "常用修复",
 		Command: "powercfg -h off", Danger: true, Admin: true},
@@ -135,7 +139,9 @@ var catalog = []Entry{
 
 	// ── 系统清理 ──────────────────────────────────────────────────────────
 	{ID: "disk_cleanup", Label: "磁盘清理", Page: pageCleanup, Group: "清理",
-		Command: "cleanmgr /sagerun:1"},
+		// cleanmgr 是 GUI 程序：不加 start 时 cmd /c 会一直等到用户关掉窗口，
+		// RunAction 于是看起来“卡住”了（CombinedOutput 不返回）。
+		Command: "start cleanmgr /sagerun:1"},
 	{ID: "clear_temp", Label: "清空 Temp", Page: pageCleanup, Group: "清理",
 		Command: "del /q/f/s %TEMP%\\*", Danger: true},
 	{ID: "clear_recycle", Label: "清空回收站", Page: pageCleanup, Group: "清理",
@@ -144,7 +150,7 @@ var catalog = []Entry{
 		Command: "net stop wuauserv && del /q/f/s %windir%\\SoftwareDistribution\\* && net start wuauserv",
 		Danger:  true, Admin: true},
 	{ID: "defrag", Label: "磁盘碎片/优化", Page: pageCleanup, Group: "清理",
-		Command: "dfrgui"},
+		Command: "start dfrgui"},
 	{ID: "cleanup_hibernate_off", Label: "关闭休眠文件释放空间", Page: pageCleanup, Group: "清理",
 		Command: "powercfg -h off", Danger: true, Admin: true},
 

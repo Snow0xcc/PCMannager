@@ -4,6 +4,7 @@ package preferences
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 
 	"github.com/lxn/walk"
@@ -16,6 +17,12 @@ import (
 // toggled independently, assigned its own global hotkey and tuned through the
 // options each module declares -- no per-module hardcoded fields.
 func Show(mgr *Manager) {
+	// Win32 windows are bound to their creating thread, and walk's message loop
+	// has to run on that same thread. Show is called from arbitrary goroutines
+	// (tray, panel actions), so pin it for the window's whole lifetime.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	a := mgr.App()
 	if a == nil || a.Config() == nil {
 		return

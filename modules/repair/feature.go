@@ -220,10 +220,27 @@ func (f *Feature) ApplyOption(key string, value any) error {
 // Run executes one repair command line, logging the outcome to slog + bus.
 func (f *Feature) Run(name, cmdline string) error {
 	out, err := runCommand(cmdline)
+	// A console program killed with Ctrl+C (or closed) reports exit status
+	// 0xC000013A. That is the user stopping a long-running diagnostic, not a
+	// failure, and logging it as ERROR sends them hunting for a bug that is not
+	// there — the field log has "Tracert 路由追踪" failing exactly this way.
+	if isInterrupted(err) {
+		if f.ctx != nil && f.ctx.Logger != nil {
+			f.ctx.Logger.Info("repair 命令已中断", "module", moduleID, "action", name)
+		}
+		if f.ctx != nil && f.ctx.Bus != nil {
+			f.ctx.Bus.Progress(moduleID, name, 100, out)
+		}
+		return nil
+	}
+
 	if f.ctx != nil {
 		if f.ctx.Logger != nil {
 			if err != nil {
-				f.ctx.Logger.Error("repair 命令失败", "module", moduleID, "action", name, "err", err)
+				// Include the tail of the output: "exit status 1" on its own says
+				// nothing about why, and the GUI build has no console to check.
+				f.ctx.Logger.Error("repair 命令失败", "module", moduleID, "action", name,
+					"err", err, "output", tail(out, 400))
 			} else {
 				f.ctx.Logger.Info("repair 命令完成", "module", moduleID, "action", name)
 			}
@@ -233,6 +250,14 @@ func (f *Feature) Run(name, cmdline string) error {
 		}
 	}
 	return err
+}
+
+// tail keeps the last n bytes of s, for one-line, actionable error context.
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "..." + s[len(s)-n:]
 }
 
 // confirmDanger reports whether dangerous actions must be confirmed first.

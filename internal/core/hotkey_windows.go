@@ -64,6 +64,10 @@ var (
 const (
 	opRegister = iota
 	opUnregister
+	// opProbe registers then immediately unregisters a throwaway id, which is
+	// the only reliable way to ask Windows "is this combo free?" without
+	// taking it away from whoever owns it.
+	opProbe
 )
 
 // hotkeyCmd is one unit of work for the pump thread. resp is buffered (cap 1)
@@ -135,6 +139,18 @@ func (b *winHotkeyBackend) register(id int, c Combo) error {
 		return err
 	}
 	return b.exec(hotkeyCmd{op: opRegister, id: id, combo: c, resp: make(chan error, 1)})
+}
+
+// probe reports whether the combo can be registered right now.
+//
+// It runs on the pump thread (registering off-thread binds the hotkey to a
+// queue nobody pumps) and immediately releases the probe slot, so calling it
+// never steals a shortcut from another application.
+func (b *winHotkeyBackend) probe(c Combo) error {
+	if err := b.waitReady(); err != nil {
+		return err
+	}
+	return b.exec(hotkeyCmd{op: opProbe, combo: c, resp: make(chan error, 1)})
 }
 
 // unregister removes a hotkey, also on the pump thread.
@@ -242,6 +258,8 @@ func (b *winHotkeyBackend) doCmd(cmd hotkeyCmd) {
 		err = b.doRegister(cmd.id, cmd.combo)
 	case opUnregister:
 		err = b.doUnregister(cmd.id)
+	case opProbe:
+		err = b.doProbe(cmd.combo)
 	}
 	cmd.resp <- err
 }
@@ -257,6 +275,27 @@ func (b *winHotkeyBackend) doRegister(id int, c Combo) error {
 		}
 		return fmt.Errorf("RegisterHotKey 返回 0（可能被其它程序占用）")
 	}
+	return nil
+}
+
+// proberID is an id no real registration uses (real ids come from
+// HotkeyManager.nextID and start at 1; 0x7fff is 32767, far above any
+// realistic module count). Registering under a fixed id keeps a probe from
+// evicting a real binding if the two ever raced.
+const proberID = 0x7fff
+
+// doProbe registers the combo under a throwaway id and releases it at once.
+// Must run on the pump thread.
+func (b *winHotkeyBackend) doProbe(c Combo) error {
+	mods := c.Mods | ModNoRepeat
+	r, _, err := procRegisterHotKey.Call(0, uintptr(proberID), uintptr(mods), uintptr(c.VK))
+	if r == 0 {
+		if err != nil && err != syscall.Errno(0) {
+			return fmt.Errorf("该热键已被占用: %w", err)
+		}
+		return fmt.Errorf("该热键已被占用")
+	}
+	procUnregisterHotKey.Call(0, uintptr(proberID))
 	return nil
 }
 
