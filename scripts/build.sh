@@ -5,20 +5,41 @@
 # 漏掉它就会在启动时弹出黑色控制台窗口）。
 #
 # 用法：
-#   scripts/build.sh <goos> <goarch> <输出文件>
+#   scripts/build.sh <goos> <goarch> <输出文件> [--skip-preflight]
 #   scripts/build.sh windows amd64 dist/pcmannager-windows-amd64.exe
+#
+# 默认先跑 scripts/preflight.sh（构建前基线），任一基线不满足就中止构建；
+# CI 中已由独立的 preflight job 覆盖时可加 --skip-preflight 避免重复检查。
+# 构建完成后仍会对产物做校验（标签与子系统），这是最后一道防线。
 set -euo pipefail
 
-if [ "$#" -ne 3 ]; then
-  echo "用法: $0 <goos> <goarch> <output>" >&2
+cd "$(dirname "$0")/.."
+# shellcheck source=build-env.sh
+. ./scripts/build-env.sh
+
+if [ "$#" -lt 3 ]; then
+  echo "用法: $0 <goos> <goarch> <output> [--skip-preflight]" >&2
   exit 2
 fi
 
 goos=$1
 goarch=$2
 out=$3
+shift 3
+
+skip_preflight=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-preflight) skip_preflight=1 ;;
+    *) echo "未知参数: $arg" >&2; exit 2 ;;
+  esac
+done
 
 mkdir -p "$(dirname "$out")"
+
+if [ "$skip_preflight" -eq 0 ]; then
+  bash scripts/preflight.sh "$goos" "$goarch"
+fi
 
 # -s -w 去掉符号表和调试信息以减小体积。
 ldflags="-s -w"
@@ -48,16 +69,42 @@ if [ "$goos" = "windows" ]; then
   ldflags="$ldflags -H windowsgui"
 fi
 
-# Wails 的原生窗口（internal/wailsapp）要求 dev 或 production 构建标签。
-# 漏掉它时 Wails 会退回到 app_default_windows.go 的桩实现：CreateApp 只弹
-# 错误框并返回 nil，随后 wails.Run 立即返回，事件转发 goroutine 以
-# context.Background() 调用 runtime.EventsEmit，触发 log.Fatalf 退出进程——
-# 在 GUI 子系统下表现为“创建完 config 后静默退出”（无控制台、无日志）。
-# 本项目始终走生产路径，故固定 production；非 Windows 未 import wails，
-# 该标签对它们无副作用。
-tags="production"
-
 CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-  go build -tags "$tags" -trimpath -ldflags="$ldflags" -o "$out" .
+  go build -tags "$PCM_BUILD_TAGS" -trimpath -ldflags="$ldflags" -o "$out" .
+
+# ---------------------------------------------------------------------------
+# 产物校验：以上参数都正确时这两条必然成立；任何一条失败都说明构建参数被
+# 改写（或被 go env 里的 GOFLAGS 覆盖），此时宁可失败也不发布坏包。
+# ---------------------------------------------------------------------------
+verify_fail=0
+
+if ! go version -m "$out" 2>/dev/null | grep -Eq -- '-tags=[^[:space:]]*production'; then
+  echo "FAIL 产物未带 production 构建标签（Wails 会退回报错桩）" >&2
+  verify_fail=1
+fi
+
+if [ "$goos" = "windows" ]; then
+  # Wails 的报错桩内嵌了这句英文；它出现在产物里就证明链接到了桩。
+  if grep -aq "will not build without the correct build tags" "$out"; then
+    echo "FAIL 产物包含 Wails 报错桩文案，启动会弹出错误框" >&2
+    verify_fail=1
+  fi
+
+  # PE 可选头 Subsystem 字段：2 = GUI，3 = 控制台。
+  # 偏移固定：e_lfanew 在 DOS 头 +0x3C，PE 签名 4 字节 + 文件头 20 字节后
+  # 是可选头，Subsystem 位于可选头 +68（PE32/PE32+ 一致）。
+  e_lfanew=$(od -An -tu4 -j60 -N4 "$out" | tr -d ' \n')
+  subsystem=$(od -An -tu2 -j$((e_lfanew + 92)) -N2 "$out" | tr -d ' \n')
+  if [ "$subsystem" != "2" ]; then
+    echo "FAIL 产物子系统为 ${subsystem:-未知}（应为 2=GUI），启动会弹出控制台窗口" >&2
+    verify_fail=1
+  fi
+fi
+
+if [ "$verify_fail" -ne 0 ]; then
+  echo "产物校验失败，已删除: $out" >&2
+  rm -f "$out"
+  exit 1
+fi
 
 echo "built: $out ($(wc -c <"$out") bytes)"

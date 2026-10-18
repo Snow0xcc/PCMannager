@@ -29,9 +29,28 @@ jobs:
       - name: emoji check
         run: bash scripts/check-emoji.sh
 
+  preflight:
+    name: preflight (构建前基线)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      # 构建前基线：Go 版本、构建标签契约（production 必须生效且不选中
+      # Wails 报错桩）、依赖一致性、gofmt、go vet。build job 依赖本 job，
+      # 所以基线不满足时不会产出任何发布物。
+      - name: preflight
+        run: bash scripts/preflight.sh windows amd64
+
   test:
     name: test (go test -race)
     runs-on: ubuntu-latest
+    needs: preflight
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,7 +65,7 @@ jobs:
 
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: lint
+    needs: [lint, preflight]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -75,14 +94,16 @@ jobs:
           check-latest: true
       # 编译验证走统一脚本：与发布同源参数，Windows 必须带 -H windowsgui。
       # 版本号用固定占位——此 job 只验证可编译性，产物不发布。
+      # 基线已由 preflight job 覆盖，故跳过其重复执行；产物级校验仍会运行。
       - name: build
         run: |
-          bash scripts/build.sh "${GOOS}" "${GOARCH}" "pcm-${GOOS}-${GOARCH}"
+          bash scripts/build.sh "${GOOS}" "${GOARCH}" "pcm-${GOOS}-${GOARCH}" --skip-preflight
           ls -l "pcm-${GOOS}-${GOARCH}"
 
   vet:
     name: vet + gofmt
     runs-on: ubuntu-latest
+    needs: preflight
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,19 +119,21 @@ jobs:
         run: |
           set -euo pipefail
           # 排除 submodule 参考代码 reference/；只检查工作区中真实存在的 .go 文件。
+          # 不直接用 `gofmt -l`：工作区若因 core.autocrlf 变成 CRLF，gofmt 会把
+          # 每个文件都判为未格式化。这里先抹掉 CR 再比较，只报真实的格式问题。
           mapfile -t files < <(git ls-files '*.go' | grep -v '^reference/' || true)
-          existing=()
+          unformatted=""
+          checked=0
           for f in "${files[@]:-}"; do
-            [ -n "${f}" ] && [ -f "${f}" ] && existing+=("${f}")
+            [ -n "${f}" ] && [ -f "${f}" ] || continue
+            checked=$((checked + 1))
+            if ! gofmt "${f}" | diff -q - <(tr -d '\r' <"${f}") >/dev/null 2>&1; then
+              unformatted="${unformatted}${f}"$'\n'
+            fi
           done
-          if [ "${#existing[@]}" -eq 0 ]; then
-            echo "no go files to check"
-            exit 0
-          fi
-          unformatted=$(gofmt -l "${existing[@]}")
           if [ -n "${unformatted}" ]; then
             echo "::error::以下文件未通过 gofmt，请运行 gofmt -w 后重新提交："
-            echo "${unformatted}"
+            printf '%s' "${unformatted}"
             exit 1
           fi
-          echo "gofmt check passed (${#existing[@]} files)"
+          echo "gofmt check passed (${checked} files)"

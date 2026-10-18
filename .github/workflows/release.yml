@@ -21,9 +21,26 @@ jobs:
       - name: emoji check
         run: bash scripts/check-emoji.sh
 
+  preflight:
+    name: preflight (构建前基线)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          check-latest: true
+      # 构建前基线：Go 版本、构建标签契约（production 必须生效且不选中 Wails
+      # 报错桩）、依赖一致性、gofmt、go vet。发布物只在本 job 通过后才产生。
+      - name: preflight
+        run: bash scripts/preflight.sh windows amd64
+
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: lint
+    needs: [lint, preflight]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -66,22 +83,24 @@ jobs:
         run: |
           set -euo pipefail
           # 排除 submodule 参考代码 reference/；只检查工作区中真实存在的 .go 文件
+          # 不直接用 `gofmt -l`：工作区若因 core.autocrlf 变成 CRLF，gofmt 会把
+          # 每个文件都判为未格式化。这里先抹掉 CR 再比较，只报真实的格式问题。
           mapfile -t files < <(git ls-files '*.go' | grep -v '^reference/' || true)
-          existing=()
+          unformatted=""
+          checked=0
           for f in "${files[@]:-}"; do
-            [ -n "${f}" ] && [ -f "${f}" ] && existing+=("${f}")
+            [ -n "${f}" ] && [ -f "${f}" ] || continue
+            checked=$((checked + 1))
+            if ! gofmt "${f}" | diff -q - <(tr -d '\r' <"${f}") >/dev/null 2>&1; then
+              unformatted="${unformatted}${f}"$'\n'
+            fi
           done
-          if [ "${#existing[@]}" -eq 0 ]; then
-            echo "no go files to check"
-            exit 0
-          fi
-          unformatted=$(gofmt -l "${existing[@]}")
           if [ -n "${unformatted}" ]; then
             echo "::error::以下文件未通过 gofmt，请运行 gofmt -w 后重新提交："
-            echo "${unformatted}"
+            printf '%s' "${unformatted}"
             exit 1
           fi
-          echo "gofmt check passed (${#existing[@]} files)"
+          echo "gofmt check passed (${checked} files)"
 
       - name: build
         env:
@@ -92,7 +111,9 @@ jobs:
           # 统一走 scripts/build.sh，避免 CI 与本地参数漂移。
           # 该脚本对 Windows 追加 -H windowsgui，否则启动会弹出黑色控制台窗口；
           # 并读取 PCM_VERSION（上面已设为 GITHUB_REF_NAME）注入 app.Version。
-          bash scripts/build.sh "${GOOS}" "${GOARCH}" "${ARTIFACT}"
+          # 基线已由 preflight job 覆盖，故 --skip-preflight；产物级校验
+          # （production 标签 + GUI 子系统）仍然在脚本末尾执行。
+          bash scripts/build.sh "${GOOS}" "${GOARCH}" "${ARTIFACT}" --skip-preflight
           ls -l "${ARTIFACT}"
 
       - name: upload artifact

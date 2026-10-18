@@ -1,0 +1,17 @@
+# 统一换行符，避免 gofmt 与 diff 在不同检出环境下给出不一致结果。
+#
+# Windows 上 core.autocrlf=true 会把工作区文件转成 CRLF，而 gofmt 只输出 LF，
+# 于是 `gofmt -l .` 会把每个文件都判为未格式化——本地自查与 CI（Linux 检出
+# 为 LF）结论不一致，开发者会误以为需要重新格式化整仓。
+# 在 git 层面固定为 LF，工作区与 CI 就永远一致（基线脚本仍做了容错）。
+* text=auto eol=lf
+
+# Windows 批处理/命令行脚本若将来加入，需要保留 CRLF 才能被 cmd 正确解析。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制产物不做换行符转换。
+*.exe binary
+*.png binary
+*.ico binary
+*.gif binary
