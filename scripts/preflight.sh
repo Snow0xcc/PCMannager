@@ -196,14 +196,50 @@ rm -f /tmp/pcm-vet.$$
 # 7. 单测（可选：默认不跑，CI 有独立 test job）
 # ---------------------------------------------------------------------------
 if [ "$with_tests" -eq 1 ]; then
-  step "go test"
-  if GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go test -count=1 ./internal/... ./modules/... >/tmp/pcm-test.$$ 2>&1; then
-    ok "单测通过"
+  # 目标平台与宿主相同时才真正执行测试；跨平台时只能编译测试二进制
+  # （直接运行会 exec format error，这一点在 Linux 上验 Windows 时踩过）。
+  host_goos="$(go env GOOS)"
+  host_goarch="$(go env GOARCH)"
+  if [ "$goos" = "$host_goos" ] && [ "$goarch" = "$host_goarch" ]; then
+    step "go test"
+    if GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go test -count=1 ./internal/... ./modules/... >/tmp/pcm-test.$$ 2>&1; then
+      ok "单测通过"
+    else
+      bad "单测失败："
+      tail -n 40 /tmp/pcm-test.$$ >&2
+    fi
+    rm -f /tmp/pcm-test.$$
   else
-    bad "单测失败："
-    tail -n 40 /tmp/pcm-test.$$ >&2
+    step "go test -c（${goos}/${goarch}，仅编译不执行）"
+    tdir="$(mktemp -d)"
+    if ! GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go list ./internal/... ./modules/... >/tmp/pcm-pkgs.$$ 2>&1; then
+      bad "go list 失败："
+      cat /tmp/pcm-pkgs.$$ >&2
+    else
+      compiled=0
+      while IFS= read -r pkg; do
+        [ -n "$pkg" ] || continue
+        dir="$(go list -f '{{.Dir}}' "$pkg" 2>/dev/null || true)"
+        # 无 _test.go 的包没有可编译的测试二进制，直接跳过。
+        if [ -z "$dir" ] || ! compgen -G "$dir/*_test.go" >/dev/null; then
+          continue
+        fi
+        if GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go test -c -o "$tdir" "$pkg" >/tmp/pcm-testc.$$ 2>&1; then
+          compiled=$((compiled + 1))
+        else
+          bad "测试二进制编译失败：${pkg}"
+          tail -n 40 /tmp/pcm-testc.$$ >&2
+        fi
+      done </tmp/pcm-pkgs.$$
+      if [ "$compiled" -eq 0 ]; then
+        bad "没有编译任何测试包，跨平台测试闸门失效"
+      else
+        ok "已编译 ${compiled} 个测试包（未执行）"
+      fi
+    fi
+    rm -f /tmp/pcm-pkgs.$$ /tmp/pcm-testc.$$
+    rm -rf "$tdir"
   fi
-  rm -f /tmp/pcm-test.$$
 fi
 
 echo
