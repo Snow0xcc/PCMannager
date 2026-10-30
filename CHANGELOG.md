@@ -5,6 +5,34 @@
 
 ## 未发布（当前 `main` 及工作区）
 
+### feat(clipboard) — 可选历史持久化 + 写盘防抖
+
+`persist_history` 默认关闭，避免静默保存用户复制内容。开启后：
+
+- 文本与条目索引写入模块数据目录的 `clipboard_history.json`（文件 `0600`、目录 `0700`、
+  64 MiB 上限、版本字段）；图片仍只保留缓存路径，恢复时校验路径必须在缓存目录内且符合
+  `img_*.png` 命名。
+- 恢复后条目 ID 继续递增；启动时按 `max_items`/`retention_days` 裁剪，关闭开关删除文件。
+- 连续变更在 300ms 窗口内合并为一次全量重写；`Stop` 与启动边界强制 flush，关闭开关先取消
+  待写定时器（否则删除后会被定时器重建）。
+- `os.Rename` 失败（Windows 目标被短暂占用）回退直接覆盖写，不丢本次历史。
+- 损坏/未知版本历史文件只告警、不阻断启动；缓存文件缺失的图片条目恢复时跳过并写回清理。
+- `Entry` 增加稳定 JSON tag（`id`/`kind`/`text`/`path`/`size`/`timestamp`/`pinned`），
+  避免后续改字段名破坏旧文件。
+
+### fix(build) — preflight 跨平台 `--with-tests`
+
+`scripts/preflight.sh <goos> <goarch> --with-tests` 在目标平台不等于宿主时改为逐包
+`go test -c`（写入临时目录，仅编译不执行），修复 Linux 上验 Windows 必现的
+`exec format error`；宿主相同时仍执行 `go test`。发版清单同步改用该命令。
+
+### fix(panel) — 无全局热键后端时仍可保存配置
+
+Linux/macOS 没有全局热键实现，此前面板保存任何热键都会因 `Probe` 失败被拒绝，
+把“平台不支持探测”误报成“组合被占用”。现在 `ValidateHotkey` 仍校验 `mod+mod+key`
+格式，但仅在 `winui.Capabilities().Hotkeys` 为真时才尝试试注册；面板同时提示当前平台
+无法检测可用性。新增回归测试 `TestPanelCanSaveHotkeyWhenOSProbeUnsupported`。
+
 
 ### build — 构建前基线门禁与产物硬校验
 

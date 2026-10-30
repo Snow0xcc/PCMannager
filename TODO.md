@@ -64,9 +64,9 @@ go vet ./...
       `winui.FindTaskbar()` 的 `Shell_TrayWnd` 为父窗口；找不到任务栏时降级为
       `WS_POPUP|WS_EX_TOPMOST` 悬浮窗（同时改 style，而非只换 parent），并报 `errNoTaskbar`。
       **未验证**：需在真实 Windows 上确认小组件能嵌入任务栏显示。
-- [ ] **21. 热键被占用**（`RegisterHotKey 失败: Hot key is already registered`）：`F1` 与
-      `Ctrl+\`` 在用户机器上已被其它程序占用，属**真实环境冲突而非代码缺陷**——当前已按设计降级
-      （告警 + 面板/托盘仍可用）。待办：在面板热键编辑器里加"可用性检测"提示，并允许用户改绑。
+- [x] **21. 热键被占用**（`RegisterHotKey 失败: Hot key is already registered`）：Windows 面板保存前通过
+      `HotkeyManager.Probe` 试注册并立即释放；支持按键录制、手动输入及改绑引导。Linux/macOS 没有全局热键后端，
+      仍允许保存配置并明确提示无法本机检测，避免把“不支持探测”误报成“组合被占用”。
 
 ## 真实 Windows 实机反馈（第二轮，2026-09-27）
 
@@ -217,8 +217,11 @@ go vet ./...
       `debug.ReadBuildInfo` 读自身 `-tags`，缺 `production` 时返回 `ErrMissingBuildTag`（不再让
       Wails 弹英文错误框，也不再静默失败），调用方回退浏览器面板；新增 3 组单测守护解析逻辑。
 
-- [ ] **1. 实际跑一次 CI 发布**：推送测试 tag（如 `v0.0.1-rc1`）验证 `.github/workflows/release.yml` 全流程，
-      确认 4 个产物 `pcmannager-<os>-<arch>[.exe]` 均生成并上传 Release。本地已能构建，但 CI 环境未实测。
+- [x] **1. 实际跑一次 CI 发布** ✅ 已完成：`v0.1.12`（2026-10-30）的 ci、auto-release、release
+      全流程 success，4 个产物 `pcmannager-<os>-<arch>[.exe]` 均上传；产物确认
+      `-tags=production`、`CGO_ENABLED=0`、`mod v0.1.12`，Windows 为 `PE32+ GUI`。
+      遗留治理项：`v0.1.10`/`v0.1.11` 为孤儿 tag（release 失败于 emoji 闸门，已修），
+      以及 `auto-release.yml` 每次 push 自动发版的节奏，待维护者裁定（见 HANDOVER 第 5 节）。
 - [x] **2. 提交当前未入库的改动** ✅ 已完成（`ac6cae4`）：`internal/wailsapp/`、`internal/panel/`
       （含 `panel.go`）、`scripts/build.sh`、`main_{windows,other}.go` 等全部入库。
       `.rustcode/` 与根目录 `config.yaml`（app 落盘的用户配置副本，正常位置是数据目录下）
@@ -291,13 +294,13 @@ go vet ./...
       `updateDoneLog()` 传参（不再硬编码 `GoBox\logs`，回归测试见 `TestBuildUpdateScript`）。
       建议在自动更新（#7）Windows 实机验证完成后，单独一个 PR 执行改名。
       改名即等同重置用户配置，必须带迁移逻辑，不可裸改。
-- [ ] **12. 模块目录名/包名核对**：迁移后应为 `taskbar`/`repair`（原 `statusbar`/`pcrepair`），
+- [x] **12. 模块目录名/包名核对** ✅ 已关闭：迁移后应为 `taskbar`/`repair`（原 `statusbar`/`pcrepair`），
       已改但需确认无残留引用；`preferences` 非模块（注册表视图）。
       **对账完成**：代码零残留（`grep "statusbar"|"pcrepair"` 无命中，8 个模块包名均等于目录名，
       `preferences` 确认未在 `main.go` 注册）；陈旧文档陈述已修
       （`AGENTS.md`、`README.md`、`.rustcode/skills/new-module/SKILL.md`）。
       结论可关闭。
-- [ ] **13. `modules/*` 中仍存在的平台差异**：确认为 `_windows.go`/`_other.go` 成对且签名一致，
+- [x] **13. `modules/*` 中仍存在的平台差异** ✅ 已关闭：确认为 `_windows.go`/`_other.go` 成对且签名一致，
       非 Windows 端不得 import `walk`/`w32`/`systray`/`gohook`。
       **对账完成，三项检查全绿**：成对文件交集签名 0 不一致；中立代码实际调用的成对函数
       0 不一致；非 Windows 端违禁 import 0（`repair/panel_other.go` 命中的是注释 "walk cannot

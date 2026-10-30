@@ -38,7 +38,7 @@ git submodule status   # 每个条目前应带空格或前缀，而非减号(-)
 go mod tidy
 
 # 构建前基线：Go 版本 / 构建标签契约 / 依赖一致性 / gofmt / workflow / vet
-# （加 --with-tests 会一并跑单测）
+# （加 --with-tests：宿主平台相同则跑单测；跨目标则逐包编译测试二进制，不执行）
 bash scripts/preflight.sh windows amd64
 
 # 构建（当前平台）：发布类构建统一走脚本，参数与 CI 同源

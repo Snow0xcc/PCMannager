@@ -16,11 +16,11 @@
 - [ ] `bash scripts/check-emoji.sh`（前端禁 emoji 闸门，内置探测器自检）
 - [ ] `gofmt -l . | grep -v ^reference/` 输出为空
 - [ ] `go build ./... && go vet ./...` 通过
-- [ ] `go test ./...` 全绿（本机禁用 `-race`：与 `CGO_ENABLED=0` 约束冲突）
+- [ ] `go test ./...` 全绿（`-race` 需要 cgo；本机具备 cgo 时可跑
+      `CGO_ENABLED=1 go test -race ./...`，发布构建本身仍固定 `CGO_ENABLED=0`）
 - [ ] `go mod tidy -diff` 无输出
-- [ ] Windows 编译闸门：
-      `GOOS=windows go vet ./...` 通过，且
-      `for d in ./internal/... ./modules/...; do GOOS=windows go test -c -o /dev/null $d; done` 无失败
+- [ ] Windows 编译闸门：`bash scripts/preflight.sh windows amd64 --with-tests`
+      通过（宿主不是 Windows 时脚本只逐包编译测试二进制，不执行目标平台二进制）
 - [ ] `GOOS=darwin go vet ./...` 通过
 - [ ] 提交前确认工作区干净（`git status --short` 为空）
 
@@ -30,6 +30,10 @@
 patch+1 打 tag →（因 GITHUB_TOKEN 推 tag 不触发下游，改为）显式
 `workflow_dispatch` 派发 `release.yml` → 四平台构建 → Release + 镜像表 → Wiki 同步。
 
+> 历史已知问题：`v0.1.10`、`v0.1.11` 的 tag 存在但没有 Release（release run 失败在
+> emoji 闸门，`e1f512a` 修复后 `v0.1.12` 才成功）。核对时以 `gh release view <tag>`
+> 为准，不能只看 tag 是否存在；缺失 Release 的 tag 不得移动，按需补发或留档说明。
+
 - [ ] `gh run list --workflow=auto-release.yml` 最新 run 为 success，日志可见
       `previous tag` / `new tag` 符合预期
 - [ ] `gh run list --workflow=release.yml` 对应 tag 的 run success，四个平台 job
@@ -38,7 +42,8 @@ patch+1 打 tag →（因 GITHUB_TOKEN 推 tag 不触发下游，改为）显式
       `pcmannager-windows-amd64.exe`、`pcmannager-linux-amd64`、
       `pcmannager-darwin-amd64`、`pcmannager-darwin-arm64`
 - [ ] 版本注入正确：下载 linux 附件，`go version -m pcmannager-linux-amd64`
-      显示 `-X .../internal/app.Version=<tag>`、`-tags=production`、`CGO_ENABLED=0`
+      的 `mod` 行显示 `github.com/snow0xcc/pcmannager v<tag>`（不是 `v0.0.0-dev`），
+      且 build 行含 `-tags=production`、`CGO_ENABLED=0`
 - [ ] Release 说明中的镜像下载表四行链接均指向本 tag
 - [ ] Wiki 首页显示的"最新版本"已更新为本 tag（`sync-wiki.sh`，看 job log 有
       `Wiki 已同步（<tag>）`）
@@ -89,6 +94,11 @@ patch+1 打 tag →（因 GITHUB_TOKEN 推 tag 不触发下游，改为）显式
 - [ ] 面板剪贴板页可浏览、写回、删除（C2-1）
 - [ ] **写回焦点恢复**：打开查看器前记原前台窗口，选中条目粘贴后焦点回原窗口、Ctrl+V 到位
 - [ ] 单条超大图片（>8 MiB）被拒收，历史不膨胀
+- [ ] 开启 `persist_history` 后复制文本/图片 → 退出重启 → 历史恢复、条目 ID 继续递增，
+      数据目录下出现 `clipboard_history.json`
+- [ ] 关闭 `persist_history` 后该文件被删除；再次重启历史不再恢复
+- [ ] 手动损坏 `clipboard_history.json` 或删除某个图片缓存文件后启动：程序不崩溃，
+      坏条目被跳过（日志有 warn），其余条目正常
 
 ### 2.6 自动更新（updater）
 
