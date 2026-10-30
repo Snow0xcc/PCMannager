@@ -95,7 +95,7 @@ func TestBadgeOverlayEmptyKeepsBase(t *testing.T) {
 // TestBadgeOverlayUnknownCharsSkipped 守护未知字符被跳过而不是画成乱码：
 // 角标内容来自状态数据，随时可能出现奇怪字符。
 func TestBadgeOverlayUnknownCharsSkipped(t *testing.T) {
-	got := BadgeOverlay(badgeBase(64, 64), "aπ✨7")
+	got := BadgeOverlay(badgeBase(64, 64), "aπ\u27287")
 	if countWhite(got) == 0 {
 		t.Fatal("合法字符 '7' 没有被绘制")
 	}
