@@ -10,11 +10,12 @@ const (
 	moduleID = "clipboard"
 
 	// Option keys declared by Options().
-	optMaxItems      = "max_items"
-	optStoreImages   = "store_images"
-	optPasteOnCopy   = "paste_on_copy"
-	optRetentionDays = "retention_days"
-	optMaxImageBytes = "max_image_bytes"
+	optMaxItems       = "max_items"
+	optStoreImages    = "store_images"
+	optPersistHistory = "persist_history"
+	optPasteOnCopy    = "paste_on_copy"
+	optRetentionDays  = "retention_days"
+	optMaxImageBytes  = "max_image_bytes"
 
 	// Action ids declared by Actions().
 	actionOpen        = "open_history"
@@ -34,10 +35,11 @@ const (
 // Option defaults. They mirror internal/config.Default() so the panel and the
 // runtime behaviour agree even before the user changes anything.
 const (
-	defaultMaxItems      = 500
-	defaultStoreImages   = true
-	defaultPasteOnCopy   = false
-	defaultRetentionDays = 30
+	defaultMaxItems       = 500
+	defaultStoreImages    = true
+	defaultPersistHistory = false
+	defaultPasteOnCopy    = false
+	defaultRetentionDays  = 30
 
 	// defaultMaxImageBytes caps one image entry; 0/negative (hand-edited) = unlimited.
 	defaultMaxImageBytes = 8 * 1024 * 1024

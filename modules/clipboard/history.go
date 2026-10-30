@@ -25,13 +25,13 @@ const (
 // Entry.Path 为图片/文件类条目保存缓存文件的绝对路径；
 // Text 仍承载纯文本；Data 字段删除（保留会诱发全量比较与常驻内存）。
 type Entry struct {
-	ID        int
-	Kind      EntryKind
-	Text      string
-	Path      string // 图片/文件条目的本地缓存路径（元数据）
-	Size      int
-	Timestamp time.Time
-	Pinned    bool
+	ID        int       `json:"id"`
+	Kind      EntryKind `json:"kind"`
+	Text      string    `json:"text"`
+	Path      string    `json:"path"` // 图片/文件条目的本地缓存路径（元数据）
+	Size      int       `json:"size"`
+	Timestamp time.Time `json:"timestamp"`
+	Pinned    bool      `json:"pinned"`
 }
 
 // History keeps a bounded, deduplicated ring of clipboard entries.
@@ -199,6 +199,29 @@ func (h *History) All() []Entry {
 	out := make([]Entry, len(h.items))
 	copy(out, h.items)
 	return out
+}
+
+func (h *History) checkpoint() ([]Entry, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	entries := make([]Entry, len(h.items))
+	copy(entries, h.items)
+	return entries, h.seq
+}
+
+func (h *History) restore(entries []Entry, seq int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.items = append(h.items[:0], entries...)
+	h.seq = seq
+	for _, e := range entries {
+		if e.ID > h.seq {
+			h.seq = e.ID
+		}
+	}
+	if len(h.items) > h.max {
+		h.items = h.trimLocked()
+	}
 }
 
 // Get returns the entry with the given id.

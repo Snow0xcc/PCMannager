@@ -31,6 +31,9 @@ func TestLoadCreatesFileWithDefaults(t *testing.T) {
 	if got := m.Config().App.Language; got != "zh-CN" {
 		t.Fatalf("默认语言 = %q, 期望 zh-CN", got)
 	}
+	if got := m.Module("clipboard").Get("persist_history", true); got != false {
+		t.Fatalf("剪贴板历史持久化默认值 = %v，隐私选项应默认关闭", got)
+	}
 }
 
 // TestSelfContextDisabledByDefault encodes the privacy requirement (PRD SC-09):

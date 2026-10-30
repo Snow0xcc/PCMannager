@@ -8,7 +8,7 @@
 
 - **平台可用性**：Windows 完整（原生查看器、文件类型、自动粘贴）。Linux/macOS：文本/图片监视与历史可用（依赖桌面会话 X11/Wayland），面板可浏览/写回/删除；文件类型采集与写回、自动粘贴、原生查看器窗口不可用
 - 热键默认 `Ctrl+\``
-- 配置项：`max_items`（上限 500）、`store_images`、`paste_on_copy`、`retention_days`（30）
+- 配置项：`max_items`（上限 500）、`store_images`、`persist_history`（默认关闭；开启后文本与条目索引以明文保存在本地数据目录）、`paste_on_copy`、`retention_days`（30）
 - 图片/文件的高清数据不入库，只落本地缓存文件并在库中存路径（避免数据库膨胀）
 
 ## 截图（screenshot）

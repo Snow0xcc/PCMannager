@@ -109,6 +109,7 @@ func Default() *Config {
 				Options: map[string]any{
 					"max_items":       500,
 					"store_images":    true,
+					"persist_history": false,
 					"paste_on_copy":   false,
 					"retention_days":  30,
 					"max_image_bytes": 8388608,

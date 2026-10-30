@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,9 +55,19 @@ type Feature struct {
 	ctx  *core.Context
 	hist *History
 
-	mu      sync.Mutex
-	running bool
-	cancel  context.CancelFunc
+	mu        sync.Mutex
+	persistMu sync.Mutex
+	// writeHistory is the persistence seam used by tests; nil selects the real
+	// atomic file writer. Per-feature (not a package global) so background
+	// debounce timers cannot race on it.
+	writeHistory func(path string, data []byte) error
+	// saveMu guards the debounced persistence timer. Keeping it separate from
+	// persistMu avoids a lock cycle with the timer callback and file writes.
+	saveMu      sync.Mutex
+	saveTimer   *time.Timer
+	savePending bool
+	running     bool
+	cancel      context.CancelFunc
 	// echo* remembers the last payload this module wrote so the watcher can
 	// skip it instead of re-adding it to the history. Only one kind is set at
 	// a time; images/files are remembered by identity (a sampled fingerprint or
@@ -94,6 +105,9 @@ func (f *Feature) Options() []core.Option {
 		{Key: optStoreImages, Label: "记录图片", Kind: core.KindBool,
 			Default: defaultStoreImages,
 			Help:    "同时记录复制的图片（PNG 落盘缓存，不常驻内存）", Restart: true},
+		{Key: optPersistHistory, Label: "持久化历史", Kind: core.KindBool,
+			Default: defaultPersistHistory,
+			Help:    "开启后将剪贴板文本和条目索引以明文保存在本地数据目录；默认关闭"},
 		{Key: optPasteOnCopy, Label: "写回后自动粘贴", Kind: core.KindBool,
 			Default: defaultPasteOnCopy,
 			Help:    "写回剪贴板后向前台窗口发送 Ctrl+V（尽力而为）"},
@@ -127,12 +141,6 @@ func (f *Feature) Init(ctx *core.Context) error {
 		return errors.New("clipboard: 模块上下文为空")
 	}
 	f.ctx = ctx
-	f.applyConfig()
-	f.hist.SetOnChange(func() {
-		if f.ctx != nil && f.ctx.Bus != nil {
-			f.ctx.Bus.State(moduleID, f.State())
-		}
-	})
 	// 条目被删除或驱逐时联动清理其缓存文件；失败仅记日志，不影响历史本身。
 	f.hist.SetOnDelete(func(e Entry) {
 		if e.Kind != KindImage || e.Path == "" {
@@ -142,7 +150,22 @@ func (f *Feature) Init(ctx *core.Context) error {
 			f.logCacheSweepFailure(e.Path, err)
 		}
 	})
-	f.sweepCache()
+	f.hist.Resize(f.snapshot().MaxItems)
+	loadErr := f.restoreHistory()
+	f.applyConfig()
+	f.hist.SetOnChange(func() {
+		f.requestPersist()
+		if f.ctx != nil && f.ctx.Bus != nil {
+			f.ctx.Bus.State(moduleID, f.State())
+		}
+	})
+	if loadErr == nil {
+		f.sweepCache()
+		f.flushPersist(true)
+	} else {
+		f.ctx.Logger.Warn("剪贴板历史恢复失败，保留图片缓存供排查", "module", moduleID, "err", loadErr)
+		f.ctx.Bus.Log(moduleID, "warn", "剪贴板历史恢复失败，未清理图片缓存")
+	}
 	return nil
 }
 
@@ -200,6 +223,7 @@ func (f *Feature) Stop() error {
 		f.ctx.Logger.Info("剪贴板历史已停止", "module", moduleID)
 		f.ctx.Bus.State(moduleID, f.State())
 	}
+	f.flushPersist(true)
 	return nil
 }
 
@@ -225,6 +249,7 @@ func (f *Feature) State() core.State {
 		"entries":         panelEntryViews(entries),
 		"max_items":       cfg.MaxItems,
 		"store_images":    cfg.StoreImages,
+		"persist_history": cfg.PersistHistory,
 		"paste_on_copy":   cfg.PasteOnCopy,
 		"retention_days":  cfg.Retention,
 		"max_image_bytes": cfg.MaxImageBytes,
@@ -264,7 +289,7 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		if !ok || n <= 0 {
 			return fmt.Errorf("clipboard: %s 需要正整数", key)
 		}
-	case optStoreImages, optPasteOnCopy:
+	case optStoreImages, optPersistHistory, optPasteOnCopy:
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("clipboard: %s 需要布尔值", key)
 		}
@@ -272,6 +297,16 @@ func (f *Feature) ApplyOption(key string, value any) error {
 		return fmt.Errorf("clipboard: 未知配置项 %s", key)
 	}
 	f.applyConfig()
+	if key == optPersistHistory {
+		if value.(bool) {
+			f.cancelScheduledPersist()
+			if err := f.persistHistory(); err != nil {
+				return err
+			}
+		} else if err := f.removeHistoryStore(); err != nil {
+			return err
+		}
+	}
 	f.ctx.Bus.State(moduleID, f.State())
 	return nil
 }
@@ -330,6 +365,9 @@ func (f *Feature) snapshot() configView {
 	}
 	if v, ok := f.ctx.Config.Get(optStoreImages, defaultStoreImages).(bool); ok {
 		cfg.StoreImages = v
+	}
+	if v, ok := f.ctx.Config.Get(optPersistHistory, defaultPersistHistory).(bool); ok {
+		cfg.PersistHistory = v
 	}
 	if v, ok := f.ctx.Config.Get(optPasteOnCopy, defaultPasteOnCopy).(bool); ok {
 		cfg.PasteOnCopy = v
@@ -592,9 +630,28 @@ func (f *Feature) writePNGCache(ctx context.Context, png []byte) (string, int, e
 	if dir == "" {
 		return "", 0, errors.New("clipboard: 缓存目录不可用")
 	}
-	name := fmt.Sprintf("%s%d%s", cachePrefix, time.Now().Unix(), cacheExt)
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, png, 0o600); err != nil {
+	file, err := os.CreateTemp(dir, cachePrefix+"*"+cacheExt)
+	if err != nil {
+		return "", 0, err
+	}
+	path := file.Name()
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		os.Remove(path)
+		return "", 0, err
+	}
+	n, err := file.Write(png)
+	if err == nil && n != len(png) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(path)
 		return "", 0, err
 	}
 	return path, len(png), nil
@@ -658,12 +715,13 @@ func (f *Feature) cacheBytes() int64 {
 
 // configView is this module's settings as read from the configuration.
 type configView struct {
-	Enabled       bool
-	MaxItems      int
-	StoreImages   bool
-	PasteOnCopy   bool
-	Retention     int
-	MaxImageBytes int // <=0 = 不限制
+	Enabled        bool
+	MaxItems       int
+	StoreImages    bool
+	PersistHistory bool
+	PasteOnCopy    bool
+	Retention      int
+	MaxImageBytes  int // <=0 = 不限制
 }
 
 // toInt narrows the numeric shapes a YAML/JSON config value can arrive in.

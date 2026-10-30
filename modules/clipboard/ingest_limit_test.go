@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,15 +15,29 @@ import (
 )
 
 // stubConfig 满足 core.ModuleConfig 的最小配置桩。
-type ingestStubConfig struct{ vals map[string]any }
+//
+// onChange 回调在独立 goroutine 里读取配置，而测试会在主 goroutine 修改
+// persist_history；普通 map 会触发 data race，故这里与真实 config.Manager
+// 一样加锁。
+type ingestStubConfig struct {
+	mu   sync.RWMutex
+	vals map[string]any
+}
 
 func (s *ingestStubConfig) Enabled() bool  { return true }
 func (s *ingestStubConfig) Hotkey() string { return "" }
 func (s *ingestStubConfig) Get(key string, def any) any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if v, ok := s.vals[key]; ok {
 		return v
 	}
 	return def
+}
+func (s *ingestStubConfig) set(key string, value any) {
+	s.mu.Lock()
+	s.vals[key] = value
+	s.mu.Unlock()
 }
 func (s *ingestStubConfig) Set(string, any) error  { return nil }
 func (s *ingestStubConfig) SetEnabled(bool) error  { return nil }
