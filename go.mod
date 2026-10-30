@@ -3,7 +3,7 @@ module github.com/snow0xcc/pcmannager
 go 1.27.1
 
 require (
-	github.com/ebitengine/purego v0.11.1
+	github.com/ebitengine/purego v0.11.2
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
