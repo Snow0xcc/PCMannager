@@ -189,6 +189,7 @@
 - 任务栏小组件嵌入 `Shell_TrayWnd` 正常显示（TODO #20 的修复未验证）
 - `updater` 的 `apply_update` 全链路（等进程退出 → 备份 → 替换 → 重启）
 - Wails/WebView2 窗口渲染与交互（缺运行时须正确回退浏览器）
+- repair Walk 面板 tooltip 初始化（`TTM_ADDTOOL failed`；代码已加 `LockOSThread`，需实机确认）
 - 热键冲突真实复现（TODO #21：`F1`、`Ctrl+\`` 被占用属环境冲突，设计上已降级）
 
 **建议**：写一份可勾选的验收清单（`docs/RELEASE-CHECKLIST.md`），
@@ -359,8 +360,8 @@ README 主打跨平台，但按代码逐模块核实，**非 Windows 上多数�
 2. **发布流程治理（承接 TODO #1）**。`v0.1.12` 已端到端验证版本注入、四平台产物、
    Release 上传与 Wiki 同步；剩余问题是 `v0.1.10`/`v0.1.11` 孤儿 tag 以及
    `auto-release.yml` 每次 push 自动发版的节奏，需维护者先裁定再改 workflow。
-3. **repair Walk 面板遗留问题**。修复或明确 `TTM_ADDTOOL failed` 的 Walk 面板问题；
-   维持现有统一动作执行/错误上报路径。
+3. **repair Walk 面板实机确认**。代码已通过 `LockOSThread` 固定 Walk 窗口与 tooltip
+   消息循环线程；在 Windows 上确认 `TTM_ADDTOOL failed` 不再出现，若仍复现则根据新日志继续定位。
 4. **平台支持决策**。根据 [`TODO.md`](../TODO.md) 中各模块的实际降级能力，明确继续补齐
    Linux/macOS，还是在 README/面板中明确 Windows 优先；不要仅凭可交叉编译宣称功能等价。
 5. **阶段 E 架构收敛**。`panelapi` DTO 抽包、`App` 拆分等大规模重构继续延后到实机验收

@@ -102,8 +102,9 @@ go vet ./...
 - [x] **31. 构建缺 `-tags production`**（第一轮根因）：Wails 退回桩实现，
       `runtime.EventsEmit` 触发 `log.Fatalf` 导致 GUI 构建静默退出；`scripts/build.sh` 已固定。
 
-**仍待跟进**：`modules/repair` 的 walk 面板创建失败（`TTM_ADDTOOL failed`，属既有缺陷，
-日志已捕获——正是本轮日志能力发挥作用的例证）。
+**代码修复已落地，待 Windows 实机确认**：`modules/repair/panel_windows.go` 在创建 Walk
+窗口及消息循环的 goroutine 中调用 `runtime.LockOSThread()`，避免 tooltip 的
+`TTM_ADDTOOL` 消息发往错误线程。若实机仍出现该错误，应保留日志并继续定位；实机检查列入 B5。
 
 ## 真实 Windows 实机反馈（第三轮，2026-09-27）
 
