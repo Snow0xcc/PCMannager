@@ -244,6 +244,11 @@ func (p panelProvider) ValidateHotkey(hotkey string) error {
 	if err != nil || !ok {
 		return errors.New("热键格式无效，应为 mod+mod+key，例如 ctrl+alt+f1")
 	}
+	// Linux/macOS have no global-hotkey backend. Keep the setting editable
+	// from their HTTP panel, but only claim availability when the OS probe ran.
+	if !winui.Capabilities().Hotkeys {
+		return nil
+	}
 	return p.a.hotkeys.Probe(combo)
 }
 

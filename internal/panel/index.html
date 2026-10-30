@@ -851,7 +851,11 @@ function renderModulePage(root, m) {
     }
   });
   card.appendChild(hk);
-  card.appendChild(el('<div class="hint">点输入框后直接按下组合键即可自动保存；Esc 取消、Backspace 解绑；也可手动输入 ctrl+alt+f1 再点保存。</div>'));
+  const hkHint = '点输入框后直接按下组合键即可自动保存；Esc 取消、Backspace 解绑；也可手动输入 ctrl+alt+f1 再点保存。' +
+    (state.caps && state.caps.hotkeys === false
+      ? ' 当前平台不支持全局热键，仍可保存配置，但无法在此检测组合是否可用。'
+      : '');
+  card.appendChild(el('<div class="hint">' + esc(hkHint) + '</div>'));
 
   (m.options || []).forEach(o => card.appendChild(renderOption(m, o)));
 

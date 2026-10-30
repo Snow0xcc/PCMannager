@@ -405,6 +405,22 @@ func TestSetModuleSettingsRejectsInvalidHotkey(t *testing.T) {
 	}
 }
 
+func TestPanelCanSaveHotkeyWhenOSProbeUnsupported(t *testing.T) {
+	a := newTestApp(t)
+	a.MustRegister(newFakeModule("hk"))
+
+	hotkey := "ctrl+alt+f1"
+	if err := a.PanelProvider().ValidateHotkey(hotkey); err != nil {
+		t.Fatalf("不支持全局热键的平台不应阻止保存配置: %v", err)
+	}
+	if err := a.SetModuleSettings("hk", nil, &hotkey, nil); err != nil {
+		t.Fatalf("保存合法热键失败: %v", err)
+	}
+	if got := a.Config().Module("hk").Hotkey(); got != hotkey {
+		t.Fatalf("保存热键 = %q, 期望 %q", got, hotkey)
+	}
+}
+
 func TestBindHotkeyRecordsInvalidReason(t *testing.T) {
 	a := newTestApp(t)
 	m := newFakeModule("hkbad")
