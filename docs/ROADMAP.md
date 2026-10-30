@@ -1,16 +1,14 @@
 # ROADMAP — 后续开发与推进方案
 
-> 生成日期：2026-10-03。基线：`13c8f0c`（feat(updater) + push/PR CI）。
-> 基线自检：`go build ./...` / `go vet ./...` / `gofmt -l .` 全绿；
-> `go test -race -count=1 ./internal/... ./modules/...` 全绿（实测 **169** 个用例）。
-> 本文所有结论均已逐条对代码核验，标注 `file:line`。
+> 更新日期：2026-10-30。基线：`v0.1.11` 及本地合入的 9 个 Dependabot 依赖更新。
+> 本轮验证：全量测试、Windows preflight、emoji 闸门及四个发布目标构建通过；
+> 当前测试函数数以现场统计为准（本轮 **409**）。
 
 ## 0. 当前判断（一句话）
 
-编译与测试是健康的，但**「已发布功能」与「用户实际能看到的东西」之间存在系统性落差**：
-面板事件流在 HTTP 路径上 100% 不通、自动更新在发布构建上恒为误报、emoji 硬约束闸门形同虚设、
-Windows 专属代码在 CI 里从未被编译过。建议**先止损（阶段 A），再补质量闸门（阶段 B），
-最后做产品补齐（阶段 C/D）**，不要在现有缺口未收敛前继续加新模块。
+代码、测试与跨平台构建基线目前健康，阶段 A–D 的主要代码整改已完成。
+现阶段的首要风险不是缺少功能，而是**Windows 运行时尚缺真实机器验收证据**；
+其次是收敛仍存在的已知体验/发布待办。应先完成实机验收和既有待办，不建议继续横向增加模块。
 
 ---
 
@@ -268,14 +266,15 @@ README 主打跨平台，但按代码逐模块核实，**非 Windows 上多数�
   当前「README 说跨平台、代码是 Windows 优先」的落差本身就是信任损耗。
   建议：**先在 README/面板如实标注成色**（S 工作量），再决定要不要投入做跨平台。
 
-### D2. 依赖卫生（状态：**已完成 2026-10-03**）
+### D2. 依赖卫生（状态：**已完成，2026-10-30 复核**）
 
-> **状态（2026-10-03）**：已完成。`kbinani/screenshot` 收进 `capture_windows.go`
+> **状态**：`kbinani/screenshot` 收进 `capture_windows.go`
 > （`capture_other.go` 端 `captureDisplayCount()` 恒返回编译期常量 0，编辑器/录屏/
 > 滚动拼接整棵调用树被死代码消除，非 Windows 二进制瘦身）；`gopsutil v4.26.9`
-> 与 `x/crypto v0.57.0`、`x/net v0.59.0`、`x/sys v0.48.0`、`x/text v0.42.0` 已升级
-> （越过 CVE-2025-22869 修复版本）。验证：build/vet/gofmt/tidy -diff、Linux 测试、
-> `GOOS=windows` vet + 各测试包编译、`GOOS=darwin` vet 全绿。
+> 与 `x/crypto v0.57.0`、`x/net v0.59.0`、`x/sys v0.49.0`、`x/text v0.43.0` 已升级
+> （越过 CVE-2025-22869 修复版本）。2026-10-30 本地合入 Dependabot 更新：
+> `purego v0.11.2`、`dbus/v5 v5.2.4`、`wails/v2 v2.17.0`、`x/image v0.47.0`。
+> 本轮验证：全量测试、Windows preflight、tidy/gofmt/emoji 闸门及四目标发布构建通过。
 
 - `modules/screenshot/feature.go` **没有 build tag** → `kbinani/screenshot` 把
   `x/exp/shiny`、`x/mobile`、`x/image`、`xgb`、`plan9stats` 一并拖进 Linux/macOS 二进制。
@@ -335,35 +334,24 @@ README 主打跨平台，但按代码逐模块核实，**非 Windows 上多数�
 
 ---
 
-## 执行顺序建议
+## 执行顺序建议（2026-10-30 复核）
 
-**首轮计划（A→F）已于 2026-10-03 全部执行完毕**：A1–A7、B1–B4、C1、
-C2-1/C2-2/C2-4、C3、C4、D1、D2、F 均已完成（B5 属外部硬件依赖，见下）。
-以下为**后续推进方案**（同日制定，按价值排序）。**执行模式已调整**（见
-`.superpowers/sdd/ROADMAP/progress.md`）：改为本会话直接执行，不派 worker
-（原"并行 worker ≤ 2"作废）；每任务独立审查改为最终一次性全分支审查。
+首轮 A–F 的主要工程整改及产品补齐已落地。当前推进建议按外部依赖和风险排序：
 
-```
-第 1 步   C2-3 需重启标记（小）—— server_port/data_dir/log_level 走已存在的
-          core.Option.Restart 机制声明，面板保存后提示"重启后生效"；
-          验收：internal/server 加契约测试断言三个 option 均带 Restart: true
-第 1 步   TODO #1 CI 实测发布（小，与上一步互相独立，可双 worker 并行）——
-          打测试 tag（如 v0.0.1-rc2）验证 release.yml 全流程：
-          版本注入 / 四平台矩阵 / Release 附件 / Wiki 同步
-第 2 步   C2-5 截图历史与 selfcontext 条目列表面板化（中）——
-          两模块 State() 暴露条目列表 + REST 端点 + 面板页，
-          非 Windows 用户不再只能开原生窗口查看
-第 3 步   B5 + TODO #49 Windows 实机验收（外部依赖，尽早预约机器）——
-          先写 docs/RELEASE-CHECKLIST.md 可勾选清单（托盘启退 20 次、
-          热键真实触发、任务栏组件、updater 全链路、Wails 回退路径），
-          发版前逐项打勾并记录机器/系统版本
-第 4 步   TODO #9 托盘图标资源 → TODO #11/#12/#13 命名与平台对账（中，择机穿插）
-          ✅ 已完成：#9 交付多尺寸品牌 .ico + tray_icon_path 配置 + 四级回退链；
-          #12 对账（代码零残留，修 4 处陈旧文档陈述）；#13 对账（成对签名/中立调用/
-          违禁 import 三项 0 不一致）；#11 只写设计不改名（docs/NAMING-MIGRATION.md）
-第 5 步   E 阶段架构收敛（大，明确延后）—— panelapi DTO 抽包、
-          App god-struct 拆分；排在产品补齐与实机验收之后
-```
+1. **B5 / TODO #49：真实 Windows 实机验收**。使用
+   [`RELEASE-CHECKLIST.md`](RELEASE-CHECKLIST.md) 记录系统版本和逐项结果，覆盖托盘启退、
+   热键、任务栏嵌入、截图/剪贴板、Wails 回退和 updater；这是本机 Linux 无法替代的验收。
+2. **TODO #1：实际验证发布流水线**。在维护者确认发布窗口后用测试 tag 验证版本注入、
+   四平台产物、Release 上传和 Wiki 同步；不要把普通分支集成当作发版验收。
+3. **TODO #21 与 repair Walk 面板遗留问题**。补热键可用性检测/改绑引导，并修复或明确
+   `TTM_ADDTOOL failed` 的 Walk 面板问题；维持现有统一动作执行/错误上报路径。
+4. **平台支持决策**。根据 [`TODO.md`](../TODO.md) 中各模块的实际降级能力，明确继续补齐
+   Linux/macOS，还是在 README/面板中明确 Windows 优先；不要仅凭可交叉编译宣称功能等价。
+5. **阶段 E 架构收敛**。`panelapi` DTO 抽包、`App` 拆分等大规模重构继续延后到实机验收
+   和用户可见缺口收敛之后。
+
+本地 `main` 已集成 9 个 Dependabot 更新分支，但尚未推送至 GitHub；待认证可用后再同步远端，
+使对应 PR 状态闭合并触发更新后的 CI。
 
 ### 明确不做（本轮）
 
@@ -378,7 +366,7 @@ C2-1/C2-2/C2-4、C3、C4、D1、D2、F 均已完成（B5 属外部硬件依赖�
 
 ---
 
-## 附：本次分析核验方式
+## 附：首次分析核验方式（历史记录，2026-10-03）
 
 所有结论均经实际执行核验，非静态推测：
 

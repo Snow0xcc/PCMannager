@@ -1,7 +1,8 @@
 # PCMannager 交接文档
 
-> **最近更新：2026-10-04**（ROADMAP 首轮 A→F + 后续 Task 1–4 全部执行完毕，
-> 最新发布 `v0.1.8`）。计划单一数据源见 [`ROADMAP.md`](ROADMAP.md)，
+> **最近更新：2026-10-30**（最新发布 `v0.1.11`；本地 `main` 已合入 9 个 Dependabot
+> 依赖更新分支，验证通过但尚未推送，GitHub PR 仍待认证后同步）。计划单一数据源见
+> [`ROADMAP.md`](ROADMAP.md)，
 > 待办与优先级见 [`../TODO.md`](../TODO.md)。
 
 ## 1. 项目状态
@@ -45,18 +46,16 @@
 
 ## 2. 已验证的命令
 
-以下命令在提交 `dbb64d6` 上实际执行并全部通过（**Linux 环境**）：
+以下命令在本机 Linux、Go 1.27.1 上针对当前本地 `main` 实际执行并通过：
 
 ```bash
 cd /workspaces/PCMannager
 
-gofmt -l . | grep -v ^reference/   # 无输出
-go build ./...                      # OK
-go vet ./...                        # OK
-GOOS=windows go vet ./...           # OK（Windows 专属代码的类型检查闸门）
-bash scripts/check-emoji.sh         # 通过（含探测器自检）
-go mod tidy -diff                   # OK（无漂移）
-go test -count=1 ./...              # 18 包全 ok，372 用例
+gofmt -l . | grep -v ^reference/     # 无输出
+bash scripts/preflight.sh windows amd64 # OK（含 Windows go vet、构建标签与工作流检查）
+bash scripts/check-emoji.sh          # 通过（含探测器自检）
+go mod tidy -diff                    # OK（无漂移）
+go test -count=1 ./...               # 全部包通过
 ```
 
 **发布产物构建必须走脚本**（勿直接 `go build`，否则丢 `-H windowsgui` 弹黑框、
@@ -68,9 +67,12 @@ bash scripts/build.sh <goos> <goarch> <输出>
 
 验证结果摘要：
 - 用例总数以**实测**为准：`grep -rn "^func Test" --include=*_test.go internal/ modules/ | wc -l`
-  （**当前 372**；README/TODO/AGENTS 曾另写 175/202/210，均已失效——不要手写用例数）
+  （本次实测 **409 个测试函数**；不要将函数数误写为运行时的子用例数）
+- `scripts/build.sh` 的 Windows/amd64、Linux/amd64、Darwin/amd64、Darwin/arm64 发布构建均通过
 - `GOOS=windows` 侧逻辑本机**只能静态把关**（vet 类型检查 + 审查），无法实跑
 - `-race` 不可用（需 cgo，与 `CGO_ENABLED=0` 约束冲突）
+- 本地合并已完成但 GitHub 推送未完成：`gh auth status` 显示未登录，`git push origin main`
+  因无法获取密码失败；登录/凭据可用后需推送，PR 才会自动闭合并触发更新后的 CI
 
 ---
 
@@ -186,9 +188,10 @@ bash scripts/build.sh <goos> <goarch> <输出>
      `XDG_CONFIG_HOME`，两处），但 `~/.config/GoBox/config.yaml` 里残留着既有
      测试累积的模块（`a/b/both/c/d/hkbad/hkm/orphan/racey/restarty/rt/x/y/z`），
      未擅自删除（是本机用户文件）。要清理请手工删或授权。
-   - **runner 告警（外部）**：`actions/checkout@v4` Node 20 弃用；
-     `ubuntu-latest` → Ubuntu 26 迁移于 **2026-10-19**。
-   - **gh 令牌缺 `actions:write`**：无法手动 dispatch（403），补发机制即便做了也跑不了。
+   - **Actions 依赖已本地更新**：checkout/setup-go 更新至 v7，Pages actions 更新至
+     configure-pages v6 / deploy-pages v5，release action 更新至 v3；推送后等待 CI 复验。
+   - **GitHub 认证缺失**：当前环境未登录 `gh`，也无法通过 Git 凭据推送；需要维护者完成认证后
+     推送本地 `main`，PR 才会进入远端已合并状态。
 
 6. **deferred minors（未修，可顺手）**
    - `auto-release.yml` 派发步骤无失败重试/补发机制（同上"孤儿 tag"）
@@ -199,9 +202,9 @@ bash scripts/build.sh <goos> <goarch> <输出>
 
 ## 6. 接手建议：Windows 实机验收清单
 
-截至 `dbb64d6`（`v0.1.8`），Linux 下已验证：四平台 `CGO_ENABLED=0` 构建、
-`gofmt`/`go vet`/`GOOS=windows go vet`、emoji 检查、`go mod tidy -diff`、
-**372 用例**全绿。但**以下各项只能在真实 Windows 上确认**，当前尚未验证。
+截至本次本地验证（上游发布 `v0.1.11` 加依赖更新），Linux 下已验证：四平台
+`CGO_ENABLED=0` 发布构建、`gofmt`、Windows preflight/vet、emoji 检查、
+`go mod tidy -diff` 与全量测试通过。但**以下各项只能在真实 Windows 上确认**，当前尚未验证。
 
 产物构建（与 CI 同源，勿直接用 `go build`，否则丢 `-H windowsgui`）：
 
@@ -289,7 +292,7 @@ PCM_VERSION=$(git describe --tags --abbrev=0) bash scripts/build.sh windows amd6
 
 ## 7. 结语
 
-架构重构、面板产品补齐、发布流水线三块已完成，最新发布 `v0.1.8`。
+架构重构、面板产品补齐、发布流水线三块已完成，最新发布 `v0.1.11`。
 **下一步最优先的是真实 Windows 实机验收（ROADMAP B5）**，而不是继续底层重构——
 本轮交付的托盘图标（TODO #9）与此前的托盘/热键/任务栏/Wails 改动都只有
 `GOOS=windows go vet` 静态把关，一次实机 smoke test 能一次性覆盖第 6 节全部条目。
