@@ -14,7 +14,7 @@ jobs:
     name: lint (emoji 约束)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
       # 客户端界面禁用 emoji（项目硬约束）：新增前端后必须仍然通过。
@@ -25,7 +25,7 @@ jobs:
     name: brand assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
       # 文档上的蝴蝶必须与 internal/logo 的几何同源（README / Wiki / Pages 都用它）；
@@ -37,7 +37,7 @@ jobs:
     name: preflight (构建前基线)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -77,7 +77,7 @@ jobs:
       PCM_VERSION: ${{ github.ref_name }}
     steps:
       # 仓库通过 submodule 引入 reference/ 下的第三方参考仓库，必须递归拉取。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
