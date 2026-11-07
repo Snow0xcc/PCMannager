@@ -8,7 +8,7 @@ require (
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
 	github.com/mozillazg/go-pinyin v0.21.0
-	github.com/shirou/gopsutil/v4 v4.26.9
+	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/wailsapp/wails/v2 v2.17.0
 	golang.design/x/clipboard v0.11.0
 	golang.org/x/image v0.47.0
